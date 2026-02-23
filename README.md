@@ -17,11 +17,11 @@ One daemon per machine. Many projects. The daemon is the central dispatcher — 
                      │    Daemon (singleton)   │
                      │       ~/.anvil/         │
                      │                         │
-                     │  tick:                   │
+                     │  tick:                  │
                      │   for each project:     │
                      │    → for each todo:     │
                      │      → cron match?      │
-                     │      → shell out runner │
+                     │      → dispatch to pool │
                      └────────────────────────┘
 ```
 
@@ -31,7 +31,7 @@ One daemon per machine. Many projects. The daemon is the central dispatcher — 
 4. On every tick the daemon iterates all watched projects, checks each todo's cron schedule, and runs matching tasks through the configured runner
 5. The daemon manages all running processes across all projects
 
-If a project is still busy processing todos when the next tick fires, that tick is skipped. This is intentional — the work matters more than the schedule. The cron is "when to check", not "guaranteed execution slot."
+If a task is already in-flight (queued or executing) when the next tick fires, it's skipped for that tick. The cron is "when to check", not "guaranteed execution slot."
 
 ## Project Directory
 
