@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"os"
@@ -36,8 +37,12 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		cmdStr := command
 		if resume {
 			cmdStr += " --resume " + sessionID
-		} else if sessionID != "" {
-			cmdStr += " --session-id " + sessionID
+		} else {
+			// Generate a fresh session ID so we never collide with existing sessions
+			var b [16]byte
+			rand.Read(b[:])
+			freshID := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+			cmdStr += " --session-id " + freshID
 		}
 
 		escaped := shellEscape(content)

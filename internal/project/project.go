@@ -187,6 +187,11 @@ func (p *Project) AddTodo(priority int, schedule string, content string) (string
 	sb.WriteString("---\n")
 	sb.WriteString(fmt.Sprintf("id: %q\n", id))
 	sb.WriteString(fmt.Sprintf("schedule: %q\n", schedule))
+	// One-shot tasks: empty schedule means run once and delete after completion
+	// Set resume: false explicitly for one-shot tasks
+	if schedule == "" {
+		sb.WriteString("resume: false\n")
+	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)
 	if !strings.HasSuffix(content, "\n") {

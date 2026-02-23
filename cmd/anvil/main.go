@@ -91,6 +91,8 @@ Add options:
 
 Task subcommands:
   create [options] <task>   Create a new task
+  -p, --priority int        Task priority 0-9 (default 1)
+  -s, --schedule string     Cron schedule (default "* * * * *"), "" for one-shot
   ls                        List tasks in current project
   get <name>                Show details of a task
   log <name>                Show execution log for a task
