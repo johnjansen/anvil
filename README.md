@@ -2,6 +2,20 @@
 
 One daemon per machine. Many projects. The daemon is the central dispatcher — it watches registered project directories, checks their cron schedules, and runs their todos through a configured LLM runner.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/johnjansen/anvil/main/install.sh | sh
+```
+
+Or with Go:
+
+```bash
+go install github.com/johnjansen/anvil/cmd/anvil@latest
+```
+
+Set `ANVIL_INSTALL_DIR` to change the install location (default: `/usr/local/bin`).
+
 ## How It Works
 
 ```
