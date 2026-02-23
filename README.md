@@ -49,7 +49,7 @@ Each project has a `.anvil/todos/` tree. Each todo is a markdown file with its o
 
 Priority directories are created on-demand when tasks are added. You don't need to pre-create them.
 
-Todos are just files. The daemon works through all matching ones — highest priority, oldest first — running up to `max_todos` in parallel. With `max_todos: 2` and 6 matching todos, 2 workers pull from the queue continuously: as each worker finishes, it picks up the next available todo. All 6 get processed, 2 at a time.
+Todos are just files. The daemon works through all matching ones — highest priority, oldest first — running up to `max_workers` in parallel. With `max_workers: 2` and 6 matching todos, 2 workers pull from the queue continuously: as each worker finishes, it picks up the next available todo. All 6 get processed, 2 at a time.
 
 ### Todo Format
 
@@ -115,7 +115,7 @@ tick_interval: 10s          # how often to check for work
 runners:                    # ordered list of runner commands; first success wins
   - "claude -p"
 timeout: 5m                 # max time per execution
-max_todos: 1                # max parallel todos per project (all todos still get processed)
+max_workers: 4              # worker pool size (all tasks still get processed)
 ```
 
 For backwards compatibility, a single `runner:` string is still accepted and treated as a one-entry list.

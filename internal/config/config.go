@@ -14,7 +14,8 @@ type Config struct {
 	Runner       string        `yaml:"runner"`
 	Runners      []string      `yaml:"runners"`
 	Timeout      time.Duration `yaml:"timeout"`
-	MaxTodos     int           `yaml:"max_todos"`
+	MaxWorkers   int           `yaml:"max_workers"`
+	MaxTodos     int           `yaml:"max_todos"` // deprecated: use max_workers
 }
 
 func Default() *Config {
@@ -22,7 +23,7 @@ func Default() *Config {
 		TickInterval: 10 * time.Second,
 		Runner:       "echo",
 		Timeout:      5 * time.Minute,
-		MaxTodos:     1,
+		MaxWorkers:   1,
 	}
 }
 
@@ -63,8 +64,12 @@ func Load() (*Config, error) {
 	if cfg.TickInterval <= 0 {
 		cfg.TickInterval = 10 * time.Second
 	}
-	if cfg.MaxTodos <= 0 {
-		cfg.MaxTodos = 1
+	// Backwards compatibility: max_todos maps to max_workers
+	if cfg.MaxWorkers <= 0 && cfg.MaxTodos > 0 {
+		cfg.MaxWorkers = cfg.MaxTodos
+	}
+	if cfg.MaxWorkers <= 0 {
+		cfg.MaxWorkers = 1
 	}
 
 	// Backwards compatibility: if Runners is empty but Runner is set, use Runner as single entry

@@ -54,7 +54,7 @@ type Config struct {
     TickInterval time.Duration `yaml:"tick_interval"` // how often to check (default 10s)
     Runner       string        `yaml:"runner"`         // command to run todos (default "echo")
     Timeout      time.Duration `yaml:"timeout"`        // per-execution timeout (default 5m)
-    MaxTodos     int           `yaml:"max_todos"`      // parallel todos per project (default 1)
+    MaxWorkers   int           `yaml:"max_workers"`    // worker pool size (default 1)
 }
 ```
 
@@ -70,18 +70,17 @@ for each watched project:
     load all todos from .anvil/todos/pN/
     for each todo:
         if todo.Schedule matches current time → collect
-    run collected todos through runner (up to max_todos in parallel)
+    run collected todos through runner (up to max_workers in parallel)
 ```
 
 If a project is busy when the next tick fires, it's skipped. The cron is "when to check", not "guaranteed execution slot."
 
 ### Batch Execution
 
-When `max_todos > 1`, todos are processed in batches:
-- Run `max_todos` concurrently
-- Wait for entire batch to complete
-- Run next batch
-- Continue until all matching todos are processed
+When `max_workers > 1`, a worker pool processes tasks concurrently:
+- Workers pull from a priority-ordered queue
+- As each worker finishes, it picks up the next available task
+- All matching tasks get processed
 
 ---
 

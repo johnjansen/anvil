@@ -67,7 +67,7 @@ type TaskInfo struct {
 }
 
 func New(cfg *config.Config) *Daemon {
-	poolSize := cfg.MaxTodos
+	poolSize := cfg.MaxWorkers
 	if poolSize < 1 {
 		poolSize = 1
 	}
@@ -86,7 +86,7 @@ func New(cfg *config.Config) *Daemon {
 func (d *Daemon) Run() {
 	defer close(d.done)
 
-	poolSize := d.config.MaxTodos
+	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
 		poolSize = 1
 	}

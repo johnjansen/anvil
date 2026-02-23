@@ -137,9 +137,9 @@ func (l *daemonLogger) Dispatch(projName, name string, priority int, schedule st
 		l.ts(), l.schedulerStr(), projName, l.c(ansiBold, name), l.priorityStr(priority), schedule))
 }
 
-func (l *daemonLogger) TickSummary(t time.Time, projects, todos, matched, dispatched int) {
-	l.println(fmt.Sprintf("%s %s  tick %s — %d projects, %d todos, %d matched, %d dispatched",
-		l.ts(), l.schedulerStr(), t.Format("15:04:05"), projects, todos, matched, dispatched))
+func (l *daemonLogger) TickSummary(t time.Time, projects, tasks, matched, dispatched int) {
+	l.println(fmt.Sprintf("%s %s  tick %s — %d projects, %d tasks, %d matched, %d dispatched",
+		l.ts(), l.schedulerStr(), t.Format("15:04:05"), projects, tasks, matched, dispatched))
 }
 
 func (l *daemonLogger) TickIdle(t time.Time) {
