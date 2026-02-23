@@ -508,11 +508,6 @@ func taskLogLink(task *RunningTask) string {
 }
 
 // loadWatchedPaths scans ~/.anvil/watched/ and returns project paths
-// sessionExists checks if a Claude session file exists for the given session ID
-func sessionExists(projectPath string, sessionID string) bool {
-	_, err := os.Stat(project.SessionPath(projectPath, sessionID))
-	return err == nil
-}
 
 // newRunID generates a unique run ID for a task execution
 func newRunID() string {
