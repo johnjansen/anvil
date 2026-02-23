@@ -51,6 +51,8 @@ func main() {
 		deleteCmd(os.Args[2:])
 	case "log":
 		logCmd(os.Args[2:])
+	case "task":
+		taskCmd(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("anvil %s\n", version)
 	case "help", "-h", "--help":
@@ -80,11 +82,20 @@ Commands:
   log <name>               Show session log for a todo
   status                   Show watched projects
   ps                       Show running tasks
+  task <subcommand>        Task management commands
   version                  Show version
 
 Add options:
   -p, --priority int    Task priority 0-9 (default 1)
   -s, --schedule string Cron schedule (default "* * * * *")
+
+Task subcommands:
+  create [options] <task>   Create a new task
+  ls                        List tasks in current project
+  get <name>                Show details of a task
+  log <name>                Show execution log for a task
+  rm <name>                 Remove a task (kills if running)
+  kill <name>               Kill a running task
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -242,7 +253,46 @@ func statusCmd() {
 }
 
 func psCmd() {
-	fmt.Println("check daemon logs (anvil serve output)")
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	tasks, err := daemon.SendPsRequest()
+	if err != nil {
+		fmt.Printf("failed to get tasks: %v\n", err)
+		return
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("no running tasks")
+		return
+	}
+
+	// Print table header
+	fmt.Printf("%-30s %-20s %-10s %-10s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STARTED")
+	fmt.Printf("%s\n", strings.Repeat("-", 100))
+
+	// Print each task
+	for _, t := range tasks {
+		fmt.Printf("%-30s %-20s %-10d %-10s %s\n",
+			truncate(t.Project, 30),
+			truncate(t.Name, 20),
+			t.PID,
+			t.Elapsed,
+			t.Started)
+	}
+}
+
+// truncate shortens a string to the specified length
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen < 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func addCmd(args []string) {
@@ -454,6 +504,270 @@ func logCmd(args []string) {
 	}
 
 	fmt.Print(string(data))
+}
+
+func taskCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task <subcommand> [options]\n")
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "create":
+		taskCreateCmd(args[1:])
+	case "ls":
+		taskLsCmd()
+	case "get":
+		taskGetCmd(args[1:])
+	case "log":
+		taskLogCmd(args[1:])
+	case "rm":
+		taskRmCmd(args[1:])
+	case "kill":
+		taskKillCmd(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+}
+
+func taskCreateCmd(args []string) {
+	priority := 1
+	schedule := "* * * * *"
+
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-p", "--priority":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -p/--priority")
+			}
+			i++
+			n := 0
+			for _, c := range args[i] {
+				if c < '0' || c > '9' {
+					log.Fatalf("invalid priority: %s (must be 0-9)", args[i])
+				}
+				n = n*10 + int(c-'0')
+			}
+			if n > 9 {
+				log.Fatalf("priority must be 0-9, got %d", n)
+			}
+			priority = n
+		case "-s", "--schedule":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -s/--schedule")
+			}
+			i++
+			schedule = args[i]
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+
+	if len(rest) == 0 {
+		log.Fatal("usage: anvil task create [-p priority] [-s schedule] <task text>")
+	}
+
+	taskText := strings.Join(rest, " ")
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(abs, ".anvil", "todos")); os.IsNotExist(err) {
+		if err := project.Init(abs, tools.FS); err != nil {
+			log.Fatalf("failed to init project: %v", err)
+		}
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	relPath, err := proj.AddTodo(priority, schedule, taskText)
+	if err != nil {
+		log.Fatalf("failed to add todo: %v", err)
+	}
+
+	fmt.Printf("added %s\n", relPath)
+}
+
+func taskLsCmd() {
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	if len(todos) == 0 {
+		fmt.Println("no tasks")
+		return
+	}
+
+	for _, t := range todos {
+		preview := strings.TrimSpace(t.Content)
+		if len(preview) > 60 {
+			preview = preview[:60] + "..."
+		}
+		fmt.Printf("p%d  %-14s  %-40s  %s\n", t.Priority, t.Schedule, t.Name, preview)
+	}
+}
+
+func taskGetCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task get <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	fmt.Printf("File:     p%d/%s\n", todo.Priority, todo.Name)
+	fmt.Printf("ID:       %s\n", todo.ID)
+	fmt.Printf("Schedule: %s\n", todo.Schedule)
+	fmt.Printf("Priority: %d\n", todo.Priority)
+	if todo.ID != "" {
+		sessionPath := project.SessionPath(abs, todo.ID)
+		if _, err := os.Stat(sessionPath); err == nil {
+			fmt.Printf("Session:  %s\n", sessionPath)
+		}
+	}
+	fmt.Printf("\n%s", todo.Content)
+}
+
+func taskLogCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task log <name|uuid>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	id := args[0]
+	proj, err := project.Load(abs)
+	if err == nil {
+		todos, err := proj.LoadTodos()
+		if err == nil {
+			if todo := findTodo(todos, args[0]); todo != nil {
+				id = todo.ID
+			}
+		}
+	}
+
+	if id == "" {
+		fmt.Fprintf(os.Stderr, "task has no session ID\n")
+		os.Exit(1)
+	}
+
+	sessionPath := project.SessionPath(abs, id)
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "no session log found (looked at %s)\n", sessionPath)
+			os.Exit(1)
+		}
+		log.Fatalf("failed to read session log: %v", err)
+	}
+
+	fmt.Print(string(data))
+}
+
+func taskRmCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task rm <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	// Kill if running
+	if daemon.IsDaemonRunning() {
+		if err := daemon.SendKillRequest(todo.ID); err != nil {
+			log.Printf("warning: failed to kill task: %v", err)
+		} else {
+			log.Printf("killed running task")
+		}
+	}
+
+	if err := project.RemoveTodo(*todo); err != nil {
+		log.Fatalf("failed to remove todo: %v", err)
+	}
+
+	fmt.Printf("removed p%d/%s\n", todo.Priority, todo.Name)
+}
+
+func taskKillCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name>\n")
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	name := args[0]
+	if err := daemon.SendKillRequest(name); err != nil {
+		fmt.Printf("failed to kill task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("killed task: %s\n", name)
 }
 
 func findTodo(todos []project.Todo, name string) *project.Todo {

@@ -39,3 +39,7 @@ anvil.yaml
 # Logs
 *.log
 logs/
+/.anvil/kill
+/.anvil/todos
+/example_proj
+/example_proj
