@@ -654,7 +654,22 @@ func taskGetCmd(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("File:     p%d/%s\n", todo.Priority, todo.Name)
+	// Check if task is running
+	runStatus := "idle"
+	if daemon.IsDaemonRunning() {
+		runningTasks, err := daemon.SendPsRequest()
+		if err == nil {
+			taskName := fmt.Sprintf("%s/%s", abs, todo.Name)
+			for _, t := range runningTasks {
+				if t.Name == taskName {
+					runStatus = fmt.Sprintf("running (PID %d, elapsed %s)", t.PID, t.Elapsed)
+					break
+				}
+			}
+		}
+	}
+
+	fmt.Printf("File:     %s\n", todo.Path)
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
 	fmt.Printf("Priority: %d\n", todo.Priority)
@@ -664,6 +679,7 @@ func taskGetCmd(args []string) {
 			fmt.Printf("Session:  %s\n", sessionPath)
 		}
 	}
+	fmt.Printf("Status:   %s\n", runStatus)
 	fmt.Printf("\n%s", todo.Content)
 }
 
