@@ -25,16 +25,18 @@ import (
 )
 
 type Daemon struct {
-	config       *config.Config
-	runner       *runner.Runner
-	busy         map[string]bool
-	mu           sync.Mutex
-	stop         chan struct{}
-	done         chan struct{}
-	lastTick     time.Time // last minute we processed (truncated to minute)
-	socketPath   string
-	tasks        map[string]*RunningTask
-	tasksMu      sync.RWMutex
+	config     *config.Config
+	runner     *runner.Runner
+	semaphores map[string]chan struct{} // keyed by taskID, controls per-task concurrency
+	semMu      sync.Mutex
+	stop       chan struct{}
+	done       chan struct{}
+	lastTick   time.Time // last minute we processed (truncated to minute)
+	socketPath string
+	tasks      map[string]*RunningTask
+	tasksMu    sync.RWMutex
+	mu         sync.Mutex      // guards busy
+	busy       map[string]bool // tracks which projects have active dispatches
 }
 
 type RunningTask struct {
@@ -61,12 +63,24 @@ func New(cfg *config.Config) *Daemon {
 	return &Daemon{
 		config:     cfg,
 		runner:     runner.New(cfg.Runners, cfg.Timeout),
-		busy:       make(map[string]bool),
+		semaphores: make(map[string]chan struct{}),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 		socketPath: filepath.Join(config.Dir(), "daemon.sock"),
 		tasks:      make(map[string]*RunningTask),
+		busy:       make(map[string]bool),
 	}
+}
+
+// getSemaphore returns (or lazily creates) the concurrency semaphore for a task.
+// maxConcurrent controls the channel buffer size; once created the capacity is fixed.
+func (d *Daemon) getSemaphore(taskKey string, maxConcurrent int) chan struct{} {
+	d.semMu.Lock()
+	defer d.semMu.Unlock()
+	if _, ok := d.semaphores[taskKey]; !ok {
+		d.semaphores[taskKey] = make(chan struct{}, maxConcurrent)
+	}
+	return d.semaphores[taskKey]
 }
 
 func (d *Daemon) Run() {
@@ -373,7 +387,13 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 			} else {
 				resume = t.Schedule != "" && sessionExists(proj.Path, t.ID)
 			}
-			output, err := d.runner.Run(ctx, proj.Path, t.ID, resume, t.Content)
+			_, err := d.runner.Run(ctx, proj.Path, t.ID, resume, t.Content, func(pid int) {
+					d.tasksMu.Lock()
+					if task, ok := d.tasks[taskKey]; ok {
+						task.PID = pid
+					}
+					d.tasksMu.Unlock()
+				})
 				if err != nil {
 					log.Printf("fail %s: %s: %v", proj.Path, t.Name, err)
 				} else {
@@ -384,9 +404,6 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 							log.Printf("warn: could not remove %s: %v", t.Path, removeErr)
 						}
 					}
-				}
-				if output != "" {
-					log.Printf("output %s: %s: %s", proj.Path, t.Name, output)
 				}
 			}(todo)
 		}

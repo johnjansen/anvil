@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -81,7 +82,7 @@ Commands:
   list                     List all todos in the current project
   get <name>               Show details of a todo by name
   delete <name>            Delete a todo by name
-  log <name>               Show session log for a todo
+  log [-f] <name>          Show session log for a todo (-f to follow)
   status                   Show watched projects
   ps                       Show running tasks
   task <subcommand>        Task management commands
@@ -477,8 +478,19 @@ func deleteCmd(args []string) {
 }
 
 func logCmd(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil log <name|uuid>\n")
+	follow := false
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "-f", "--follow":
+			follow = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+
+	if len(rest) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil log [-f] <name|uuid>\n")
 		os.Exit(1)
 	}
 
@@ -488,13 +500,15 @@ func logCmd(args []string) {
 	}
 
 	// Try as todo name first, fall back to treating arg as a UUID directly
-	id := args[0]
+	id := rest[0]
+	var todoName string
 	proj, err := project.Load(abs)
 	if err == nil {
 		todos, err := proj.LoadTodos()
 		if err == nil {
-			if todo := findTodo(todos, args[0]); todo != nil {
+			if todo := findTodo(todos, rest[0]); todo != nil {
 				id = todo.ID
+				todoName = todo.Name
 			}
 		}
 	}
@@ -505,6 +519,12 @@ func logCmd(args []string) {
 	}
 
 	sessionPath := project.SessionPath(abs, id)
+
+	if follow {
+		followLog(sessionPath, abs, todoName)
+		return
+	}
+
 	data, err := os.ReadFile(sessionPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -747,8 +767,19 @@ func taskGetCmd(args []string) {
 }
 
 func taskLogCmd(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task log <name|uuid>\n")
+	follow := false
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "-f", "--follow":
+			follow = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+
+	if len(rest) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task log [-f] <name|uuid>\n")
 		os.Exit(1)
 	}
 
@@ -757,13 +788,15 @@ func taskLogCmd(args []string) {
 		log.Fatalf("bad path: %v", err)
 	}
 
-	id := args[0]
+	id := rest[0]
+	var todoName string
 	proj, err := project.Load(abs)
 	if err == nil {
 		todos, err := proj.LoadTodos()
 		if err == nil {
-			if todo := findTodo(todos, args[0]); todo != nil {
+			if todo := findTodo(todos, rest[0]); todo != nil {
 				id = todo.ID
+				todoName = todo.Name
 			}
 		}
 	}
@@ -774,6 +807,12 @@ func taskLogCmd(args []string) {
 	}
 
 	sessionPath := project.SessionPath(abs, id)
+
+	if follow {
+		followLog(sessionPath, abs, todoName)
+		return
+	}
+
 	data, err := os.ReadFile(sessionPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1147,6 +1186,74 @@ func projectGetCmd(args []string) {
 				}
 			}
 		}
+	}
+}
+
+// followLog tails a session log file, printing new lines as they are appended.
+// Exits on Ctrl+C, or when the task is no longer running and the file stops growing.
+func followLog(sessionPath string, projectPath string, taskName string) {
+	// Wait for the file to exist (task may not have started yet)
+	for {
+		if _, err := os.Stat(sessionPath); err == nil {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "waiting for log file...\n")
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	f, err := os.Open(sessionPath)
+	if err != nil {
+		log.Fatalf("failed to open session log: %v", err)
+	}
+	defer f.Close()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	buf := make([]byte, 4096)
+	stableCount := 0
+
+	for {
+		select {
+		case <-sigCh:
+			return
+		default:
+		}
+
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			os.Stdout.Write(buf[:n])
+			stableCount = 0
+			continue
+		}
+		if readErr != nil && readErr != io.EOF {
+			return
+		}
+
+		// No new data — check periodically if task has finished
+		stableCount++
+		if stableCount%10 == 0 {
+			taskRunning := false
+			if daemon.IsDaemonRunning() {
+				tasks, psErr := daemon.SendPsRequest()
+				if psErr == nil {
+					fullKey := fmt.Sprintf("%s/%s", projectPath, taskName)
+					for _, t := range tasks {
+						if t.Name == fullKey {
+							taskRunning = true
+							break
+						}
+					}
+				}
+			}
+			if !taskRunning && taskName != "" {
+				fmt.Println("[task completed]")
+				return
+			}
+		}
+
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
