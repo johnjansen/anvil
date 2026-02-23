@@ -104,10 +104,10 @@ func (d *Daemon) Run() {
 	var workerWg sync.WaitGroup
 	for i := 0; i < poolSize; i++ {
 		workerWg.Add(1)
-		go func() {
+		go func(id int) {
 			defer workerWg.Done()
-			d.worker()
-		}()
+			d.worker(id)
+		}(i)
 	}
 
 	for {
@@ -130,10 +130,14 @@ func (d *Daemon) Stop() {
 }
 
 // worker pulls work items from the queue and executes them one at a time.
-func (d *Daemon) worker() {
+func (d *Daemon) worker(id int) {
+	log.Printf("worker[%d] started", id)
 	for item := range d.workQueue {
+		log.Printf("worker[%d] picked up %s (p%d)", id, item.todo.Name, item.todo.Priority)
 		d.runTask(item.project, item.todo)
+		log.Printf("worker[%d] idle", id)
 	}
+	log.Printf("worker[%d] stopped", id)
 }
 
 // runTask executes a single todo task and handles all bookkeeping.
@@ -313,17 +317,9 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 	// Find task by name or UUID (ID field contains the todo ID)
 	var found *RunningTask
 	for _, task := range d.tasks {
-		if task.Name == req.ID || strings.Contains(task.Name, req.ID) || task.Project == req.ID {
+		if task.TaskID == req.ID || task.Name == req.ID || strings.Contains(task.Name, req.ID) || task.Project == req.ID {
 			found = task
 			break
-		}
-		// Check if the task name contains the ID as a UUID suffix
-		if strings.HasSuffix(task.Name, ".md") {
-			baseName := task.Name[:len(task.Name)-3]
-			if strings.Contains(baseName, req.ID) {
-				found = task
-				break
-			}
 		}
 	}
 
