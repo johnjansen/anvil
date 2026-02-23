@@ -12,6 +12,7 @@ import (
 type Config struct {
 	TickInterval time.Duration `yaml:"tick_interval"`
 	Runner       string        `yaml:"runner"`
+	Runners      []string      `yaml:"runners"`
 	Timeout      time.Duration `yaml:"timeout"`
 	MaxTodos     int           `yaml:"max_todos"`
 }
@@ -64,6 +65,11 @@ func Load() (*Config, error) {
 	}
 	if cfg.MaxTodos <= 0 {
 		cfg.MaxTodos = 1
+	}
+
+	// Backwards compatibility: if Runners is empty but Runner is set, use Runner as single entry
+	if len(cfg.Runners) == 0 && cfg.Runner != "" {
+		cfg.Runners = []string{cfg.Runner}
 	}
 
 	return cfg, nil

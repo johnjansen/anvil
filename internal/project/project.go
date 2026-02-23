@@ -31,6 +31,7 @@ type Todo struct {
 	Content  string // file contents (after front‑matter)
 	Schedule string // cron expression from front‑matter
 	ID       string // UUID for session tracking
+	Resume   *bool  // nil = default (true for recurring, false for one-shot), explicit overrides
 }
 
 // Load reads a project's .anvil/anvil.yaml and returns a Project
@@ -78,6 +79,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			contentStr := string(raw)
 			schedule := ""
 			id := ""
+			var resume *bool
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -89,10 +91,12 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 					var fmData struct {
 						Schedule string `yaml:"schedule"`
 						ID       string `yaml:"id"`
+						Resume   *bool  `yaml:"resume"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
 						id = fmData.ID
+						resume = fmData.Resume
 					}
 				}
 			}
@@ -104,6 +108,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Content:  body,
 				Schedule: schedule,
 				ID:       id,
+				Resume:   resume,
 			})
 		}
 	}

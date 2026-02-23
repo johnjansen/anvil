@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,46 +13,59 @@ import (
 
 // Runner shells out the configured command with todo content as an argument.
 type Runner struct {
-	Command string
-	Timeout time.Duration
+	Commands []string
+	Timeout  time.Duration
 }
 
 // New creates a runner with the given command template and timeout.
-func New(command string, timeout time.Duration) *Runner {
-	return &Runner{Command: command, Timeout: timeout}
+func New(commands []string, timeout time.Duration) *Runner {
+	return &Runner{Commands: commands, Timeout: timeout}
 }
 
-// Run executes the configured command with the todo content as an argument.
+// Run executes the configured commands with the todo content as an argument.
 // The content is shell-escaped and appended to the command string.
 // The command runs in the specified directory.
-// If sessionID is non-empty, --session-id is injected into the command.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, content string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
-	defer cancel()
+// If resume is true, uses --resume to continue a previous session.
+// Otherwise, uses --session-id to start a new session.
+// Tries each command in order until one succeeds.
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, content string) (string, error) {
+	var lastErr error
+	var lastStderr string
 
-	command := r.Command
-	if sessionID != "" {
-		command += " --session-id " + sessionID
-	}
-
-	escaped := shellEscape(content)
-	cmd := exec.CommandContext(ctx, "sh", "-c", command+" "+escaped)
-	cmd.Dir = dir
-	cmd.Env = cleanEnv()
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("timed out after %s", r.Timeout)
+	for i, command := range r.Commands {
+		cmdStr := command
+		if resume {
+			cmdStr += " --resume " + sessionID
+		} else if sessionID != "" {
+			cmdStr += " --session-id " + sessionID
 		}
-		return stderr.String(), fmt.Errorf("exit error: %w\nstderr: %s", err, stderr.String())
+
+		escaped := shellEscape(content)
+		cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr+" "+escaped)
+		cmd.Dir = dir
+		cmd.Env = cleanEnv()
+
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		err := cmd.Run()
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return "", fmt.Errorf("timed out after %s", r.Timeout)
+			}
+			lastErr = err
+			lastStderr = stderr.String()
+			log.Printf("runner[%d] failed: %v", i, err)
+			continue
+		}
+
+		log.Printf("runner[%d] succeeded: %s", i, command)
+		return stdout.String(), nil
 	}
 
-	return stdout.String(), nil
+	// All runners failed, return the last error
+	return lastStderr, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
 }
 
 // cleanEnv returns the current environment with Claude-nesting vars removed.

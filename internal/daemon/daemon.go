@@ -1,8 +1,14 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,22 +25,47 @@ import (
 )
 
 type Daemon struct {
-	config   *config.Config
-	runner   *runner.Runner
-	busy     map[string]bool
-	mu       sync.Mutex
-	stop     chan struct{}
-	done     chan struct{}
-	lastTick time.Time // last minute we processed (truncated to minute)
+	config       *config.Config
+	runner       *runner.Runner
+	busy         map[string]bool
+	mu           sync.Mutex
+	stop         chan struct{}
+	done         chan struct{}
+	lastTick     time.Time // last minute we processed (truncated to minute)
+	socketPath   string
+	tasks        map[string]*RunningTask
+	tasksMu      sync.RWMutex
+}
+
+type RunningTask struct {
+	Project     string
+	Name        string
+	PID         int
+	Started     time.Time
+	Cancel      context.CancelFunc
+}
+
+type KillRequest struct {
+	ID string `json:"id"`
+}
+
+type TaskInfo struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	PID     int    `json:"pid"`
+	Started string `json:"started"`
+	Elapsed string `json:"elapsed"`
 }
 
 func New(cfg *config.Config) *Daemon {
 	return &Daemon{
-		config: cfg,
-		runner: runner.New(cfg.Runner, cfg.Timeout),
-		busy:   make(map[string]bool),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
+		config:     cfg,
+		runner:     runner.New(cfg.Runners, cfg.Timeout),
+		busy:       make(map[string]bool),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		socketPath: filepath.Join(config.Dir(), "daemon.sock"),
+		tasks:      make(map[string]*RunningTask),
 	}
 }
 
@@ -47,10 +78,15 @@ func (d *Daemon) Run() {
 	log.Printf("daemon started (tick=%s, runner=%q, max_todos=%d)",
 		d.config.TickInterval, d.config.Runner, d.config.MaxTodos)
 
+	// Start socket server
+	go d.startSocketServer()
+
 	for {
 		select {
 		case <-d.stop:
 			log.Println("daemon stopping")
+			// Clean up socket file
+			os.Remove(d.socketPath)
 			return
 		case now := <-ticker.C:
 			d.tick(now)
@@ -61,6 +97,118 @@ func (d *Daemon) Run() {
 func (d *Daemon) Stop() {
 	close(d.stop)
 	<-d.done
+}
+
+func (d *Daemon) startSocketServer() {
+	// Remove any existing socket file
+	os.Remove(d.socketPath)
+
+	// Create unix socket
+	listener, err := net.Listen("unix", d.socketPath)
+	if err != nil {
+		log.Printf("failed to start socket server: %v", err)
+		return
+	}
+	defer listener.Close()
+
+	// Set socket permissions for read/write by user
+	os.Chmod(d.socketPath, 0600)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ps", d.handlePs)
+	mux.HandleFunc("/kill", d.handleKill)
+
+	server := &http.Server{
+		Handler: mux,
+	}
+
+	log.Printf("socket server listening on %s", d.socketPath)
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		log.Printf("socket server error: %v", err)
+	}
+}
+
+func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	d.tasksMu.RLock()
+	tasks := make([]*RunningTask, 0, len(d.tasks))
+	for _, task := range d.tasks {
+		tasks = append(tasks, task)
+	}
+	d.tasksMu.RUnlock()
+
+	var result []TaskInfo
+	now := time.Now()
+	for _, task := range tasks {
+		elapsed := now.Sub(task.Started)
+		result = append(result, TaskInfo{
+			Project: task.Project,
+			Name:    task.Name,
+			PID:     task.PID,
+			Started: task.Started.Format(time.RFC3339),
+			Elapsed: elapsed.Round(time.Second).String(),
+		})
+	}
+
+	// Sort by started time (oldest first)
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Started < result[j].Started
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req KillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+
+	d.tasksMu.Lock()
+	defer d.tasksMu.Unlock()
+
+	// Find task by name or UUID (ID field contains the todo ID)
+	var found *RunningTask
+	for _, task := range d.tasks {
+		if task.Name == req.ID || strings.Contains(task.Name, req.ID) || task.Project == req.ID {
+			found = task
+			break
+		}
+		// Check if the task name contains the ID as a UUID suffix
+		if strings.HasSuffix(task.Name, ".md") {
+			baseName := task.Name[:len(task.Name)-3]
+			if strings.Contains(baseName, req.ID) {
+				found = task
+				break
+			}
+		}
+	}
+
+	if found == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+
+	// Cancel the task's context
+	found.Cancel()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
 }
 
 func (d *Daemon) tick(now time.Time) {
@@ -98,17 +246,15 @@ func (d *Daemon) tick(now time.Time) {
 
 	// On non-cron ticks, log heartbeat and any busy projects
 	if !cronTick {
+		d.tasksMu.RLock()
 		var busyNames []string
-		for _, proj := range projects {
-			d.mu.Lock()
-			busy := d.busy[proj.Path]
-			d.mu.Unlock()
-			if busy {
-				busyNames = append(busyNames, filepath.Base(proj.Path))
-			}
+		for _, task := range d.tasks {
+			elapsed := time.Since(task.Started).Round(time.Second)
+			busyNames = append(busyNames, fmt.Sprintf("%s/%s (%s)", filepath.Base(task.Project), task.Name, elapsed))
 		}
+		d.tasksMu.RUnlock()
 		if len(busyNames) > 0 {
-			log.Printf("tick %s — waiting on: %s", now.Format("15:04:05"), strings.Join(busyNames, ", "))
+			log.Printf("tick %s — running: %s", now.Format("15:04:05"), strings.Join(busyNames, ", "))
 		} else {
 			log.Printf("tick %s — idle", now.Format("15:04:05"))
 		}
@@ -139,10 +285,10 @@ func (d *Daemon) tick(now time.Time) {
 		}
 		totalTodos += len(allTodos)
 
-		// Select those whose schedule matches this minute
+		// Select scheduled todos that match this minute + any one-shot (no schedule) todos
 		var todos []project.Todo
 		for _, t := range allTodos {
-			if t.Schedule != "" && cron.Matches(t.Schedule, thisMinute) {
+			if t.Schedule == "" || cron.Matches(t.Schedule, thisMinute) {
 				todos = append(todos, t)
 			}
 		}
@@ -199,14 +345,44 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 				ctx, cancel := context.WithTimeout(context.Background(), d.config.Timeout)
 				defer cancel()
 
-				output, err := d.runner.Run(ctx, proj.Path, t.ID, t.Content)
+				// Track the running task
+				taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
+				d.tasksMu.Lock()
+				d.tasks[taskKey] = &RunningTask{
+					Project: proj.Path,
+					Name:    t.Name,
+					PID:     os.Getpid(),
+					Started: time.Now(),
+					Cancel:  cancel,
+				}
+				d.tasksMu.Unlock()
+
+				// Clean up task tracking when done
+				defer func() {
+					d.tasksMu.Lock()
+					delete(d.tasks, taskKey)
+					d.tasksMu.Unlock()
+				}()
+
+				// Determine resume behavior:
+			// - Explicit frontmatter resume: true/false takes priority
+			// - Default: recurring tasks resume, one-shots don't
+			var resume bool
+			if t.Resume != nil {
+				resume = *t.Resume && sessionExists(proj.Path, t.ID)
+			} else {
+				resume = t.Schedule != "" && sessionExists(proj.Path, t.ID)
+			}
+			output, err := d.runner.Run(ctx, proj.Path, t.ID, resume, t.Content)
 				if err != nil {
 					log.Printf("fail %s: %s: %v", proj.Path, t.Name, err)
 				} else {
 					log.Printf("done %s: %s", proj.Path, t.Name)
-					// Remove the todo file after successful execution
-					if removeErr := os.Remove(t.Path); removeErr != nil {
-						log.Printf("warn: could not remove %s: %v", t.Path, removeErr)
+					// Remove the todo file after successful execution (one-shot only)
+					if t.Schedule == "" {
+						if removeErr := os.Remove(t.Path); removeErr != nil {
+							log.Printf("warn: could not remove %s: %v", t.Path, removeErr)
+						}
 					}
 				}
 				if output != "" {
@@ -219,6 +395,12 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 }
 
 // loadWatchedPaths scans ~/.anvil/watched/ and returns project paths
+// sessionExists checks if a Claude session file exists for this todo
+func sessionExists(projectPath string, todoID string) bool {
+	_, err := os.Stat(project.SessionPath(projectPath, todoID))
+	return err == nil
+}
+
 func loadWatchedPaths() []string {
 	watchedDir := config.WatchedDir()
 	dirs, err := os.ReadDir(watchedDir)
@@ -283,4 +465,55 @@ func parseWatchedPath(content string) string {
 		return ""
 	}
 	return fm.Path
+}
+
+// IsDaemonRunning checks if the daemon is running by attempting to connect to the socket
+func IsDaemonRunning() bool {
+	conn, err := net.Dial("unix", filepath.Join(config.Dir(), "daemon.sock"))
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// SendPsRequest queries the daemon's /ps endpoint and returns the running tasks
+func SendPsRequest() ([]TaskInfo, error) {
+	resp, err := http.Get("http://unix" + filepath.Join(config.Dir(), "daemon.sock") + "/ps")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon request failed: %s", resp.Status)
+	}
+
+	var tasks []TaskInfo
+	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+// SendKillRequest sends a kill request to the daemon
+func SendKillRequest(id string) error {
+	data, err := json.Marshal(KillRequest{ID: id})
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.Post("http://unix"+filepath.Join(config.Dir(), "daemon.sock")+"/kill", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon kill failed: %s", string(body))
+	}
+
+	return nil
 }
