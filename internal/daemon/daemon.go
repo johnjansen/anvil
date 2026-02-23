@@ -203,6 +203,23 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 		}
 	}
 
+	// For one-shot tasks, write a lock file before execution so that if the
+	// daemon crashes mid-run the task is not silently re-dispatched on restart.
+	// The lock file is removed on normal completion (success or failure).
+	// A stale lock file (left by a crash) causes tick() to skip the todo and
+	// log a warning; the user can unblock by removing the lock file manually.
+	// One-shot tasks therefore have at-least-once delivery semantics: a clean
+	// shutdown guarantees exactly-once, but a daemon crash may leave the task
+	// incomplete with a stale lock that prevents automatic retry.
+	if t.Schedule == "" {
+		lockPath := t.Path + ".lock"
+		if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+			log.Printf("warn: could not write lock file %s: %v", lockPath, err)
+		} else {
+			defer os.Remove(lockPath)
+		}
+	}
+
 	// Run the task
 	var childPID int
 	usedSessionID, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, func(pid int) {
@@ -413,6 +430,16 @@ func (d *Daemon) tick(now time.Time) {
 
 		for _, t := range allTodos {
 			if t.Schedule == "" || cron.Matches(t.Schedule, thisMinute) {
+				// For one-shot todos, skip if a stale lock file exists from a
+				// previous daemon crash. The user must remove the lock file (or
+				// the todo file) to unblock the task.
+				if t.Schedule == "" {
+					lockPath := t.Path + ".lock"
+					if _, err := os.Stat(lockPath); err == nil {
+						log.Printf("  skip %s/%s — stale lock file %s (daemon crashed during previous run? remove lock to retry)", projName, t.Name, lockPath)
+						continue
+					}
+				}
 				dueTodos = append(dueTodos, projectTodo{proj, t})
 				totalMatched++
 			}
