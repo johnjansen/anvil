@@ -130,9 +130,6 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 			continue
 		}
 
-		if out := stdout.String(); out != "" {
-			log.Printf("runner[%d] output [%s]: %s", i, taskLabel, out)
-		}
 		log.Printf("runner[%d] [%s] succeeded: %s", i, taskLabel, command)
 		return actualSessionID, logPath, nil
 	}
