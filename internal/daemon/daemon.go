@@ -223,7 +223,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskLabel := projName + "/" + t.Name
 	var childPID int
 	logDir := filepath.Join(proj.Path, ".anvil", "logs", t.ID)
-	usedSessionID, logPath, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, taskLabel, logDir, func(pid int) {
+	usedSessionID, logPath, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.Content, taskLabel, logDir, func(pid int) {
 		childPID = pid
 		d.tasksMu.Lock()
 		if task, ok := d.tasks[taskKey]; ok {

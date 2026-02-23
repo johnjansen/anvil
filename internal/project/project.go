@@ -27,14 +27,15 @@ type Project struct {
 
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
-	Path          string // absolute path to the file
-	Name          string // filename
-	Priority      int    // 0-9, from pN/ directory
-	Content       string // file contents (after front‑matter)
-	Schedule      string // cron expression from front‑matter
-	ID            string // UUID for session tracking
-	Resume        *bool  // nil = default (true for recurring, false for one-shot), explicit overrides
-	MaxConcurrent int    // max simultaneous instances (0 = default 1)
+	Path            string // absolute path to the file
+	Name            string // filename
+	Priority        int    // 0-9, from pN/ directory
+	Content         string // file contents (after front‑matter)
+	Schedule        string // cron expression from front‑matter
+	ID              string // UUID for session tracking
+	Resume          *bool  // nil = default (true for recurring, false for one-shot), explicit overrides
+	MaxConcurrent   int    // max simultaneous instances (0 = default 1)
+	SkipPermissions bool   // if true, append --dangerously-skip-permissions to runner command
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -94,6 +95,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			id := ""
 			var resume *bool
 			maxConcurrent := 0
+			skipPermissions := false
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -103,29 +105,32 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 					fm := parts[0]
 					body = parts[1]
 					var fmData struct {
-						Schedule      string `yaml:"schedule"`
-						ID            string `yaml:"id"`
-						Resume        *bool  `yaml:"resume"`
-						MaxConcurrent int    `yaml:"max_concurrent"`
+						Schedule        string `yaml:"schedule"`
+						ID              string `yaml:"id"`
+						Resume          *bool  `yaml:"resume"`
+						MaxConcurrent   int    `yaml:"max_concurrent"`
+						SkipPermissions bool   `yaml:"skip_permissions"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
 						id = fmData.ID
 						resume = fmData.Resume
 						maxConcurrent = fmData.MaxConcurrent
+						skipPermissions = fmData.SkipPermissions
 					}
 				}
 			}
 
 			todos = append(todos, Todo{
-				Path:          fp,
-				Name:          e.Name(),
-				Priority:      pri,
-				Content:       body,
-				Schedule:      schedule,
-				ID:            id,
-				Resume:        resume,
-				MaxConcurrent: maxConcurrent,
+				Path:            fp,
+				Name:            e.Name(),
+				Priority:        pri,
+				Content:         body,
+				Schedule:        schedule,
+				ID:              id,
+				Resume:          resume,
+				MaxConcurrent:   maxConcurrent,
+				SkipPermissions: skipPermissions,
 			})
 		}
 	}

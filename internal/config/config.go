@@ -61,7 +61,7 @@ func EnsureConfig() (bool, error) {
 	}
 
 	defaults := `runners:
-  - claude --dangerously-skip-permissions
+  - claude
 max_workers: 10
 timeout: 15m
 tick_interval: 5s
