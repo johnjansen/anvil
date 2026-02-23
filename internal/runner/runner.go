@@ -30,13 +30,15 @@ func New(commands []string, timeout time.Duration) *Runner {
 // Otherwise, uses --session-id to start a new session.
 // Tries each command in order until one succeeds.
 //
+// taskLabel is a human-readable "project/task" string used in log output.
+//
 // onStart, if non-nil, is called with the child process PID right after the
 // process starts (before waiting for it to complete). This allows callers to
 // record the PID while the task is running.
 //
 // Returns the actual session ID used (either the passed-in sessionID for resume,
 // or a freshly generated one) and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, content string, onStart func(pid int)) (usedSessionID string, err error) {
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, content string, taskLabel string, onStart func(pid int)) (usedSessionID string, err error) {
 	var lastErr error
 	var lastStderr string
 
@@ -71,7 +73,7 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		if err := cmd.Start(); err != nil {
 			lastErr = err
 			lastStderr = err.Error()
-			log.Printf("runner[%d] start failed: %v", i, err)
+			log.Printf("runner[%d] [%s] start failed: %v", i, taskLabel, err)
 			continue
 		}
 
@@ -87,14 +89,14 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 			}
 			lastErr = waitErr
 			lastStderr = stderr.String()
-			log.Printf("runner[%d] failed: %v", i, waitErr)
+			log.Printf("runner[%d] [%s] failed: %v", i, taskLabel, waitErr)
 			continue
 		}
 
 		if out := stdout.String(); out != "" {
-			log.Printf("runner[%d] output: %s", i, out)
+			log.Printf("runner[%d] output [%s]: %s", i, taskLabel, out)
 		}
-		log.Printf("runner[%d] succeeded: %s", i, command)
+		log.Printf("runner[%d] [%s] succeeded: %s", i, taskLabel, command)
 		return actualSessionID, nil
 	}
 

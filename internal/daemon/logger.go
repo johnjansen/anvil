@@ -106,20 +106,23 @@ func (l *daemonLogger) WorkerStopped(id int) {
 	l.println(fmt.Sprintf("%s %s  stopped", l.ts(), l.workerStr(id)))
 }
 
-func (l *daemonLogger) WorkerPickup(id int, name string, priority int) {
+func (l *daemonLogger) WorkerPickup(id int, projName, name string, priority int) {
+	label := projName + "/" + name
 	l.println(fmt.Sprintf("%s %s %s  picked up %s (%s)",
-		l.ts(), l.workerStr(id), l.c(ansiBlue, "▶"), l.c(ansiBold, name), l.priorityStr(priority)))
+		l.ts(), l.workerStr(id), l.c(ansiBlue, "▶"), l.c(ansiBold, label), l.priorityStr(priority)))
 }
 
-func (l *daemonLogger) WorkerDone(id int, name string, elapsed time.Duration) {
+func (l *daemonLogger) WorkerDone(id int, projName, name string, elapsed time.Duration) {
+	label := projName + "/" + name
 	l.println(fmt.Sprintf("%s %s %s  done %s (%s)",
-		l.ts(), l.workerStr(id), l.c(ansiGreen, "✓"), l.c(ansiBold, name),
+		l.ts(), l.workerStr(id), l.c(ansiGreen, "✓"), l.c(ansiBold, label),
 		l.c(ansiDim, elapsed.Round(time.Second).String())))
 }
 
-func (l *daemonLogger) WorkerFail(id int, name string, err error) {
+func (l *daemonLogger) WorkerFail(id int, projName, name string, err error) {
+	label := projName + "/" + name
 	l.println(fmt.Sprintf("%s %s %s  fail %s: %v",
-		l.ts(), l.workerStr(id), l.c(ansiRed, "✗"), l.c(ansiBold, name), err))
+		l.ts(), l.workerStr(id), l.c(ansiRed, "✗"), l.c(ansiBold, label), err))
 }
 
 func (l *daemonLogger) WorkerIdle(id int) {

@@ -135,7 +135,8 @@ func (d *Daemon) Stop() {
 func (d *Daemon) worker(id int) {
 	dlog.WorkerStarted(id)
 	for item := range d.workQueue {
-		dlog.WorkerPickup(id, item.todo.Name, item.todo.Priority)
+		projName := filepath.Base(item.project.Path)
+		dlog.WorkerPickup(id, projName, item.todo.Name, item.todo.Priority)
 		d.runTask(id, item.project, item.todo)
 		dlog.WorkerIdle(id)
 	}
@@ -216,8 +217,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	}
 
 	// Run the task
+	projName := filepath.Base(proj.Path)
+	taskLabel := projName + "/" + t.Name
 	var childPID int
-	usedSessionID, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, func(pid int) {
+	usedSessionID, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, taskLabel, func(pid int) {
 		childPID = pid
 		d.tasksMu.Lock()
 		if task, ok := d.tasks[taskKey]; ok {
@@ -240,9 +243,9 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 
 	elapsed := time.Since(startTime)
 	if err != nil {
-		dlog.WorkerFail(workerID, t.Name, err)
+		dlog.WorkerFail(workerID, projName, t.Name, err)
 	} else {
-		dlog.WorkerDone(workerID, t.Name, elapsed)
+		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
 		// Remove the todo file after successful execution (one-shot only)
 		if t.Schedule == "" {
 			if removeErr := os.Remove(t.Path); removeErr != nil {
