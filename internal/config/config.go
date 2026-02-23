@@ -47,6 +47,28 @@ func EnsureDir() error {
 	return os.MkdirAll(WatchedDir(), 0755)
 }
 
+// EnsureConfig creates ~/.anvil/config.yaml with sensible defaults if it does not exist.
+// If the file already exists, it is left untouched.
+// Returns true if the file was created, false if it already existed.
+func EnsureConfig() (bool, error) {
+	if err := EnsureDir(); err != nil {
+		return false, err
+	}
+
+	p := Path()
+	if _, err := os.Stat(p); err == nil {
+		return false, nil // already exists
+	}
+
+	defaults := `runners:
+  - claude --dangerously-skip-permissions
+max_workers: 10
+timeout: 15m
+tick_interval: 5s
+`
+	return true, os.WriteFile(p, []byte(defaults), 0644)
+}
+
 func Load() (*Config, error) {
 	data, err := os.ReadFile(Path())
 	if err != nil {

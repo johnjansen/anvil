@@ -133,6 +133,14 @@ func initCmd(args []string) {
 		log.Fatalf("failed to init project: %v", err)
 	}
 
+	created, err := config.EnsureConfig()
+	if err != nil {
+		log.Fatalf("failed to create ~/.anvil/config.yaml: %v", err)
+	}
+	if created {
+		fmt.Printf("created %s\n", config.Path())
+	}
+
 	fmt.Printf("initialized %s\n", abs)
 }
 
