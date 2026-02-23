@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,19 +25,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// workItem is a single unit of work dispatched to the worker pool.
+type workItem struct {
+	project *project.Project
+	todo    project.Todo
+}
+
 type Daemon struct {
 	config     *config.Config
 	runner     *runner.Runner
-	semaphores map[string]chan struct{} // keyed by taskID, controls per-task concurrency
-	semMu      sync.Mutex
+	workQueue  chan workItem
+	inFlight   map[string]bool // taskKey -> true; set when queued, cleared when done
+	inFlightMu sync.Mutex
 	stop       chan struct{}
 	done       chan struct{}
 	lastTick   time.Time // last minute we processed (truncated to minute)
 	socketPath string
 	tasks      map[string]*RunningTask
 	tasksMu    sync.RWMutex
-	mu         sync.Mutex      // guards busy
-	busy       map[string]bool // tracks which projects have active dispatches
 }
 
 type RunningTask struct {
@@ -61,46 +67,55 @@ type TaskInfo struct {
 }
 
 func New(cfg *config.Config) *Daemon {
+	poolSize := cfg.MaxTodos
+	if poolSize < 1 {
+		poolSize = 1
+	}
 	return &Daemon{
 		config:     cfg,
 		runner:     runner.New(cfg.Runners, cfg.Timeout),
-		semaphores: make(map[string]chan struct{}),
+		workQueue:  make(chan workItem, poolSize*4),
+		inFlight:   make(map[string]bool),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 		socketPath: filepath.Join(config.Dir(), "daemon.sock"),
 		tasks:      make(map[string]*RunningTask),
-		busy:       make(map[string]bool),
 	}
-}
-
-// getSemaphore returns (or lazily creates) the concurrency semaphore for a task.
-// maxConcurrent controls the channel buffer size; once created the capacity is fixed.
-func (d *Daemon) getSemaphore(taskKey string, maxConcurrent int) chan struct{} {
-	d.semMu.Lock()
-	defer d.semMu.Unlock()
-	if _, ok := d.semaphores[taskKey]; !ok {
-		d.semaphores[taskKey] = make(chan struct{}, maxConcurrent)
-	}
-	return d.semaphores[taskKey]
 }
 
 func (d *Daemon) Run() {
 	defer close(d.done)
 
+	poolSize := d.config.MaxTodos
+	if poolSize < 1 {
+		poolSize = 1
+	}
+
 	ticker := time.NewTicker(d.config.TickInterval)
 	defer ticker.Stop()
 
-	log.Printf("daemon started (tick=%s, runner=%q, max_todos=%d)",
-		d.config.TickInterval, d.config.Runner, d.config.MaxTodos)
+	log.Printf("daemon started (tick=%s, runner=%q, workers=%d)",
+		d.config.TickInterval, d.config.Runner, poolSize)
 
 	// Start socket server
 	go d.startSocketServer()
+
+	// Start worker pool
+	var workerWg sync.WaitGroup
+	for i := 0; i < poolSize; i++ {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			d.worker()
+		}()
+	}
 
 	for {
 		select {
 		case <-d.stop:
 			log.Println("daemon stopping")
-			// Clean up socket file
+			close(d.workQueue) // signals workers to drain and exit
+			workerWg.Wait()
 			os.Remove(d.socketPath)
 			return
 		case now := <-ticker.C:
@@ -112,6 +127,103 @@ func (d *Daemon) Run() {
 func (d *Daemon) Stop() {
 	close(d.stop)
 	<-d.done
+}
+
+// worker pulls work items from the queue and executes them one at a time.
+func (d *Daemon) worker() {
+	for item := range d.workQueue {
+		d.runTask(item.project, item.todo)
+	}
+}
+
+// runTask executes a single todo task and handles all bookkeeping.
+func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
+	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
+
+	// Clear in-flight entry when the task completes
+	defer func() {
+		d.inFlightMu.Lock()
+		delete(d.inFlight, taskKey)
+		d.inFlightMu.Unlock()
+	}()
+
+	log.Printf("run %s: %s (p%d)", proj.Path, t.Name, t.Priority)
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.config.Timeout)
+	defer cancel()
+
+	runID := newRunID()
+	startTime := time.Now()
+
+	// Track the running task
+	d.tasksMu.Lock()
+	d.tasks[taskKey] = &RunningTask{
+		Project: proj.Path,
+		Name:    t.Name,
+		TaskID:  t.ID,
+		PID:     os.Getpid(),
+		Started: startTime,
+		Cancel:  cancel,
+	}
+	d.tasksMu.Unlock()
+
+	defer func() {
+		d.tasksMu.Lock()
+		delete(d.tasks, taskKey)
+		d.tasksMu.Unlock()
+		log.Printf("finished %s/%s", filepath.Base(proj.Path), t.Name)
+	}()
+
+	// Determine resume behavior:
+	// - Explicit frontmatter resume: true/false takes priority
+	// - Default: recurring tasks resume (use latest session), one-shots don't
+	var resume bool
+	if t.Resume != nil {
+		resume = *t.Resume
+	} else {
+		resume = t.Schedule != ""
+	}
+
+	// Get the session ID to resume (if any)
+	var sessionToResume string
+	if resume {
+		if latestSession, err := project.LatestSessionID(proj.Path, t.ID); err == nil {
+			sessionToResume = latestSession
+		}
+	}
+
+	// Run the task
+	usedSessionID, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, func(pid int) {
+		d.tasksMu.Lock()
+		if task, ok := d.tasks[taskKey]; ok {
+			task.PID = pid
+		}
+		d.tasksMu.Unlock()
+	})
+
+	// Write run record after completion
+	runRecord := project.RunRecord{
+		RunID:     runID,
+		TaskID:    t.ID,
+		SessionID: usedSessionID,
+		PID:       os.Getpid(),
+		Started:   startTime,
+	}
+	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
+		log.Printf("warn: failed to write run record for %s: %v", t.Name, writeErr)
+	}
+
+	if err != nil {
+		log.Printf("fail %s: %s: %v", proj.Path, t.Name, err)
+	} else {
+		log.Printf("done %s: %s", proj.Path, t.Name)
+		// Remove the todo file after successful execution (one-shot only)
+		if t.Schedule == "" {
+			if removeErr := os.Remove(t.Path); removeErr != nil {
+				log.Printf("warn: could not remove %s: %v", t.Path, removeErr)
+			}
+		}
+	}
 }
 
 func (d *Daemon) startSocketServer() {
@@ -254,12 +366,12 @@ func (d *Daemon) tick(now time.Time) {
 		projects = append(projects, proj)
 	}
 
-	// Sort projects alphabetically by path (no project priority)
+	// Sort projects alphabetically by path
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].Path < projects[j].Path
 	})
 
-	// On non-cron ticks, log heartbeat and any busy projects
+	// On non-cron ticks, log heartbeat and any running tasks
 	if !cronTick {
 		d.tasksMu.RLock()
 		var busyNames []string
@@ -276,23 +388,17 @@ func (d *Daemon) tick(now time.Time) {
 		return
 	}
 
+	// Collect all due todos across all projects for global priority ordering
+	type projectTodo struct {
+		proj *project.Project
+		todo project.Todo
+	}
+	var dueTodos []projectTodo
 	totalTodos := 0
 	totalMatched := 0
-	dispatched := 0
 
 	for _, proj := range projects {
 		projName := filepath.Base(proj.Path)
-
-		// Skip if busy from a previous tick
-		d.mu.Lock()
-		busy := d.busy[proj.Path]
-		d.mu.Unlock()
-		if busy {
-			log.Printf("  %s: busy (previous dispatch still running)", projName)
-			continue
-		}
-
-		// Load all todos
 		allTodos, err := proj.LoadTodos()
 		if err != nil {
 			log.Printf("  %s: error loading todos: %v", projName, err)
@@ -300,117 +406,53 @@ func (d *Daemon) tick(now time.Time) {
 		}
 		totalTodos += len(allTodos)
 
-		// Select scheduled todos that match this minute + any one-shot (no schedule) todos
-		var todos []project.Todo
 		for _, t := range allTodos {
 			if t.Schedule == "" || cron.Matches(t.Schedule, thisMinute) {
-				todos = append(todos, t)
+				dueTodos = append(dueTodos, projectTodo{proj, t})
+				totalMatched++
 			}
 		}
-		totalMatched += len(todos)
+	}
 
-		if len(todos) == 0 {
+	// Sort globally by priority (p0 first), then by name (oldest timestamp first)
+	sort.SliceStable(dueTodos, func(i, j int) bool {
+		if dueTodos[i].todo.Priority != dueTodos[j].todo.Priority {
+			return dueTodos[i].todo.Priority < dueTodos[j].todo.Priority
+		}
+		return dueTodos[i].todo.Name < dueTodos[j].todo.Name
+	})
+
+	dispatched := 0
+	for _, pt := range dueTodos {
+		taskKey := fmt.Sprintf("%s/%s", pt.proj.Path, pt.todo.Name)
+		projName := filepath.Base(pt.proj.Path)
+
+		// Skip if already in-flight (queued or executing)
+		d.inFlightMu.Lock()
+		if d.inFlight[taskKey] {
+			d.inFlightMu.Unlock()
+			log.Printf("  skip %s/%s — already in-flight", projName, pt.todo.Name)
 			continue
 		}
+		d.inFlight[taskKey] = true
+		d.inFlightMu.Unlock()
 
-		for _, t := range todos {
-			log.Printf("  dispatch %s/%s (p%d, schedule=%q)", projName, t.Name, t.Priority, t.Schedule)
+		log.Printf("  dispatch %s/%s (p%d, schedule=%q)", projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
+
+		// Non-blocking send; if queue is full, clear in-flight and warn
+		select {
+		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo}:
+			dispatched++
+		default:
+			log.Printf("  warn: work queue full, dropping %s/%s", projName, pt.todo.Name)
+			d.inFlightMu.Lock()
+			delete(d.inFlight, taskKey)
+			d.inFlightMu.Unlock()
 		}
-		dispatched += len(todos)
-
-		d.mu.Lock()
-		d.busy[proj.Path] = true
-		d.mu.Unlock()
-
-		go d.processProject(proj, todos)
 	}
 
 	log.Printf("tick %s — %d projects, %d todos, %d matched, %d dispatched",
 		now.Format("15:04:05"), len(projects), totalTodos, totalMatched, dispatched)
-}
-
-func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
-	defer func() {
-		d.mu.Lock()
-		d.busy[proj.Path] = false
-		d.mu.Unlock()
-		log.Printf("finished %s", proj.Path)
-	}()
-
-	batchSize := d.config.MaxTodos
-	if batchSize < 1 {
-		batchSize = 1
-	}
-
-	for i := 0; i < len(todos); i += batchSize {
-		end := i + batchSize
-		if end > len(todos) {
-			end = len(todos)
-		}
-		batch := todos[i:end]
-
-		var wg sync.WaitGroup
-		for _, todo := range batch {
-			wg.Add(1)
-			go func(t project.Todo) {
-				defer wg.Done()
-
-				log.Printf("run %s: %s (p%d)", proj.Path, t.Name, t.Priority)
-
-				ctx, cancel := context.WithTimeout(context.Background(), d.config.Timeout)
-				defer cancel()
-
-				// Track the running task
-				taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
-				d.tasksMu.Lock()
-				d.tasks[taskKey] = &RunningTask{
-					Project: proj.Path,
-					Name:    t.Name,
-					TaskID:  t.ID,
-					PID:     os.Getpid(),
-					Started: time.Now(),
-					Cancel:  cancel,
-				}
-				d.tasksMu.Unlock()
-
-				// Clean up task tracking when done
-				defer func() {
-					d.tasksMu.Lock()
-					delete(d.tasks, taskKey)
-					d.tasksMu.Unlock()
-				}()
-
-				// Determine resume behavior:
-			// - Explicit frontmatter resume: true/false takes priority
-			// - Default: recurring tasks resume, one-shots don't
-			var resume bool
-			if t.Resume != nil {
-				resume = *t.Resume && sessionExists(proj.Path, t.ID)
-			} else {
-				resume = t.Schedule != "" && sessionExists(proj.Path, t.ID)
-			}
-			_, err := d.runner.Run(ctx, proj.Path, t.ID, resume, t.Content, func(pid int) {
-					d.tasksMu.Lock()
-					if task, ok := d.tasks[taskKey]; ok {
-						task.PID = pid
-					}
-					d.tasksMu.Unlock()
-				})
-				if err != nil {
-					log.Printf("fail %s: %s: %v", proj.Path, t.Name, err)
-				} else {
-					log.Printf("done %s: %s", proj.Path, t.Name)
-					// Remove the todo file after successful execution (one-shot only)
-					if t.Schedule == "" {
-						if removeErr := os.Remove(t.Path); removeErr != nil {
-							log.Printf("warn: could not remove %s: %v", t.Path, removeErr)
-						}
-					}
-				}
-			}(todo)
-		}
-		wg.Wait()
-	}
 }
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink pointing to url.
@@ -436,10 +478,17 @@ func taskLogLink(task *RunningTask) string {
 }
 
 // loadWatchedPaths scans ~/.anvil/watched/ and returns project paths
-// sessionExists checks if a Claude session file exists for this todo
-func sessionExists(projectPath string, todoID string) bool {
-	_, err := os.Stat(project.SessionPath(projectPath, todoID))
+// sessionExists checks if a Claude session file exists for the given session ID
+func sessionExists(projectPath string, sessionID string) bool {
+	_, err := os.Stat(project.SessionPath(projectPath, sessionID))
 	return err == nil
+}
+
+// newRunID generates a unique run ID for a task execution
+func newRunID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func loadWatchedPaths() []string {
