@@ -39,7 +39,9 @@ anvil.yaml
 # Logs
 *.log
 logs/
-/.anvil/kill
-/.anvil/todos
-/example_proj
+
+# Anvil runtime state (todos, runs, kill signals)
+.anvil/
+
+# Example project
 /example_proj
