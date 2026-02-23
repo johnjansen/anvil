@@ -356,7 +356,7 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 	// Find task by name or UUID (ID field contains the todo ID)
 	var found *RunningTask
 	for _, task := range d.tasks {
-		if task.TaskID == req.ID || task.Name == req.ID || strings.Contains(task.Name, req.ID) || task.Project == req.ID {
+		if task.TaskID == req.ID || task.Name == req.ID || task.Project == req.ID {
 			found = task
 			break
 		}
