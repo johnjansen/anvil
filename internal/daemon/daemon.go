@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -95,8 +94,7 @@ func (d *Daemon) Run() {
 	ticker := time.NewTicker(d.config.TickInterval)
 	defer ticker.Stop()
 
-	log.Printf("daemon started (tick=%s, runner=%q, workers=%d)",
-		d.config.TickInterval, d.config.Runner, poolSize)
+	dlog.Startup(d.config.TickInterval.String(), d.config.Runner, poolSize)
 
 	// Start socket server
 	go d.startSocketServer()
@@ -114,7 +112,7 @@ func (d *Daemon) Run() {
 	for {
 		select {
 		case <-d.stop:
-			log.Println("daemon stopping")
+			dlog.Stopping()
 			if d.httpServer != nil {
 				d.httpServer.Shutdown(context.Background())
 			}
@@ -135,17 +133,17 @@ func (d *Daemon) Stop() {
 
 // worker pulls work items from the queue and executes them one at a time.
 func (d *Daemon) worker(id int) {
-	log.Printf("worker[%d] started", id)
+	dlog.WorkerStarted(id)
 	for item := range d.workQueue {
-		log.Printf("worker[%d] picked up %s (p%d)", id, item.todo.Name, item.todo.Priority)
-		d.runTask(item.project, item.todo)
-		log.Printf("worker[%d] idle", id)
+		dlog.WorkerPickup(id, item.todo.Name, item.todo.Priority)
+		d.runTask(id, item.project, item.todo)
+		dlog.WorkerIdle(id)
 	}
-	log.Printf("worker[%d] stopped", id)
+	dlog.WorkerStopped(id)
 }
 
 // runTask executes a single todo task and handles all bookkeeping.
-func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
+func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
 
 	// Clear in-flight entry when the task completes
@@ -154,8 +152,6 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 		delete(d.inFlight, taskKey)
 		d.inFlightMu.Unlock()
 	}()
-
-	log.Printf("run %s: %s (p%d)", proj.Path, t.Name, t.Priority)
 
 	ctx, cancel := context.WithTimeout(context.Background(), d.config.Timeout)
 	defer cancel()
@@ -179,7 +175,6 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 		d.tasksMu.Lock()
 		delete(d.tasks, taskKey)
 		d.tasksMu.Unlock()
-		log.Printf("finished %s/%s", filepath.Base(proj.Path), t.Name)
 	}()
 
 	// Determine resume behavior:
@@ -214,7 +209,7 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 	if t.Schedule == "" {
 		lockPath := t.Path + ".lock"
 		if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
-			log.Printf("warn: could not write lock file %s: %v", lockPath, err)
+			dlog.Warn("could not write lock file %s: %v", lockPath, err)
 		} else {
 			defer os.Remove(lockPath)
 		}
@@ -240,17 +235,18 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 		Started:   startTime,
 	}
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
-		log.Printf("warn: failed to write run record for %s: %v", t.Name, writeErr)
+		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
 
+	elapsed := time.Since(startTime)
 	if err != nil {
-		log.Printf("fail %s: %s: %v", proj.Path, t.Name, err)
+		dlog.WorkerFail(workerID, t.Name, err)
 	} else {
-		log.Printf("done %s: %s", proj.Path, t.Name)
+		dlog.WorkerDone(workerID, t.Name, elapsed)
 		// Remove the todo file after successful execution (one-shot only)
 		if t.Schedule == "" {
 			if removeErr := os.Remove(t.Path); removeErr != nil {
-				log.Printf("warn: could not remove %s: %v", t.Path, removeErr)
+				dlog.Warn("could not remove %s: %v", t.Path, removeErr)
 			}
 		}
 	}
@@ -263,7 +259,7 @@ func (d *Daemon) startSocketServer() {
 	// Create unix socket
 	listener, err := net.Listen("unix", d.socketPath)
 	if err != nil {
-		log.Printf("failed to start socket server: %v", err)
+		dlog.SocketStartFailed(err)
 		return
 	}
 	defer listener.Close()
@@ -279,9 +275,9 @@ func (d *Daemon) startSocketServer() {
 		Handler: mux,
 	}
 
-	log.Printf("socket server listening on %s", d.socketPath)
+	dlog.SocketListening(d.socketPath)
 	if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-		log.Printf("socket server error: %v", err)
+		dlog.SocketError(err)
 	}
 }
 
@@ -372,7 +368,7 @@ func (d *Daemon) tick(now time.Time) {
 	paths := loadWatchedPaths()
 	if len(paths) == 0 {
 		if cronTick {
-			log.Printf("tick %s — no watched projects", now.Format("15:04:05"))
+			dlog.TickNoProjects(now)
 		}
 		return
 	}
@@ -382,7 +378,7 @@ func (d *Daemon) tick(now time.Time) {
 	for _, p := range paths {
 		proj, err := project.Load(p)
 		if err != nil {
-			log.Printf("skip %s: %v", p, err)
+			dlog.Warn("skip %s: %v", p, err)
 			continue
 		}
 		projects = append(projects, proj)
@@ -403,9 +399,9 @@ func (d *Daemon) tick(now time.Time) {
 		}
 		d.tasksMu.RUnlock()
 		if len(busyNames) > 0 {
-			log.Printf("tick %s — running: %s", now.Format("15:04:05"), strings.Join(busyNames, ", "))
+			dlog.TickRunning(now, strings.Join(busyNames, ", "))
 		} else {
-			log.Printf("tick %s — idle", now.Format("15:04:05"))
+			dlog.TickIdle(now)
 		}
 		return
 	}
@@ -423,7 +419,7 @@ func (d *Daemon) tick(now time.Time) {
 		projName := filepath.Base(proj.Path)
 		allTodos, err := proj.LoadTodos()
 		if err != nil {
-			log.Printf("  %s: error loading todos: %v", projName, err)
+			dlog.Warn("%s: error loading todos: %v", projName, err)
 			continue
 		}
 		totalTodos += len(allTodos)
@@ -436,7 +432,7 @@ func (d *Daemon) tick(now time.Time) {
 				if t.Schedule == "" {
 					lockPath := t.Path + ".lock"
 					if _, err := os.Stat(lockPath); err == nil {
-						log.Printf("  skip %s/%s — stale lock file %s (daemon crashed during previous run? remove lock to retry)", projName, t.Name, lockPath)
+						dlog.Warn("skip %s/%s — stale lock file %s (daemon crashed during previous run? remove lock to retry)", projName, t.Name, lockPath)
 						continue
 					}
 				}
@@ -463,28 +459,27 @@ func (d *Daemon) tick(now time.Time) {
 		d.inFlightMu.Lock()
 		if d.inFlight[taskKey] {
 			d.inFlightMu.Unlock()
-			log.Printf("  skip %s/%s — already in-flight", projName, pt.todo.Name)
+			dlog.Info("skip %s/%s — already in-flight", projName, pt.todo.Name)
 			continue
 		}
 		d.inFlight[taskKey] = true
 		d.inFlightMu.Unlock()
 
-		log.Printf("  dispatch %s/%s (p%d, schedule=%q)", projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
+		dlog.Dispatch(projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
 
 		// Non-blocking send; if queue is full, clear in-flight and warn
 		select {
 		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo}:
 			dispatched++
 		default:
-			log.Printf("  warn: work queue full, dropping %s/%s", projName, pt.todo.Name)
+			dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
 			delete(d.inFlight, taskKey)
 			d.inFlightMu.Unlock()
 		}
 	}
 
-	log.Printf("tick %s — %d projects, %d todos, %d matched, %d dispatched",
-		now.Format("15:04:05"), len(projects), totalTodos, totalMatched, dispatched)
+	dlog.TickSummary(now, len(projects), totalTodos, totalMatched, dispatched)
 }
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink pointing to url.
