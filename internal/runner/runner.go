@@ -101,11 +101,23 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 	return "", fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
 }
 
-// cleanEnv returns the current environment with Claude-nesting vars removed.
+// cleanEnv returns the current environment with Claude-nesting guard vars removed.
+// Strips all CLAUDE* and ANTHROPIC* prefixed vars to prevent recursive invocation
+// detection, but preserves ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL which are
+// required for the runner to authenticate with the API.
 func cleanEnv() []string {
+	keep := map[string]bool{
+		"ANTHROPIC_API_KEY":  true,
+		"ANTHROPIC_BASE_URL": true,
+	}
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "CLAUDECODE=") {
+		key := strings.SplitN(e, "=", 2)[0]
+		if keep[key] {
+			env = append(env, e)
+			continue
+		}
+		if strings.HasPrefix(key, "CLAUDE") || strings.HasPrefix(key, "ANTHROPIC") {
 			continue
 		}
 		env = append(env, e)
