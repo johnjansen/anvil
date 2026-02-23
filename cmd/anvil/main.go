@@ -815,10 +815,8 @@ func taskRmCmd(args []string) {
 
 	// Kill if running
 	if daemon.IsDaemonRunning() {
-		if err := daemon.SendKillRequest(todo.ID); err != nil {
-			log.Printf("warning: failed to kill task: %v", err)
-		} else {
-			log.Printf("killed running task")
+		if err := daemon.SendKillRequest(todo.Name); err == nil {
+			fmt.Printf("killed running task %s\n", todo.Name)
 		}
 	}
 
