@@ -802,20 +802,21 @@ func taskLogCmd(args []string) {
 		todos, err := proj.LoadTodos()
 		if err == nil {
 			if todo := findTodo(todos, rest[0]); todo != nil {
+				id = todo.ID
 				todoName = todo.Name
 			}
 		}
 	}
 
-	// Resolve the session ID from the latest run record (not the task ID)
-	var sessionID string
-	if id != "" {
-		if sessionID, err = project.LatestSessionID(abs, id); err != nil {
-			fmt.Fprintf(os.Stderr, "no session log found for task: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
+	if id == "" {
 		fmt.Fprintf(os.Stderr, "task has no session ID\n")
+		os.Exit(1)
+	}
+
+	// Resolve the session ID from the latest run record (not the task ID)
+	sessionID, err := project.LatestSessionID(abs, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "no session log found for task: %v\n", err)
 		os.Exit(1)
 	}
 
