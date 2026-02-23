@@ -200,7 +200,9 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 	}
 
 	// Run the task
+	var childPID int
 	usedSessionID, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, func(pid int) {
+		childPID = pid
 		d.tasksMu.Lock()
 		if task, ok := d.tasks[taskKey]; ok {
 			task.PID = pid
@@ -213,7 +215,7 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 		RunID:     runID,
 		TaskID:    t.ID,
 		SessionID: usedSessionID,
-		PID:       os.Getpid(),
+		PID:       childPID,
 		Started:   startTime,
 	}
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
