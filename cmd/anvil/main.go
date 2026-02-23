@@ -772,18 +772,38 @@ func taskKillCmd(args []string) {
 		os.Exit(1)
 	}
 
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
 	if !daemon.IsDaemonRunning() {
 		fmt.Println("daemon not running")
 		return
 	}
 
-	name := args[0]
-	if err := daemon.SendKillRequest(name); err != nil {
+	if err := daemon.SendKillRequest(todo.ID); err != nil {
 		fmt.Printf("failed to kill task: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("killed task: %s\n", name)
+	fmt.Printf("killed task: %s\n", args[0])
 }
 
 func findTodo(todos []project.Todo, name string) *project.Todo {
