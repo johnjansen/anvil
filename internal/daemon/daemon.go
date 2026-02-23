@@ -96,7 +96,7 @@ func (d *Daemon) Run() {
 	ticker := time.NewTicker(d.config.TickInterval)
 	defer ticker.Stop()
 
-	dlog.Startup(d.config.TickInterval.String(), d.config.Runner, poolSize)
+	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
 
 	// Start socket server
 	go d.startSocketServer()
