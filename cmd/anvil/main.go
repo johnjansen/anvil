@@ -308,69 +308,7 @@ func truncate(s string, maxLen int) string {
 }
 
 func addCmd(args []string) {
-	priority := 1
-	schedule := "* * * * *"
-
-	// Simple flag parsing — pull out -p/-s before treating the rest as task text
-	var rest []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-p", "--priority":
-			if i+1 >= len(args) {
-				log.Fatal("missing value for -p/--priority")
-			}
-			i++
-			n := 0
-			for _, c := range args[i] {
-				if c < '0' || c > '9' {
-					log.Fatalf("invalid priority: %s (must be 0-9)", args[i])
-				}
-				n = n*10 + int(c-'0')
-			}
-			if n > 9 {
-				log.Fatalf("priority must be 0-9, got %d", n)
-			}
-			priority = n
-		case "-s", "--schedule":
-			if i+1 >= len(args) {
-				log.Fatal("missing value for -s/--schedule")
-			}
-			i++
-			schedule = args[i]
-		default:
-			rest = append(rest, args[i])
-		}
-	}
-
-	if len(rest) == 0 {
-		log.Fatal("usage: anvil add [-p priority] [-s schedule] <task text>")
-	}
-
-	taskText := strings.Join(rest, " ")
-
-	abs, err := filepath.Abs(".")
-	if err != nil {
-		log.Fatalf("bad path: %v", err)
-	}
-
-	// Ensure project is initialized
-	if _, err := os.Stat(filepath.Join(abs, ".anvil", "todos")); os.IsNotExist(err) {
-		if err := project.Init(abs, tools.FS); err != nil {
-			log.Fatalf("failed to init project: %v", err)
-		}
-	}
-
-	proj, err := project.Load(abs)
-	if err != nil {
-		log.Fatalf("failed to load project: %v", err)
-	}
-
-	relPath, err := proj.AddTodo(priority, schedule, taskText)
-	if err != nil {
-		log.Fatalf("failed to add todo: %v", err)
-	}
-
-	fmt.Printf("added %s\n", relPath)
+	taskCreateCmd(args)
 }
 
 func listCmd() {
