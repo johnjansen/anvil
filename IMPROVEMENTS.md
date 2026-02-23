@@ -163,13 +163,11 @@ if !taskRunning && taskName != "" {
 **Suggested approach:** Either always require `taskName` to be set, or add a secondary exit condition based on file growth stalling independently of `taskName`.
 **Priority:** P1
 
-### RO-3: `handleKill` substring matching is too broad
+### RO-3: `handleKill` substring matching is too broad - **FIXED**
 **Files:** `internal/daemon/daemon.go:359`
-```go
-if task.TaskID == req.ID || task.Name == req.ID || strings.Contains(task.Name, req.ID) || task.Project == req.ID {
-```
+**Status:** Fixed in commit 4703648
 **Description:** `strings.Contains(task.Name, req.ID)` means sending `{"id": "a"}` could match and kill any task whose name contains the letter "a". In a multi-project setup with many running tasks, this is a silent footgun.
-**Suggested approach:** Remove the `strings.Contains` clause. Match only on exact `TaskID` or exact `Name` (full path). The CLI already resolves names to IDs before sending the request.
+**Fix:** Removed the `strings.Contains` clause. Match only on exact `TaskID` or exact `Name` (full path). The CLI already resolves names to IDs before sending the request.
 **Priority:** P1
 
 ### RO-4: Work queue silently drops tasks when full
@@ -195,15 +193,11 @@ default:
 **Suggested approach:** Pre-validate schedules in `project.AddTodo` and reject invalid expressions at creation time. In the daemon tick, add a `dlog.Warn` when a todo's schedule cannot be parsed.
 **Priority:** P2
 
-### RO-6: `taskKillCmd` and `taskRmCmd` send different ID types to `SendKillRequest`
+### RO-6: `taskKillCmd` and `taskRmCmd` send different ID types to `SendKillRequest` - **FIXED**
 **Files:** `cmd/anvil/main.go:856` and `main.go:812`
-```go
-// taskKillCmd:
-daemon.SendKillRequest(todo.ID)   // sends task UUID
-// taskRmCmd:
-daemon.SendKillRequest(todo.Name) // sends filename like "check-issues.md"
-```
+**Status:** Fixed in commit 4703648
 **Description:** The two kill paths send different identifier types. `handleKill` handles both via its multi-condition match, but the inconsistency means the match semantics differ silently. If the `strings.Contains` clause is removed (per RO-3), `taskRmCmd`'s kill would need to also send `todo.ID`.
+**Fix:** Changed `taskRmCmd` to send `todo.ID` instead of `todo.Name` for consistency.
 **Priority:** P1
 
 ### RO-7: Daemon shutdown does not drain running tasks
