@@ -103,6 +103,7 @@ Task subcommands:
   kill <name>               Kill a running task
 
 Project subcommands:
+  ls [-a|--all]            List watched projects (default: current directory)
   get [path]               Show project details (default: current directory)
 
 Configuration:
@@ -822,12 +823,84 @@ func projectCmd(args []string) {
 	}
 
 	switch args[0] {
+	case "ls":
+		projectLsCmd(args[1:])
 	case "get":
 		projectGetCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown project command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
 		os.Exit(1)
+	}
+}
+
+func projectLsCmd(args []string) {
+	allProjects := false
+	for _, a := range args {
+		if a == "--all" || a == "-a" {
+			allProjects = true
+		}
+	}
+
+	watched, err := loadAllWatched()
+	if err != nil {
+		log.Fatalf("failed to read watched: %v", err)
+	}
+
+	if !allProjects {
+		// Scope to current directory
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		var filtered []watchFrontmatter
+		for _, w := range watched {
+			if w.Path == abs || strings.HasPrefix(w.Path, abs+"/") {
+				filtered = append(filtered, w)
+			}
+		}
+		watched = filtered
+	}
+
+	if len(watched) == 0 {
+		fmt.Println("no watched projects")
+		return
+	}
+
+	// Get running tasks from daemon
+	var runningTasks []daemon.TaskInfo
+	if daemon.IsDaemonRunning() {
+		runningTasks, _ = daemon.SendPsRequest()
+	}
+
+	// Count running tasks per project
+	runningByProject := make(map[string]int)
+	for _, t := range runningTasks {
+		runningByProject[t.Project]++
+	}
+
+	// Print header
+	fmt.Printf("%-50s %-8s %s\n", "PATH", "TASKS", "STATUS")
+	fmt.Printf("%s\n", strings.Repeat("-", 70))
+
+	for _, w := range watched {
+		todoCount := 0
+		status := "idle"
+
+		proj, err := project.Load(w.Path)
+		if err != nil {
+			fmt.Printf("%-50s %-8s %s\n", truncate(w.Path, 50), "?", fmt.Sprintf("error: %v", err))
+			continue
+		}
+
+		todos, _ := proj.LoadTodos()
+		todoCount = len(todos)
+
+		if n := runningByProject[w.Path]; n > 0 {
+			status = fmt.Sprintf("busy (%d running)", n)
+		}
+
+		fmt.Printf("%-50s %-8d %s\n", truncate(w.Path, 50), todoCount, status)
 	}
 }
 
