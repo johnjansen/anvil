@@ -53,6 +53,8 @@ func main() {
 		logCmd(os.Args[2:])
 	case "task":
 		taskCmd(os.Args[2:])
+	case "project":
+		projectCmd(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("anvil %s\n", version)
 	case "help", "-h", "--help":
@@ -83,6 +85,7 @@ Commands:
   status                   Show watched projects
   ps                       Show running tasks
   task <subcommand>        Task management commands
+  project <subcommand>     Project management commands
   version                  Show version
 
 Add options:
@@ -98,6 +101,9 @@ Task subcommands:
   log <name>                Show execution log for a task
   rm <name>                 Remove a task (kills if running)
   kill <name>               Kill a running task
+
+Project subcommands:
+  get [path]               Show project details (default: current directory)
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -806,6 +812,108 @@ func taskKillCmd(args []string) {
 	}
 
 	fmt.Printf("killed task: %s\n", args[0])
+}
+
+func projectCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil project <subcommand> [options]\n")
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "get":
+		projectGetCmd(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown project command: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+}
+
+func projectGetCmd(args []string) {
+	path := "."
+	if len(args) > 0 {
+		path = args[0]
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	// Check if project is initialized
+	if _, err := os.Stat(filepath.Join(abs, ".anvil", "todos")); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "not an anvil project: %s\n", abs)
+		os.Exit(1)
+	}
+
+	// Check watch status
+	watched := "no"
+	hash := projectHash(abs)
+	watchDir := filepath.Join(config.WatchedDir(), hash)
+	if entries, err := os.ReadDir(watchDir); err == nil && len(entries) > 0 {
+		watched = "yes"
+	}
+
+	// Load todos and count by priority
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	priorityCounts := make(map[int]int)
+	for _, t := range todos {
+		priorityCounts[t.Priority]++
+	}
+
+	// Print project details
+	fmt.Printf("Path:     %s\n", abs)
+	fmt.Printf("Watched:  %s\n", watched)
+	fmt.Printf("Tasks:    %d\n", len(todos))
+
+	if len(priorityCounts) > 0 {
+		// Print priority breakdown sorted
+		var priorities []int
+		for p := range priorityCounts {
+			priorities = append(priorities, p)
+		}
+		sort.Ints(priorities)
+		var parts []string
+		for _, p := range priorities {
+			parts = append(parts, fmt.Sprintf("p%d=%d", p, priorityCounts[p]))
+		}
+		fmt.Printf("          %s\n", strings.Join(parts, ", "))
+	}
+
+	// Show running tasks
+	if daemon.IsDaemonRunning() {
+		runningTasks, err := daemon.SendPsRequest()
+		if err == nil {
+			var projectTasks []daemon.TaskInfo
+			for _, t := range runningTasks {
+				if t.Project == abs {
+					projectTasks = append(projectTasks, t)
+				}
+			}
+			if len(projectTasks) > 0 {
+				fmt.Printf("\nRunning:\n")
+				for _, t := range projectTasks {
+					// Strip project path prefix from task name for cleaner display
+					name := t.Name
+					if strings.HasPrefix(name, abs+"/") {
+						name = strings.TrimPrefix(name, abs+"/")
+					}
+					fmt.Printf("  %-30s  PID %-8d  %s\n", name, t.PID, t.Elapsed)
+				}
+			}
+		}
+	}
 }
 
 func findTodo(todos []project.Todo, name string) *project.Todo {
