@@ -103,6 +103,7 @@ Task subcommands:
   kill <name>               Kill a running task
 
 Project subcommands:
+  create [path]            Initialize and watch a project in one step
   ls [-a|--all]            List watched projects (default: current directory)
   get [path]               Show project details (default: current directory)
 
@@ -823,6 +824,8 @@ func projectCmd(args []string) {
 	}
 
 	switch args[0] {
+	case "create":
+		projectCreateCmd(args[1:])
 	case "ls":
 		projectLsCmd(args[1:])
 	case "get":
@@ -832,6 +835,63 @@ func projectCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
 		os.Exit(1)
 	}
+}
+
+func projectCreateCmd(args []string) {
+	path := "."
+	if len(args) > 0 {
+		path = args[0]
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	// Initialize project .anvil/ structure
+	if err := project.Init(abs, tools.FS); err != nil {
+		log.Fatalf("failed to init project: %v", err)
+	}
+
+	// Register with daemon (watch)
+	if err := config.EnsureDir(); err != nil {
+		log.Fatalf("failed to create ~/.anvil: %v", err)
+	}
+
+	hash := projectHash(abs)
+	watchDir := filepath.Join(config.WatchedDir(), hash)
+
+	if entries, err := os.ReadDir(watchDir); err == nil && len(entries) > 0 {
+		fmt.Printf("created %s (already watched)\n", abs)
+		return
+	}
+
+	if err := os.MkdirAll(watchDir, 0755); err != nil {
+		log.Fatalf("failed to create watch dir: %v", err)
+	}
+
+	now := time.Now()
+	filename := now.Format("2006-01-02T15-04-05") + ".md"
+
+	frontmatter := watchFrontmatter{
+		Path:      abs,
+		WatchedAt: now,
+	}
+	data, err := yaml.Marshal(frontmatter)
+	if err != nil {
+		log.Fatalf("failed to marshal: %v", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.Write(data)
+	sb.WriteString("---\n")
+
+	if err := os.WriteFile(filepath.Join(watchDir, filename), []byte(sb.String()), 0644); err != nil {
+		log.Fatalf("failed to write watch file: %v", err)
+	}
+
+	fmt.Printf("created and watching %s\n", abs)
 }
 
 func projectLsCmd(args []string) {
