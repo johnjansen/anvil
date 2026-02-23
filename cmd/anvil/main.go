@@ -650,7 +650,7 @@ func taskLsCmd(args []string) {
 	}
 	runningByID := make(map[string]daemon.TaskInfo)
 	for _, t := range runningTasks {
-		runningByID[t.Name] = t
+		runningByID[fmt.Sprintf("%s/%s", t.Project, t.Name)] = t
 	}
 
 	type projectTodos struct {
