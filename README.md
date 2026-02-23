@@ -6,61 +6,62 @@ One daemon per machine. Many projects. The daemon is the central dispatcher — 
 
 ```
   project A/.anvil/         project B/.anvil/         project C/.anvil/
-  ├── todos/                ├── todos/                ├── todos/
-  │   ├── p0/               │   ├── p0/               │   ├── p0/
-  │   └── p1/               │   └── p1/               │   └── p1/
-  └── anvil.yaml            └── anvil.yaml            └── anvil.yaml
+  └── todos/                └── todos/                └── todos/
+      ├── p0/                   ├── p0/                   ├── p0/
+      └── p1/                   └── p1/                   └── p1/
         │                         │                         │
         └─────────────────────────┼─────────────────────────┘
                                   │ anvil watch
                                   ▼
                      ┌────────────────────────┐
-                     │     Daemon (singleton) │
-                     │       ~/.anvil/        │
-                     │                        │
-                     │  tick:                  │
-                     │   for each project:    │
-                     │    → cron match?       │
-                     │    → grab top N todos  │
-                     │    → shell out runner  │
+                     │    Daemon (singleton)   │
+                     │       ~/.anvil/         │
+                     │                         │
+                     │  tick:                   │
+                     │   for each project:     │
+                     │    → for each todo:     │
+                     │      → cron match?      │
+                     │      → shell out runner │
                      └────────────────────────┘
 ```
 
 1. Start the daemon once: `anvil serve`
 2. From any project, register it: `anvil watch`
-3. On every tick the daemon iterates all watched projects, checks each project's cron, and if it matches, grabs the top N todos (N from daemon config) and shells out the configured runner with each
-4. The daemon manages all running processes across all projects.
+3. Add recurring tasks: `anvil add -p 0 -s "*/30 * * * *" "Check GitHub for new issues and triage them"`
+4. On every tick the daemon iterates all watched projects, checks each todo's cron schedule, and runs matching tasks through the configured runner
+5. The daemon manages all running processes across all projects
 
 If a project is still busy processing todos when the next tick fires, that tick is skipped. This is intentional — the work matters more than the schedule. The cron is "when to check", not "guaranteed execution slot."
 
 ## Project Directory
 
-Each project has its own `.anvil/` with its schedule and work:
+Each project has a `.anvil/todos/` tree. Each todo is a markdown file with its own cron schedule in YAML frontmatter:
 
 ```
 <project>/.anvil/
-├── anvil.yaml          ← this project's schedule + priority
 └── todos/
-    ├── p0/             ← highest priority
-    │   ├── fix-bug.md
-    │   └── review-pr.md
+    ├── p0/                          ← highest priority
+    │   └── triage-github-issues.md
     ├── p1/
-    └── ...p9/          ← lowest priority
+    │   └── review-stale-prs.md
+    └── ...                          ← up to p9 (lowest priority)
 ```
 
-Todos are just files. The daemon works through all of them — highest priority, oldest first — running up to `max_todos` in parallel. If there are 6 todos and `max_todos: 2`, it runs 2, waits for both to finish, runs the next 2, waits, runs the last 2. All 6 complete before this project's tick is done.
+Priority directories are created on-demand when tasks are added. You don't need to pre-create them.
 
-Todos are **deleted after successful execution**. If a todo fails, it stays in place for the next tick.
+Todos are just files. The daemon works through all matching ones — highest priority, oldest first — running up to `max_todos` in parallel. If there are 6 matching todos and `max_todos: 2`, it runs 2, waits for both to finish, runs the next 2, waits, runs the last 2.
 
-### Project Config
+### Todo Format
 
-```yaml
-# <project>/.anvil/anvil.yaml
-schedule: "*/15 * * * *"   # when this project is eligible to run
-priority: 0                # cross-project priority (lower = first)
+```markdown
+---
+schedule: "*/30 * * * *"
+---
+Check GitHub for new untriaged issues. For each unlabelled issue,
+read the content and apply appropriate labels (bug, feature, docs, question).
 ```
 
-The schedule controls *when* the daemon checks this project. The priority controls *which project goes first* when multiple projects are due on the same tick.
+The schedule is a standard 5-field cron expression. The body is passed directly to the configured runner command.
 
 ## Daemon Directory
 
@@ -102,12 +103,34 @@ max_todos: 1                # max parallel todos per project (all todos still ge
 Single binary. One subcommand starts the daemon, everything else talks to it.
 
 ```
-anvil serve              Start the daemon (run once per machine)
-anvil watch [path]       Register a project directory with the daemon
-anvil unwatch [path]     Stop watching a project directory
-anvil status             Show all watched projects and their state
-anvil ps                 Show currently executing tasks
+anvil init [path]                    Initialize a project (.anvil/ and .claude/skills/)
+anvil serve                          Start the daemon (run once per machine)
+anvil watch [path]                   Register a project directory with the daemon
+anvil unwatch [path]                 Stop watching a project directory
+anvil add [options] <task>           Add a recurring todo to the current project
+anvil list                           List all todos in the current project
+anvil get <name>                     Show details of a todo by name
+anvil delete <name>                  Delete a todo by name
+anvil status                         Show all watched projects and their state
+anvil ps                             Show currently executing tasks
 ```
+
+### anvil add
+
+```bash
+# Add a high-priority task that runs every 30 minutes
+anvil add -p 0 -s "*/30 * * * *" "Check GitHub for new issues and triage them"
+
+# Add a normal-priority task that runs weekday mornings
+anvil add -p 1 -s "0 9 * * 1-5" "Review stale PRs and nudge authors"
+
+# Defaults: priority 1, schedule every minute
+anvil add "Run the health check"
+```
+
+Options:
+- `-p`, `--priority` — Task priority 0-9 (default: 1)
+- `-s`, `--schedule` — Cron schedule (default: `* * * * *`)
 
 ### Typical Usage
 
@@ -115,17 +138,17 @@ anvil ps                 Show currently executing tasks
 # On the machine, once:
 anvil serve
 
-# In any project directory (e.g. from an LLM session):
+# In any project directory:
 anvil watch
+anvil add -p 0 -s "*/30 * * * *" "Check GitHub for new issues and triage them"
+anvil add -p 1 -s "0 9 * * 1-5" "Review stale PRs and nudge authors"
 
 # Done. The daemon picks up todos on schedule.
-# Add more projects the same way:
-cd /other/project && anvil watch
 ```
 
 ## Cron Format
 
-Standard 5-field cron in each project's `.anvil/anvil.yaml`:
+Standard 5-field cron, set per-todo in YAML frontmatter:
 
 ```
 ┌─── minute (0-59)

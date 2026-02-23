@@ -10,21 +10,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnjansen/anvil-go/internal/config"
-	"github.com/johnjansen/anvil-go/internal/cron"
-	"github.com/johnjansen/anvil-go/internal/project"
-	"github.com/johnjansen/anvil-go/internal/runner"
+	"github.com/johnjansen/anvil/internal/config"
+	"github.com/johnjansen/anvil/internal/cron"
+	"github.com/johnjansen/anvil/internal/project"
+	"github.com/johnjansen/anvil/internal/runner"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Daemon struct {
-	config *config.Config
-	runner *runner.Runner
-	busy   map[string]bool
-	mu     sync.Mutex
-	stop   chan struct{}
-	done   chan struct{}
+	config   *config.Config
+	runner   *runner.Runner
+	busy     map[string]bool
+	mu       sync.Mutex
+	stop     chan struct{}
+	done     chan struct{}
+	lastTick time.Time // last minute we processed (truncated to minute)
 }
 
 func New(cfg *config.Config) *Daemon {
@@ -63,8 +64,19 @@ func (d *Daemon) Stop() {
 }
 
 func (d *Daemon) tick(now time.Time) {
+	thisMinute := now.Truncate(time.Minute)
+
+	// Only evaluate cron schedules once per minute
+	cronTick := !thisMinute.Equal(d.lastTick)
+	if cronTick {
+		d.lastTick = thisMinute
+	}
+
 	paths := loadWatchedPaths()
 	if len(paths) == 0 {
+		if cronTick {
+			log.Printf("tick %s — no watched projects", now.Format("15:04:05"))
+		}
 		return
 	}
 
@@ -79,37 +91,71 @@ func (d *Daemon) tick(now time.Time) {
 		projects = append(projects, proj)
 	}
 
-	// Sort by priority (lower number = first)
+	// Sort projects alphabetically by path (no project priority)
 	sort.Slice(projects, func(i, j int) bool {
-		return projects[i].Config.Priority < projects[j].Config.Priority
+		return projects[i].Path < projects[j].Path
 	})
 
+	// On non-cron ticks, log heartbeat and any busy projects
+	if !cronTick {
+		var busyNames []string
+		for _, proj := range projects {
+			d.mu.Lock()
+			busy := d.busy[proj.Path]
+			d.mu.Unlock()
+			if busy {
+				busyNames = append(busyNames, filepath.Base(proj.Path))
+			}
+		}
+		if len(busyNames) > 0 {
+			log.Printf("tick %s — waiting on: %s", now.Format("15:04:05"), strings.Join(busyNames, ", "))
+		} else {
+			log.Printf("tick %s — idle", now.Format("15:04:05"))
+		}
+		return
+	}
+
+	totalTodos := 0
+	totalMatched := 0
+	dispatched := 0
+
 	for _, proj := range projects {
+		projName := filepath.Base(proj.Path)
+
 		// Skip if busy from a previous tick
 		d.mu.Lock()
 		busy := d.busy[proj.Path]
 		d.mu.Unlock()
 		if busy {
-			log.Printf("skip %s: still busy", proj.Path)
+			log.Printf("  %s: busy (previous dispatch still running)", projName)
 			continue
 		}
 
-		// Check cron
-		if proj.Config.Schedule == "" || !cron.Matches(proj.Config.Schedule, now) {
-			continue
-		}
-
-		// Load todos
-		todos, err := proj.LoadTodos()
+		// Load all todos
+		allTodos, err := proj.LoadTodos()
 		if err != nil {
-			log.Printf("skip %s: %v", proj.Path, err)
+			log.Printf("  %s: error loading todos: %v", projName, err)
 			continue
 		}
+		totalTodos += len(allTodos)
+
+		// Select those whose schedule matches this minute
+		var todos []project.Todo
+		for _, t := range allTodos {
+			if t.Schedule != "" && cron.Matches(t.Schedule, thisMinute) {
+				todos = append(todos, t)
+			}
+		}
+		totalMatched += len(todos)
+
 		if len(todos) == 0 {
 			continue
 		}
 
-		log.Printf("processing %s: %d todos", proj.Path, len(todos))
+		for _, t := range todos {
+			log.Printf("  dispatch %s/%s (p%d, schedule=%q)", projName, t.Name, t.Priority, t.Schedule)
+		}
+		dispatched += len(todos)
 
 		d.mu.Lock()
 		d.busy[proj.Path] = true
@@ -117,6 +163,9 @@ func (d *Daemon) tick(now time.Time) {
 
 		go d.processProject(proj, todos)
 	}
+
+	log.Printf("tick %s — %d projects, %d todos, %d matched, %d dispatched",
+		now.Format("15:04:05"), len(projects), totalTodos, totalMatched, dispatched)
 }
 
 func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
@@ -150,7 +199,7 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 				ctx, cancel := context.WithTimeout(context.Background(), d.config.Timeout)
 				defer cancel()
 
-				output, err := d.runner.Run(ctx, t.Content)
+				output, err := d.runner.Run(ctx, proj.Path, t.ID, t.Content)
 				if err != nil {
 					log.Printf("fail %s: %s: %v", proj.Path, t.Name, err)
 				} else {

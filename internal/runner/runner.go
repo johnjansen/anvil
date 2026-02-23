@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,12 +23,21 @@ func New(command string, timeout time.Duration) *Runner {
 
 // Run executes the configured command with the todo content as an argument.
 // The content is shell-escaped and appended to the command string.
-func (r *Runner) Run(ctx context.Context, content string) (string, error) {
+// The command runs in the specified directory.
+// If sessionID is non-empty, --session-id is injected into the command.
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
+	command := r.Command
+	if sessionID != "" {
+		command += " --session-id " + sessionID
+	}
+
 	escaped := shellEscape(content)
-	cmd := exec.CommandContext(ctx, "sh", "-c", r.Command+" "+escaped)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command+" "+escaped)
+	cmd.Dir = dir
+	cmd.Env = cleanEnv()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -42,6 +52,18 @@ func (r *Runner) Run(ctx context.Context, content string) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+// cleanEnv returns the current environment with Claude-nesting vars removed.
+func cleanEnv() []string {
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return env
 }
 
 // shellEscape wraps content in single quotes with proper escaping.
