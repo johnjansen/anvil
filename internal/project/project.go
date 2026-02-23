@@ -2,6 +2,7 @@ package project
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,13 +27,24 @@ type Project struct {
 
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
-	Path     string // absolute path to the file
-	Name     string // filename
-	Priority int    // 0-9, from pN/ directory
-	Content  string // file contents (after front‑matter)
-	Schedule string // cron expression from front‑matter
-	ID       string // UUID for session tracking
-	Resume   *bool  // nil = default (true for recurring, false for one-shot), explicit overrides
+	Path          string // absolute path to the file
+	Name          string // filename
+	Priority      int    // 0-9, from pN/ directory
+	Content       string // file contents (after front‑matter)
+	Schedule      string // cron expression from front‑matter
+	ID            string // UUID for session tracking
+	Resume        *bool  // nil = default (true for recurring, false for one-shot), explicit overrides
+	MaxConcurrent int    // max simultaneous instances (0 = default 1)
+}
+
+// RunRecord persists metadata for a single task dispatch, written after completion.
+// It links a task ID to the Claude session ID and child process PID used for that run.
+type RunRecord struct {
+	RunID     string    `json:"run_id"`
+	TaskID    string    `json:"task_id"`
+	SessionID string    `json:"session_id"`
+	PID       int       `json:"pid"`
+	Started   time.Time `json:"started"`
 }
 
 // Load reads a project's .anvil/anvil.yaml and returns a Project
@@ -80,6 +93,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			schedule := ""
 			id := ""
 			var resume *bool
+			maxConcurrent := 0
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -89,26 +103,29 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 					fm := parts[0]
 					body = parts[1]
 					var fmData struct {
-						Schedule string `yaml:"schedule"`
-						ID       string `yaml:"id"`
-						Resume   *bool  `yaml:"resume"`
+						Schedule      string `yaml:"schedule"`
+						ID            string `yaml:"id"`
+						Resume        *bool  `yaml:"resume"`
+						MaxConcurrent int    `yaml:"max_concurrent"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
 						id = fmData.ID
 						resume = fmData.Resume
+						maxConcurrent = fmData.MaxConcurrent
 					}
 				}
 			}
 
 			todos = append(todos, Todo{
-				Path:     fp,
-				Name:     e.Name(),
-				Priority: pri,
-				Content:  body,
-				Schedule: schedule,
-				ID:       id,
-				Resume:   resume,
+				Path:          fp,
+				Name:          e.Name(),
+				Priority:      pri,
+				Content:       body,
+				Schedule:      schedule,
+				ID:            id,
+				Resume:        resume,
+				MaxConcurrent: maxConcurrent,
 			})
 		}
 	}
@@ -218,11 +235,91 @@ func newUUID() string {
 // SessionPath returns the path to the claude session JSONL for a todo.
 // Claude stores sessions at ~/.claude/projects/<slug>/<session-id>.jsonl
 // where slug is the project path with / and _ replaced by -.
+// Deprecated: use SessionPathBySessionID for per-run session lookup.
 func SessionPath(projectPath string, todoID string) string {
+	return SessionPathBySessionID(projectPath, todoID)
+}
+
+// SessionPathBySessionID returns the path to the claude session JSONL for a given session ID.
+func SessionPathBySessionID(projectPath string, sessionID string) string {
 	home, _ := os.UserHomeDir()
 	slug := strings.ReplaceAll(projectPath, "/", "-")
 	slug = strings.ReplaceAll(slug, "_", "-")
-	return filepath.Join(home, ".claude", "projects", slug, todoID+".jsonl")
+	return filepath.Join(home, ".claude", "projects", slug, sessionID+".jsonl")
+}
+
+// runsDir returns the path to the runs directory for a task.
+func runsDir(projectPath, taskID string) string {
+	return filepath.Join(projectPath, ".anvil", "runs", taskID)
+}
+
+// RunPath returns the path to a specific run record JSON file.
+func RunPath(projectPath, taskID, runID string) string {
+	return filepath.Join(runsDir(projectPath, taskID), runID+".json")
+}
+
+// CurrentRunPath returns the path to the "current" run ID file for a task.
+func CurrentRunPath(projectPath, taskID string) string {
+	return filepath.Join(runsDir(projectPath, taskID), "current")
+}
+
+// WriteRunRecord writes a run record and updates the "current" pointer.
+func WriteRunRecord(projectPath string, rec RunRecord) error {
+	dir := runsDir(projectPath, rec.TaskID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating runs dir: %w", err)
+	}
+
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshaling run record: %w", err)
+	}
+
+	recPath := filepath.Join(dir, rec.RunID+".json")
+	if err := os.WriteFile(recPath, data, 0644); err != nil {
+		return fmt.Errorf("writing run record: %w", err)
+	}
+
+	// Update "current" pointer to the latest runID
+	currentPath := filepath.Join(dir, "current")
+	return os.WriteFile(currentPath, []byte(rec.RunID), 0644)
+}
+
+// ReadCurrentRunRecord reads the most recent run record for a task.
+func ReadCurrentRunRecord(projectPath, taskID string) (RunRecord, error) {
+	currentPath := CurrentRunPath(projectPath, taskID)
+	runIDBytes, err := os.ReadFile(currentPath)
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("reading current run pointer: %w", err)
+	}
+
+	runID := strings.TrimSpace(string(runIDBytes))
+	recPath := RunPath(projectPath, taskID, runID)
+	data, err := os.ReadFile(recPath)
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("reading run record: %w", err)
+	}
+
+	var rec RunRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return RunRecord{}, fmt.Errorf("parsing run record: %w", err)
+	}
+	return rec, nil
+}
+
+// LatestSessionID resolves the session ID for the most recent run of a task.
+// Falls back to the task ID itself for backward compatibility with resume=true tasks
+// that predate run records.
+func LatestSessionID(projectPath, taskID string) (string, error) {
+	rec, err := ReadCurrentRunRecord(projectPath, taskID)
+	if err == nil {
+		return rec.SessionID, nil
+	}
+	// Fall back to task ID (old behavior: resume tasks used todo ID as session ID)
+	if taskID != "" {
+		return taskID, nil
+	}
+	return "", fmt.Errorf("no run record and no task ID")
 }
 
 var (
