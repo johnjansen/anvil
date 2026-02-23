@@ -166,6 +166,7 @@ anvil log [-f] <name>                Show session log for a todo (-f to follow)
 anvil logs [<name>]                  Raw worker output (live if running, last run if not)
 anvil status                         Show all watched projects and their state
 anvil ps                             Show currently executing tasks
+anvil stop-on-idle                   Drain running tasks then exit the daemon
 anvil task <subcommand>              Task management commands
 anvil project <subcommand>           Project management commands
 ```
@@ -201,6 +202,7 @@ anvil task get <name>                Show task details including run status
 anvil task log [-f] <name>           Show execution log (-f to follow)
 anvil task rm <name>                 Remove a task (kills if running)
 anvil task kill <name>               Kill a running task
+anvil task stop-on-idle <name>       Finish current run then stop rescheduling task
 ```
 
 ### anvil project

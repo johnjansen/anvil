@@ -176,6 +176,17 @@ anvil task kill <name>
 
 Sends a kill request to the daemon via unix socket. The daemon cancels the task's context directly for immediate termination. Accepts a task name or UUID.
 
+## Stop on Idle
+
+```bash
+anvil stop-on-idle                   # daemon will finish running tasks then exit
+anvil task stop-on-idle <name>       # task will not be rescheduled after its current run
+```
+
+`anvil stop-on-idle` puts the whole daemon into drain mode — it finishes all currently running tasks and then exits cleanly. Useful for graceful shutdowns.
+
+`anvil task stop-on-idle <name>` marks a single task: it completes its current run but is not rescheduled. Other tasks continue normally.
+
 ## Task Subcommands
 
 Full task management via `anvil task`:
@@ -187,6 +198,7 @@ anvil task get <name>                # show task details including run status
 anvil task log [-f] <name>           # show execution log (-f to follow)
 anvil task rm <name>                 # remove task (kills if running)
 anvil task kill <name>               # kill a running task
+anvil task stop-on-idle <name>       # finish current run then stop rescheduling
 ```
 
 ## Project Subcommands
