@@ -106,6 +106,7 @@ Project subcommands:
   create [path]            Initialize and watch a project in one step
   ls [-a|--all]            List watched projects (default: current directory)
   get [path]               Show project details (default: current directory)
+  rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -830,6 +831,8 @@ func projectCmd(args []string) {
 		projectLsCmd(args[1:])
 	case "get":
 		projectGetCmd(args[1:])
+	case "rm":
+		projectRmCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown project command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -892,6 +895,54 @@ func projectCreateCmd(args []string) {
 	}
 
 	fmt.Printf("created and watching %s\n", abs)
+}
+
+func projectRmCmd(args []string) {
+	path := "."
+	clean := false
+
+	var filtered []string
+	for _, a := range args {
+		switch a {
+		case "--clean":
+			clean = true
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) > 0 {
+		path = filtered[0]
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	hash := projectHash(abs)
+	watchDir := filepath.Join(config.WatchedDir(), hash)
+
+	if _, err := os.Stat(watchDir); os.IsNotExist(err) {
+		fmt.Printf("not watching %s\n", abs)
+		return
+	}
+
+	if err := os.RemoveAll(watchDir); err != nil {
+		log.Fatalf("failed to unwatch: %v", err)
+	}
+
+	fmt.Printf("unwatched %s\n", abs)
+
+	if clean {
+		anvilDir := filepath.Join(abs, ".anvil")
+		if _, err := os.Stat(anvilDir); os.IsNotExist(err) {
+			return
+		}
+		if err := os.RemoveAll(anvilDir); err != nil {
+			log.Fatalf("failed to clean .anvil/: %v", err)
+		}
+		fmt.Printf("removed %s\n", anvilDir)
+	}
 }
 
 func projectLsCmd(args []string) {
