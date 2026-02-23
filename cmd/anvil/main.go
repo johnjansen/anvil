@@ -54,6 +54,8 @@ func main() {
 		logCmd(os.Args[2:])
 	case "logs":
 		logsCmd(os.Args[2:])
+	case "stop-on-idle":
+		stopOnIdleCmd()
 	case "task":
 		taskCmd(os.Args[2:])
 	case "project":
@@ -88,6 +90,7 @@ Commands:
   logs [<name>]            Follow raw worker output (all tasks if no name given)
   status                   Show watched projects
   ps                       Show running tasks
+  stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
   version                  Show version
@@ -105,6 +108,7 @@ Task subcommands:
   log <name>                Show execution log for a task
   rm <name>                 Remove a task (kills if running)
   kill <name>               Kill a running task
+  stop-on-idle <name>       Finish current run then stop rescheduling task
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -161,9 +165,13 @@ func serveCmd() {
 
 	go d.Run()
 
-	sig := <-sigCh
-	log.Printf("received %v, shutting down", sig)
-	d.Stop()
+	select {
+	case sig := <-sigCh:
+		log.Printf("received %v, shutting down", sig)
+		d.Stop()
+	case <-d.Done():
+		// daemon stopped itself (e.g. stop-on-idle drain completed)
+	}
 }
 
 func watchCmd(args []string) {
@@ -259,6 +267,13 @@ func statusCmd() {
 		log.Fatalf("failed to read watched: %v", err)
 	}
 
+	// Show daemon drain state if running
+	if daemon.IsDaemonRunning() {
+		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
+			fmt.Println("daemon: draining (stop-on-idle active)")
+		}
+	}
+
 	if len(watched) == 0 {
 		fmt.Println("no watched projects")
 		return
@@ -279,6 +294,11 @@ func psCmd() {
 	if !daemon.IsDaemonRunning() {
 		fmt.Println("daemon not running")
 		return
+	}
+
+	// Show drain status header if applicable
+	if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
+		fmt.Println("(draining — no new tasks will be dispatched)")
 	}
 
 	tasks, err := daemon.SendPsRequest()
@@ -513,6 +533,8 @@ func taskCmd(args []string) {
 		taskRmCmd(args[1:])
 	case "kill":
 		taskKillCmd(args[1:])
+	case "stop-on-idle":
+		taskStopOnIdleCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -867,6 +889,60 @@ func taskKillCmd(args []string) {
 	}
 
 	fmt.Printf("killed task: %s\n", args[0])
+}
+
+func stopOnIdleCmd() {
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	if err := daemon.SendDrainRequest(); err != nil {
+		fmt.Printf("failed to set stop-on-idle: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("stop-on-idle: daemon will finish running tasks then exit")
+}
+
+func taskStopOnIdleCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task stop-on-idle <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	if err := daemon.SendDrainTaskRequest(todo.ID); err != nil {
+		fmt.Printf("failed to set stop-on-idle for task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("stop-on-idle: task %s will not be rescheduled after its current run\n", todo.Name)
 }
 
 func projectCmd(args []string) {

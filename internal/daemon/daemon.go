@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
@@ -31,18 +32,22 @@ type workItem struct {
 }
 
 type Daemon struct {
-	config     *config.Config
-	runner     *runner.Runner
-	workQueue  chan workItem
-	inFlight   map[string]bool // taskKey -> true; set when queued, cleared when done
-	inFlightMu sync.Mutex
-	stop       chan struct{}
-	done       chan struct{}
-	lastTick   time.Time // last minute we processed (truncated to minute)
-	socketPath string
-	tasks      map[string]*RunningTask
-	tasksMu    sync.RWMutex
-	httpServer *http.Server
+	config      *config.Config
+	runner      *runner.Runner
+	workQueue   chan workItem
+	inFlight    map[string]bool // taskKey -> true; set when queued, cleared when done
+	inFlightMu  sync.Mutex
+	stop        chan struct{}
+	stopOnce    sync.Once
+	done        chan struct{}
+	lastTick    time.Time // last minute we processed (truncated to minute)
+	socketPath  string
+	tasks       map[string]*RunningTask
+	tasksMu     sync.RWMutex
+	httpServer  *http.Server
+	draining    int32           // atomic: 1 = stop-on-idle mode active
+	drainedTasks map[string]bool // taskID -> true: per-task stop-on-idle
+	drainedMu   sync.Mutex
 }
 
 type RunningTask struct {
@@ -74,14 +79,15 @@ func New(cfg *config.Config) *Daemon {
 		poolSize = 1
 	}
 	return &Daemon{
-		config:     cfg,
-		runner:     runner.New(cfg.Runners, cfg.Timeout),
-		workQueue:  make(chan workItem, poolSize*4),
-		inFlight:   make(map[string]bool),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		socketPath: filepath.Join(config.Dir(), "daemon.sock"),
-		tasks:      make(map[string]*RunningTask),
+		config:       cfg,
+		runner:       runner.New(cfg.Runners, cfg.Timeout),
+		workQueue:    make(chan workItem, poolSize*4),
+		inFlight:     make(map[string]bool),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
+		socketPath:   filepath.Join(config.Dir(), "daemon.sock"),
+		tasks:        make(map[string]*RunningTask),
+		drainedTasks: make(map[string]bool),
 	}
 }
 
@@ -129,8 +135,15 @@ func (d *Daemon) Run() {
 }
 
 func (d *Daemon) Stop() {
-	close(d.stop)
+	d.stopOnce.Do(func() {
+		close(d.stop)
+	})
 	<-d.done
+}
+
+// Done returns a channel that is closed when the daemon has fully stopped.
+func (d *Daemon) Done() <-chan struct{} {
+	return d.done
 }
 
 // worker pulls work items from the queue and executes them one at a time.
@@ -148,6 +161,24 @@ func (d *Daemon) worker(id int) {
 // runTask executes a single todo task and handles all bookkeeping.
 func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
+
+	// Drain completion check: registered first so it runs LAST (LIFO).
+	// After all other defers clean up tasks/inFlight maps, check whether
+	// we are draining and everything has finished — if so, trigger stop.
+	defer func() {
+		if atomic.LoadInt32(&d.draining) == 1 {
+			d.tasksMu.RLock()
+			tasksRunning := len(d.tasks)
+			d.tasksMu.RUnlock()
+			d.inFlightMu.Lock()
+			queued := len(d.inFlight)
+			d.inFlightMu.Unlock()
+			if tasksRunning == 0 && queued == 0 {
+				dlog.Info("drain complete — all tasks finished, stopping daemon")
+				go d.Stop()
+			}
+		}
+	}()
 
 	// Clear in-flight entry when the task completes
 	defer func() {
@@ -286,6 +317,9 @@ func (d *Daemon) startSocketServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ps", d.handlePs)
 	mux.HandleFunc("/kill", d.handleKill)
+	mux.HandleFunc("/drain", d.handleDrain)
+	mux.HandleFunc("/drain/task", d.handleDrainTask)
+	mux.HandleFunc("/status", d.handleStatus)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -371,6 +405,77 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 	found.Cancel()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
+}
+
+// DaemonStatus holds runtime state about the daemon.
+type DaemonStatus struct {
+	Draining bool `json:"draining"`
+}
+
+func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status := DaemonStatus{
+		Draining: atomic.LoadInt32(&d.draining) == 1,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+func (d *Daemon) handleDrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	atomic.StoreInt32(&d.draining, 1)
+	dlog.Info("stop-on-idle activated — daemon will drain and exit when all tasks finish")
+
+	// If nothing is running or queued right now, stop immediately.
+	d.tasksMu.RLock()
+	tasksRunning := len(d.tasks)
+	d.tasksMu.RUnlock()
+	d.inFlightMu.Lock()
+	queued := len(d.inFlight)
+	d.inFlightMu.Unlock()
+	if tasksRunning == 0 && queued == 0 {
+		dlog.Info("drain complete — no tasks running, stopping daemon")
+		go d.Stop()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "draining"})
+}
+
+// DrainTaskRequest is the JSON payload for /drain/task.
+type DrainTaskRequest struct {
+	ID string `json:"id"`
+}
+
+func (d *Daemon) handleDrainTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req DrainTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+
+	d.drainedMu.Lock()
+	d.drainedTasks[req.ID] = true
+	d.drainedMu.Unlock()
+
+	dlog.Info("stop-on-idle set for task %s — will not reschedule after current run", req.ID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "drained", "id": req.ID})
 }
 
 func (d *Daemon) tick(now time.Time) {
@@ -481,6 +586,27 @@ func (d *Daemon) tick(now time.Time) {
 		}
 		d.inFlight[taskKey] = true
 		d.inFlightMu.Unlock()
+
+		// Skip dispatch if daemon-wide drain is active
+		if atomic.LoadInt32(&d.draining) == 1 {
+			dlog.Info("skip %s/%s — draining", projName, pt.todo.Name)
+			d.inFlightMu.Lock()
+			delete(d.inFlight, taskKey)
+			d.inFlightMu.Unlock()
+			continue
+		}
+
+		// Skip dispatch if this specific task is marked stop-on-idle
+		d.drainedMu.Lock()
+		taskDrained := d.drainedTasks[pt.todo.ID]
+		d.drainedMu.Unlock()
+		if taskDrained {
+			dlog.Info("skip %s/%s — stop-on-idle set", projName, pt.todo.Name)
+			d.inFlightMu.Lock()
+			delete(d.inFlight, taskKey)
+			d.inFlightMu.Unlock()
+			continue
+		}
 
 		dlog.Dispatch(projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
 
@@ -636,6 +762,60 @@ func SendPsRequest() ([]TaskInfo, error) {
 	}
 
 	return tasks, nil
+}
+
+// SendStatusRequest queries the daemon's /status endpoint.
+func SendStatusRequest() (*DaemonStatus, error) {
+	resp, err := socketClient().Get("http://daemon/status")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon request failed: %s", resp.Status)
+	}
+
+	var status DaemonStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+// SendDrainRequest tells the daemon to stop-on-idle (daemon-wide).
+func SendDrainRequest() error {
+	resp, err := socketClient().Post("http://daemon/drain", "application/json", bytes.NewBufferString("{}"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon drain failed: %s", string(body))
+	}
+	return nil
+}
+
+// SendDrainTaskRequest marks a specific task (by ID) for stop-on-idle.
+func SendDrainTaskRequest(id string) error {
+	data, err := json.Marshal(DrainTaskRequest{ID: id})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/drain/task", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon drain task failed: %s", string(body))
+	}
+	return nil
 }
 
 // SendKillRequest sends a kill request to the daemon
