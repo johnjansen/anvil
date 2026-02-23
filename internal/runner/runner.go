@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,19 +34,49 @@ func New(commands []string, timeout time.Duration) *Runner {
 //
 // taskLabel is a human-readable "project/task" string used in log output.
 //
+// logDir, if non-empty, is the directory where a raw log file will be written
+// (stdout+stderr teed in real time). The file is named <runID>.log. Pass empty
+// string to skip log file creation (behaviour identical to before).
+//
 // onStart, if non-nil, is called with the child process PID right after the
 // process starts (before waiting for it to complete). This allows callers to
 // record the PID while the task is running.
 //
 // Returns the actual session ID used (either the passed-in sessionID for resume,
-// or a freshly generated one) and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, content string, taskLabel string, onStart func(pid int)) (usedSessionID string, err error) {
+// or a freshly generated one), the log file path (empty if no log was written),
+// and any error.
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, content string, taskLabel string, logDir string, onStart func(pid int)) (usedSessionID string, logPath string, err error) {
 	var lastErr error
 	var lastStderr string
 
 	// Safety guard: never pass --resume with an empty session ID
 	if resume && sessionID == "" {
 		resume = false
+	}
+
+	// One log file is shared across all runner attempts for this Run() call.
+	// It is opened before the first attempt so that output from every attempt
+	// is captured, and closed via defer when Run() returns.
+	var logFile *os.File
+	if logDir != "" {
+		if mkErr := os.MkdirAll(logDir, 0755); mkErr != nil {
+			log.Printf("runner [%s] failed to create log dir %s: %v", taskLabel, logDir, mkErr)
+		} else {
+			// Use a random run ID for the log filename since a stable name is
+			// not required at this layer.
+			var b [8]byte
+			rand.Read(b[:])
+			runID := fmt.Sprintf("%x", b[:])
+			lp := filepath.Join(logDir, runID+".log")
+			f, fErr := os.Create(lp)
+			if fErr != nil {
+				log.Printf("runner [%s] failed to create log file %s: %v", taskLabel, lp, fErr)
+			} else {
+				logFile = f
+				logPath = lp
+				defer logFile.Close()
+			}
+		}
 	}
 
 	for i, command := range r.Commands {
@@ -67,8 +99,13 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		cmd.Env = cleanEnv()
 
 		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		if logFile != nil {
+			cmd.Stdout = io.MultiWriter(&stdout, logFile)
+			cmd.Stderr = io.MultiWriter(&stderr, logFile)
+		} else {
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+		}
 
 		if err := cmd.Start(); err != nil {
 			lastErr = err
@@ -85,7 +122,7 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		waitErr := cmd.Wait()
 		if waitErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				return "", fmt.Errorf("timed out after %s", r.Timeout)
+				return "", logPath, fmt.Errorf("timed out after %s", r.Timeout)
 			}
 			lastErr = waitErr
 			lastStderr = stderr.String()
@@ -97,10 +134,10 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 			log.Printf("runner[%d] output [%s]: %s", i, taskLabel, out)
 		}
 		log.Printf("runner[%d] [%s] succeeded: %s", i, taskLabel, command)
-		return actualSessionID, nil
+		return actualSessionID, logPath, nil
 	}
 
-	return "", fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
+	return "", logPath, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
 }
 
 // cleanEnv returns the current environment with Claude-nesting guard vars removed.
