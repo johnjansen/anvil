@@ -140,11 +140,11 @@ Shows the session log (JSONL) for a task's most recent execution. Accepts a task
 ## Raw Worker Logs
 
 ```bash
-anvil logs                 # follow raw output from all running tasks
-anvil logs <name>          # follow raw output for a specific task
+anvil logs                 # multiplex raw output from all running tasks
+anvil logs <name>          # raw output for a specific task (live or last completed)
 ```
 
-The `logs` command shows raw stdout/stderr output from worker processes. Without an argument, it multiplexes output from all running tasks with task name prefixes. With a task name, it follows the raw log for that specific task.
+The `logs` command shows raw stdout/stderr output from worker processes. Without an argument, it multiplexes output from all currently running tasks with task name prefixes, exiting when all tasks complete. With a task name, it follows the live raw log if the task is running, or prints the most recent completed run's raw log if it has already finished.
 
 ## Running Tasks
 
