@@ -528,7 +528,7 @@ func taskCmd(args []string) {
 	case "create":
 		taskCreateCmd(args[1:])
 	case "ls":
-		taskLsCmd()
+		taskLsCmd(args[1:])
 	case "get":
 		taskGetCmd(args[1:])
 	case "log":
@@ -608,33 +608,85 @@ func taskCreateCmd(args []string) {
 	fmt.Printf("added %s\n", relPath)
 }
 
-func taskLsCmd() {
-	abs, err := filepath.Abs(".")
-	if err != nil {
-		log.Fatalf("bad path: %v", err)
+func taskLsCmd(args []string) {
+	allProjects := false
+	for _, a := range args {
+		if a == "--all" || a == "-a" {
+			allProjects = true
+		}
 	}
 
-	proj, err := project.Load(abs)
-	if err != nil {
-		log.Fatalf("failed to load project: %v", err)
+	// Gather running tasks once
+	var runningTasks []daemon.TaskInfo
+	if daemon.IsDaemonRunning() {
+		runningTasks, _ = daemon.SendPsRequest()
+	}
+	runningByID := make(map[string]daemon.TaskInfo)
+	for _, t := range runningTasks {
+		runningByID[t.Name] = t
 	}
 
-	todos, err := proj.LoadTodos()
-	if err != nil {
-		log.Fatalf("failed to load todos: %v", err)
+	type projectTodos struct {
+		path  string
+		todos []project.Todo
 	}
 
-	if len(todos) == 0 {
+	var projects []projectTodos
+
+	if allProjects {
+		watched, err := loadAllWatched()
+		if err != nil {
+			log.Fatalf("failed to read watched: %v", err)
+		}
+		for _, w := range watched {
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				continue
+			}
+			todos, _ := proj.LoadTodos()
+			projects = append(projects, projectTodos{path: w.Path, todos: todos})
+		}
+	} else {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		proj, err := project.Load(abs)
+		if err != nil {
+			log.Fatalf("failed to load project: %v", err)
+		}
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			log.Fatalf("failed to load todos: %v", err)
+		}
+		projects = append(projects, projectTodos{path: abs, todos: todos})
+	}
+
+	total := 0
+	for _, p := range projects {
+		total += len(p.todos)
+	}
+	if total == 0 {
 		fmt.Println("no tasks")
 		return
 	}
 
-	for _, t := range todos {
-		preview := strings.TrimSpace(t.Content)
-		if len(preview) > 60 {
-			preview = preview[:60] + "..."
+	for _, p := range projects {
+		if allProjects && len(p.todos) > 0 {
+			fmt.Printf("%s\n", p.path)
 		}
-		fmt.Printf("p%d  %-14s  %-40s  %s\n", t.Priority, t.Schedule, t.Name, preview)
+		for _, t := range p.todos {
+			taskKey := fmt.Sprintf("%s/%s", p.path, t.Name)
+			status := "idle"
+			if _, ok := runningByID[taskKey]; ok {
+				status = "running"
+			}
+			preview := strings.TrimSpace(t.Content)
+			if len(preview) > 50 {
+				preview = preview[:50] + "..."
+			}
+			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s\n", t.Priority, t.Schedule, status, t.Name, preview)
+		}
 	}
 }
 
