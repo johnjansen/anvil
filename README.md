@@ -93,10 +93,13 @@ watched_at: 2026-02-23T13:07:49Z
 ```yaml
 # ~/.anvil/config.yaml
 tick_interval: 10s          # how often to check for work
-runner: "claude -p"         # command that runs todos (content passed as argument)
+runners:                    # ordered list of runner commands; first success wins
+  - "claude -p"
 timeout: 5m                 # max time per execution
 max_todos: 1                # max parallel todos per project (all todos still get processed)
 ```
+
+For backwards compatibility, a single `runner:` string is still accepted and treated as a one-entry list.
 
 ## CLI
 
@@ -107,12 +110,15 @@ anvil init [path]                    Initialize a project (.anvil/ and .claude/s
 anvil serve                          Start the daemon (run once per machine)
 anvil watch [path]                   Register a project directory with the daemon
 anvil unwatch [path]                 Stop watching a project directory
-anvil add [options] <task>           Add a recurring todo to the current project
+anvil add [options] <task>           Add a todo to the current project
 anvil list                           List all todos in the current project
 anvil get <name>                     Show details of a todo by name
 anvil delete <name>                  Delete a todo by name
+anvil log [-f] <name>                Show session log for a todo (-f to follow)
 anvil status                         Show all watched projects and their state
 anvil ps                             Show currently executing tasks
+anvil task <subcommand>              Task management commands
+anvil project <subcommand>           Project management commands
 ```
 
 ### anvil add
@@ -126,11 +132,38 @@ anvil add -p 1 -s "0 9 * * 1-5" "Review stale PRs and nudge authors"
 
 # Defaults: priority 1, schedule every minute
 anvil add "Run the health check"
+
+# One-shot task (no schedule — runs once on next tick, then gets deleted)
+anvil add -s "" "Migrate the database schema"
 ```
 
 Options:
 - `-p`, `--priority` — Task priority 0-9 (default: 1)
-- `-s`, `--schedule` — Cron schedule (default: `* * * * *`)
+- `-s`, `--schedule` — Cron schedule (default: `* * * * *`); pass `""` for one-shot
+
+### anvil task
+
+Full task lifecycle management:
+
+```
+anvil task create [options] <task>   Create a new task
+anvil task ls [-a|--all]             List tasks (--all for all watched projects)
+anvil task get <name>                Show task details including run status
+anvil task log [-f] <name>           Show execution log (-f to follow)
+anvil task rm <name>                 Remove a task (kills if running)
+anvil task kill <name>               Kill a running task
+```
+
+### anvil project
+
+Manage watched projects:
+
+```
+anvil project create [path]          Initialize and watch a project in one step
+anvil project ls [-a|--all]          List watched projects
+anvil project get [path]             Show project details and running tasks
+anvil project rm [path] [--clean]    Unwatch a project (--clean removes .anvil/ too)
+```
 
 ### Typical Usage
 
