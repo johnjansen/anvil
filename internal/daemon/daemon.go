@@ -193,6 +193,9 @@ func (d *Daemon) runTask(proj *project.Project, t project.Todo) {
 	if resume {
 		if latestSession, err := project.LatestSessionID(proj.Path, t.ID); err == nil {
 			sessionToResume = latestSession
+		} else {
+			// No prior run record — start a fresh session instead of resuming
+			resume = false
 		}
 	}
 

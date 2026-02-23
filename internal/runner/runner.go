@@ -40,6 +40,11 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 	var lastErr error
 	var lastStderr string
 
+	// Safety guard: never pass --resume with an empty session ID
+	if resume && sessionID == "" {
+		resume = false
+	}
+
 	for i, command := range r.Commands {
 		actualSessionID := sessionID
 		cmdStr := command

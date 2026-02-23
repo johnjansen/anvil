@@ -308,18 +308,13 @@ func ReadCurrentRunRecord(projectPath, taskID string) (RunRecord, error) {
 }
 
 // LatestSessionID resolves the session ID for the most recent run of a task.
-// Falls back to the task ID itself for backward compatibility with resume=true tasks
-// that predate run records.
+// Returns an error if no run record exists (caller should start a fresh session).
 func LatestSessionID(projectPath, taskID string) (string, error) {
 	rec, err := ReadCurrentRunRecord(projectPath, taskID)
 	if err == nil {
 		return rec.SessionID, nil
 	}
-	// Fall back to task ID (old behavior: resume tasks used todo ID as session ID)
-	if taskID != "" {
-		return taskID, nil
-	}
-	return "", fmt.Errorf("no run record and no task ID")
+	return "", fmt.Errorf("no run record found for task %s", taskID)
 }
 
 var (
