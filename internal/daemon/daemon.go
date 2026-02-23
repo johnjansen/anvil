@@ -477,9 +477,21 @@ func IsDaemonRunning() bool {
 	return true
 }
 
+// socketClient returns an HTTP client that dials the daemon's unix socket
+func socketClient() *http.Client {
+	sockPath := filepath.Join(config.Dir(), "daemon.sock")
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", sockPath)
+			},
+		},
+	}
+}
+
 // SendPsRequest queries the daemon's /ps endpoint and returns the running tasks
 func SendPsRequest() ([]TaskInfo, error) {
-	resp, err := http.Get("http://unix" + filepath.Join(config.Dir(), "daemon.sock") + "/ps")
+	resp, err := socketClient().Get("http://daemon/ps")
 	if err != nil {
 		return nil, err
 	}
@@ -504,7 +516,7 @@ func SendKillRequest(id string) error {
 		return err
 	}
 
-	resp, err := http.Post("http://unix"+filepath.Join(config.Dir(), "daemon.sock")+"/kill", "application/json", bytes.NewBuffer(data))
+	resp, err := socketClient().Post("http://daemon/kill", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return err
 	}
