@@ -137,6 +137,15 @@ anvil task log -f <name>   # follow mode
 
 Shows the session log (JSONL) for a task's most recent execution. Accepts a task name or UUID directly. Follow mode (`-f`) waits for the log file to appear and streams new output until the task completes or Ctrl+C is pressed.
 
+## Raw Worker Logs
+
+```bash
+anvil logs                 # follow raw output from all running tasks
+anvil logs <name>          # follow raw output for a specific task
+```
+
+The `logs` command shows raw stdout/stderr output from worker processes. Without an argument, it multiplexes output from all running tasks with task name prefixes. With a task name, it follows the raw log for that specific task.
+
 ## Running Tasks
 
 ```bash

@@ -134,6 +134,7 @@ anvil list                           List all todos in the current project
 anvil get <name>                     Show details of a todo by name
 anvil delete <name>                  Delete a todo by name
 anvil log [-f] <name>                Show session log for a todo (-f to follow)
+anvil logs [<name>]                  Follow raw worker output (all tasks if no name given)
 anvil status                         Show all watched projects and their state
 anvil ps                             Show currently executing tasks
 anvil task <subcommand>              Task management commands
