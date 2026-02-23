@@ -12,7 +12,7 @@ Anvil is a task dispatcher for LLM projects. It manages recurring and one-shot t
 Before adding tasks, the project needs to be initialized and watched:
 
 ```bash
-# Initialize — creates .anvil/todos/ and .claude/skills/
+# Initialize — creates .anvil/todos/, .claude/skills/, and ~/.anvil/config.yaml
 anvil init
 
 # Register with the daemon so it picks up your todos
@@ -74,6 +74,20 @@ resume: false          # force fresh session every run
 - `resume: true` (default for recurring): first run uses `--session-id`, subsequent runs use `--resume`
 - `resume: false` (default for one-shot): always starts a new session
 - Omit `resume` to use the default behavior
+
+## skip_permissions
+
+Set `skip_permissions: true` in the frontmatter to append `--dangerously-skip-permissions` to the runner command for that task:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+skip_permissions: true
+---
+```
+
+The flag is appended only if the runner command doesn't already include it globally.
 
 ## Runner Fallback Chain
 

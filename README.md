@@ -96,6 +96,21 @@ resume: false
 
 One-shot tasks (empty schedule) are automatically deleted from disk after successful execution.
 
+### skip_permissions
+
+Set `skip_permissions: true` in the frontmatter to append `--dangerously-skip-permissions` to the runner command for that task:
+
+```markdown
+---
+id: "550e8400-e29b-41d4-a716-446655440000"
+schedule: "*/30 * * * *"
+skip_permissions: true
+---
+Run autonomous maintenance tasks that require tool access without prompting.
+```
+
+The flag is appended only if the runner command doesn't already include it globally.
+
 ## Daemon Directory
 
 Lives at `~/.anvil/`. One per machine. No project-specific anything.
@@ -124,12 +139,12 @@ watched_at: 2026-02-23T13:07:49Z
 ### Daemon Config
 
 ```yaml
-# ~/.anvil/config.yaml
-tick_interval: 10s          # how often to check for work
+# ~/.anvil/config.yaml (created by anvil init)
 runners:                    # ordered list of runner commands; first success wins
-  - "claude -p"
-timeout: 5m                 # max time per execution
-max_workers: 4              # worker pool size (all tasks still get processed)
+  - claude
+max_workers: 10             # worker pool size (all tasks still get processed)
+timeout: 15m                # max time per execution
+tick_interval: 5s           # how often to check for work
 ```
 
 For backwards compatibility, a single `runner:` string is still accepted and treated as a one-entry list.
@@ -139,7 +154,7 @@ For backwards compatibility, a single `runner:` string is still accepted and tre
 Single binary. One subcommand starts the daemon, everything else talks to it.
 
 ```
-anvil init [path]                    Initialize a project (.anvil/ and .claude/skills/)
+anvil init [path]                    Initialize a project (.anvil/, .claude/skills/, and ~/.anvil/config.yaml)
 anvil serve                          Start the daemon (run once per machine)
 anvil watch [path]                   Register a project directory with the daemon
 anvil unwatch [path]                 Stop watching a project directory
