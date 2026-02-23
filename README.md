@@ -49,19 +49,38 @@ Each project has a `.anvil/todos/` tree. Each todo is a markdown file with its o
 
 Priority directories are created on-demand when tasks are added. You don't need to pre-create them.
 
-Todos are just files. The daemon works through all matching ones — highest priority, oldest first — running up to `max_todos` in parallel. If there are 6 matching todos and `max_todos: 2`, it runs 2, waits for both to finish, runs the next 2, waits, runs the last 2.
+Todos are just files. The daemon works through all matching ones — highest priority, oldest first — running up to `max_todos` in parallel. With `max_todos: 2` and 6 matching todos, 2 workers pull from the queue continuously: as each worker finishes, it picks up the next available todo. All 6 get processed, 2 at a time.
 
 ### Todo Format
 
 ```markdown
 ---
+id: "550e8400-e29b-41d4-a716-446655440000"
 schedule: "*/30 * * * *"
 ---
 Check GitHub for new untriaged issues. For each unlabelled issue,
 read the content and apply appropriate labels (bug, feature, docs, question).
 ```
 
-The schedule is a standard 5-field cron expression. The body is passed directly to the configured runner command.
+The `id` is generated automatically by `anvil add` and used for session tracking. The schedule is a standard 5-field cron expression. The body is passed directly to the configured runner command.
+
+### Session Continuity
+
+By default, recurring tasks resume their previous Claude session and one-shot tasks start fresh. Override this with `resume` in the frontmatter:
+
+```markdown
+---
+id: "550e8400-e29b-41d4-a716-446655440000"
+schedule: "*/30 * * * *"
+resume: false
+---
+```
+
+- `resume: true` (default for recurring tasks): subsequent runs use `--resume <session-id>` to continue the previous session. The first run starts fresh.
+- `resume: false` (default for one-shot tasks): always starts a new session with `--session-id`.
+- Omit `resume` to use the default behavior.
+
+One-shot tasks (empty schedule) are automatically deleted from disk after successful execution.
 
 ## Daemon Directory
 
