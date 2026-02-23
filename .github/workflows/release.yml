@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+          VERSION: ${{ github.ref_name }}
+          OUTPUT: anvil-${{ matrix.goos }}-${{ matrix.goarch }}
+        run: |
+          go build \
+            -ldflags "-X main.version=${VERSION}" \
+            -o "${OUTPUT}" \
+            ./cmd/anvil
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: anvil-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  publish:
+    name: Publish release
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        env:
+          CURRENT_TAG: ${{ github.ref_name }}
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            CHANGES=$(git log "${PREV_TAG}..${CURRENT_TAG}" --pretty=format:"- %s" --no-merges)
+          else
+            CHANGES=$(git log --pretty=format:"- %s" --no-merges | head -20)
+          fi
+          echo "CHANGES<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            ## What's changed
+
+            ${{ steps.changelog.outputs.CHANGES }}
+
+            ## Installation
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/johnjansen/anvil/main/install.sh | sh
+            ```
+          files: |
+            dist/anvil-darwin-amd64
+            dist/anvil-darwin-arm64
+            dist/anvil-linux-amd64
+            dist/anvil-linux-arm64
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
