@@ -43,6 +43,7 @@ type Daemon struct {
 	socketPath string
 	tasks      map[string]*RunningTask
 	tasksMu    sync.RWMutex
+	httpServer *http.Server
 }
 
 type RunningTask struct {
@@ -114,6 +115,9 @@ func (d *Daemon) Run() {
 		select {
 		case <-d.stop:
 			log.Println("daemon stopping")
+			if d.httpServer != nil {
+				d.httpServer.Shutdown(context.Background())
+			}
 			close(d.workQueue) // signals workers to drain and exit
 			workerWg.Wait()
 			os.Remove(d.socketPath)
@@ -254,12 +258,12 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/ps", d.handlePs)
 	mux.HandleFunc("/kill", d.handleKill)
 
-	server := &http.Server{
+	d.httpServer = &http.Server{
 		Handler: mux,
 	}
 
 	log.Printf("socket server listening on %s", d.socketPath)
-	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+	if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 		log.Printf("socket server error: %v", err)
 	}
 }
