@@ -52,6 +52,8 @@ func main() {
 		deleteCmd(os.Args[2:])
 	case "log":
 		logCmd(os.Args[2:])
+	case "logs":
+		logsCmd(os.Args[2:])
 	case "task":
 		taskCmd(os.Args[2:])
 	case "project":
@@ -83,6 +85,7 @@ Commands:
   get <name>               Show details of a todo by name
   delete <name>            Delete a todo by name
   log [-f] <name>          Show session log for a todo (-f to follow)
+  logs [<name>]            Follow raw worker output (all tasks if no name given)
   status                   Show watched projects
   ps                       Show running tasks
   task <subcommand>        Task management commands
@@ -1206,6 +1209,239 @@ func followLog(sessionPath string, projectPath string, taskName string) {
 		}
 
 		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// rawLogPath returns the path to the raw stdout/stderr log file for a completed run.
+// The daemon writes these files to <project>/.anvil/logs/<taskID>/<runID>.log
+func rawLogPath(projectPath, taskID, runID string) string {
+	return filepath.Join(projectPath, ".anvil", "logs", taskID, runID+".log")
+}
+
+func logsCmd(args []string) {
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running")
+		os.Exit(1)
+	}
+
+	if len(args) == 0 {
+		logsMultiplex()
+		return
+	}
+
+	// Single task mode: anvil logs <name>
+	name := args[0]
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	// Resolve todo name -> task ID and full daemon key
+	var taskID string
+	var todoName string
+	proj, err := project.Load(abs)
+	if err == nil {
+		todos, err := proj.LoadTodos()
+		if err == nil {
+			if todo := findTodo(todos, name); todo != nil {
+				taskID = todo.ID
+				todoName = todo.Name
+			}
+		}
+	}
+
+	// Check if the task is currently running
+	tasks, err := daemon.SendPsRequest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get running tasks: %v\n", err)
+		os.Exit(1)
+	}
+
+	fullKey := fmt.Sprintf("%s/%s", abs, todoName)
+	for _, t := range tasks {
+		if t.Name == fullKey && t.LogPath != "" {
+			// Task is running — follow the live raw log
+			followLog(t.LogPath, abs, todoName)
+			return
+		}
+	}
+
+	// Task is not running — print the most recent completed raw log
+	if taskID == "" {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", name)
+		os.Exit(1)
+	}
+
+	rec, err := project.ReadCurrentRunRecord(abs, taskID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "no run record found for task %s\n", name)
+		os.Exit(1)
+	}
+
+	logPath := rawLogPath(abs, rec.TaskID, rec.RunID)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "no raw log found for task %s (looked at %s)\n", name, logPath)
+			os.Exit(1)
+		}
+		log.Fatalf("failed to read raw log: %v", err)
+	}
+	fmt.Print(string(data))
+}
+
+// logsMultiplex follows raw output from all currently running tasks, prefixing
+// each line with the task name. Exits when all followed tasks complete or on SIGINT.
+func logsMultiplex() {
+	tasks, err := daemon.SendPsRequest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get running tasks: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Collect tasks that have a raw log path
+	type taskState struct {
+		name    string
+		logPath string
+		file    *os.File
+		offset  int64
+		buf     []byte // partial line buffer
+	}
+
+	var states []*taskState
+	for _, t := range tasks {
+		if t.LogPath == "" {
+			continue
+		}
+		f, err := os.Open(t.LogPath)
+		if err != nil {
+			continue
+		}
+		// Display name: strip project path prefix for readability
+		displayName := t.Name
+		if idx := strings.LastIndex(displayName, "/"); idx >= 0 {
+			displayName = displayName[idx+1:]
+		}
+		// Strip .md suffix if present
+		displayName = strings.TrimSuffix(displayName, ".md")
+		states = append(states, &taskState{
+			name:    displayName,
+			logPath: t.LogPath,
+			file:    f,
+		})
+	}
+
+	if len(states) == 0 {
+		fmt.Println("no tasks running")
+		return
+	}
+	defer func() {
+		for _, s := range states {
+			s.file.Close()
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	// printLines flushes complete lines from a task's buffer to stdout with prefix.
+	printLines := func(s *taskState, flushAll bool) {
+		for {
+			idx := -1
+			for i, b := range s.buf {
+				if b == '\n' {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				if flushAll && len(s.buf) > 0 {
+					fmt.Printf("%s: %s\n", s.name, string(s.buf))
+					s.buf = s.buf[:0]
+				}
+				break
+			}
+			fmt.Printf("%s: %s\n", s.name, string(s.buf[:idx]))
+			s.buf = s.buf[idx+1:]
+		}
+	}
+
+	buf := make([]byte, 4096)
+	psCheckTick := 0
+
+	for {
+		select {
+		case <-sigCh:
+			// Flush remaining partial lines before exit
+			for _, s := range states {
+				printLines(s, true)
+			}
+			return
+		default:
+		}
+
+		// Read new bytes from each active task's log file
+		for _, s := range states {
+			if s.file == nil {
+				continue
+			}
+			n, readErr := s.file.Read(buf)
+			if n > 0 {
+				s.buf = append(s.buf, buf[:n]...)
+				printLines(s, false)
+			}
+			if readErr != nil && readErr != io.EOF {
+				printLines(s, true)
+				s.file.Close()
+				s.file = nil
+			}
+		}
+
+		// Periodically re-check /ps to remove finished tasks (~every 2s = 8 * 250ms)
+		psCheckTick++
+		if psCheckTick >= 8 {
+			psCheckTick = 0
+			running, psErr := daemon.SendPsRequest()
+			if psErr == nil {
+				runningPaths := make(map[string]bool)
+				for _, t := range running {
+					runningPaths[t.LogPath] = true
+				}
+				for _, s := range states {
+					if s.file != nil && !runningPaths[s.logPath] {
+						// Task finished — drain remaining bytes then close
+						for {
+							n, err := s.file.Read(buf)
+							if n > 0 {
+								s.buf = append(s.buf, buf[:n]...)
+							}
+							if err != nil {
+								break
+							}
+						}
+						printLines(s, true)
+						s.file.Close()
+						s.file = nil
+					}
+				}
+			}
+		}
+
+		// Check if all tasks are done
+		allDone := true
+		for _, s := range states {
+			if s.file != nil {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			fmt.Println("all tasks completed")
+			return
+		}
+
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
