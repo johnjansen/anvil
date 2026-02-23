@@ -52,6 +52,7 @@ type RunningTask struct {
 	PID     int
 	Started time.Time
 	Cancel  context.CancelFunc
+	LogPath string
 }
 
 type KillRequest struct {
@@ -64,6 +65,7 @@ type TaskInfo struct {
 	PID     int    `json:"pid"`
 	Started string `json:"started"`
 	Elapsed string `json:"elapsed"`
+	LogPath string `json:"log_path,omitempty"`
 }
 
 func New(cfg *config.Config) *Daemon {
@@ -221,7 +223,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskLabel := projName + "/" + t.Name
 	var childPID int
 	logDir := filepath.Join(proj.Path, ".anvil", "logs", t.ID)
-	usedSessionID, _, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, taskLabel, logDir, func(pid int) {
+	usedSessionID, logPath, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.Content, taskLabel, logDir, func(pid int) {
 		childPID = pid
 		d.tasksMu.Lock()
 		if task, ok := d.tasks[taskKey]; ok {
@@ -229,6 +231,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 		d.tasksMu.Unlock()
 	})
+
+	// Store the log path in the running task entry so /ps can expose it.
+	// At this point the task is still in d.tasks (the defer hasn't run yet).
+	if logPath != "" {
+		d.tasksMu.Lock()
+		if task, ok := d.tasks[taskKey]; ok {
+			task.LogPath = logPath
+		}
+		d.tasksMu.Unlock()
+	}
 
 	// Write run record after completion
 	runRecord := project.RunRecord{
@@ -308,6 +320,7 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 			PID:     task.PID,
 			Started: task.Started.Format(time.RFC3339),
 			Elapsed: elapsed.Round(time.Second).String(),
+			LogPath: task.LogPath,
 		})
 	}
 
