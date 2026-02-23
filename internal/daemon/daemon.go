@@ -40,11 +40,12 @@ type Daemon struct {
 }
 
 type RunningTask struct {
-	Project     string
-	Name        string
-	PID         int
-	Started     time.Time
-	Cancel      context.CancelFunc
+	Project string
+	Name    string
+	TaskID  string
+	PID     int
+	Started time.Time
+	Cancel  context.CancelFunc
 }
 
 type KillRequest struct {
@@ -264,7 +265,7 @@ func (d *Daemon) tick(now time.Time) {
 		var busyNames []string
 		for _, task := range d.tasks {
 			elapsed := time.Since(task.Started).Round(time.Second)
-			busyNames = append(busyNames, fmt.Sprintf("%s/%s (%s)", filepath.Base(task.Project), task.Name, elapsed))
+			busyNames = append(busyNames, fmt.Sprintf("%s (%s)", taskLogLink(task), elapsed))
 		}
 		d.tasksMu.RUnlock()
 		if len(busyNames) > 0 {
@@ -365,6 +366,7 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 				d.tasks[taskKey] = &RunningTask{
 					Project: proj.Path,
 					Name:    t.Name,
+					TaskID:  t.ID,
 					PID:     os.Getpid(),
 					Started: time.Now(),
 					Cancel:  cancel,
@@ -409,6 +411,28 @@ func (d *Daemon) processProject(proj *project.Project, todos []project.Todo) {
 		}
 		wg.Wait()
 	}
+}
+
+// osc8Link wraps text in an OSC 8 terminal hyperlink pointing to url.
+// In terminals that support OSC 8 (iTerm2, kitty, foot, etc.) the text
+// becomes clickable; in others it renders as plain text.
+func osc8Link(text, url string) string {
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", url, text)
+}
+
+// taskLogLink returns the task name wrapped in an OSC 8 hyperlink that opens
+// the session JSONL log. Falls back to plain text if no session is found.
+func taskLogLink(task *RunningTask) string {
+	label := fmt.Sprintf("%s/%s", filepath.Base(task.Project), task.Name)
+	sessionID, err := project.LatestSessionID(task.Project, task.TaskID)
+	if err != nil {
+		return label
+	}
+	logPath := project.SessionPath(task.Project, sessionID)
+	if _, statErr := os.Stat(logPath); statErr != nil {
+		return label
+	}
+	return osc8Link(label, "file://"+logPath)
 }
 
 // loadWatchedPaths scans ~/.anvil/watched/ and returns project paths
