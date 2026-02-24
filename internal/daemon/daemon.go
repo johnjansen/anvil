@@ -115,6 +115,12 @@ type Daemon struct {
 	// Used by CLI to show queue status.
 	pendingTasks  map[string]string // taskKey -> skip reason
 	pendingTasksMu sync.RWMutex
+	// ticker and workerWg support hot-reload of tick_interval and max_workers
+	ticker    *time.Ticker
+	tickerMu  sync.Mutex
+	workerWg  *sync.WaitGroup
+	workerCount int
+	workerMu  sync.Mutex
 }
 
 type RunningTask struct {
@@ -197,26 +203,13 @@ func (d *Daemon) Run() {
 	// Clean up PID file on shutdown
 	defer removePIDFile()
 
-	// Set up SIGHUP handler for config reload
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGHUP)
-	go func() {
-		for range sigChan {
-			select {
-			case d.reload <- struct{}{}:
-			default:
-				// reload channel already has a pending signal
-			}
-		}
-	}()
-
 	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
 		poolSize = 1
 	}
 
-	ticker := time.NewTicker(d.config.TickInterval)
-	defer ticker.Stop()
+	d.ticker = time.NewTicker(d.config.TickInterval)
+	defer d.ticker.Stop()
 
 	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
 
@@ -229,11 +222,12 @@ func (d *Daemon) Run() {
 	defer signal.Stop(sighupChan)
 
 	// Start worker pool
-	var workerWg sync.WaitGroup
+	d.workerWg = &sync.WaitGroup{}
+	d.workerCount = poolSize
 	for i := 0; i < poolSize; i++ {
-		workerWg.Add(1)
+		d.workerWg.Add(1)
 		go func(id int) {
-			defer workerWg.Done()
+			defer d.workerWg.Done()
 			d.worker(id)
 		}(i)
 	}
@@ -246,14 +240,14 @@ func (d *Daemon) Run() {
 				d.httpServer.Shutdown(context.Background())
 			}
 			close(d.workQueue) // signals workers to drain and exit
-			workerWg.Wait()
+			d.workerWg.Wait()
 			os.Remove(d.socketPath)
 			return
 		case <-sighupChan:
 			d.reloadConfig()
 		case <-d.reload:
 			d.reloadConfig()
-		case now := <-ticker.C:
+		case now := <-d.ticker.C:
 			d.tick(now)
 		}
 	}
@@ -283,11 +277,24 @@ func (d *Daemon) reloadConfig() {
 
 	var changes []string
 
-	// max_workers: can grow or shrink
+	// max_workers: grow the pool if increased (excess workers drain naturally when pool shrinks)
 	if newConfig.MaxWorkers != d.config.MaxWorkers {
 		oldVal := d.config.MaxWorkers
 		d.config.MaxWorkers = newConfig.MaxWorkers
 		changes = append(changes, fmt.Sprintf("max_workers %d->%d", oldVal, newConfig.MaxWorkers))
+		// Spawn additional workers if pool grew
+		if newConfig.MaxWorkers > oldVal {
+			d.workerMu.Lock()
+			for i := d.workerCount; i < newConfig.MaxWorkers; i++ {
+				d.workerWg.Add(1)
+				go func(id int) {
+					defer d.workerWg.Done()
+					d.worker(id)
+				}(i)
+			}
+			d.workerCount = newConfig.MaxWorkers
+			d.workerMu.Unlock()
+		}
 	}
 
 	// timeout: apply to new tasks
@@ -297,21 +304,35 @@ func (d *Daemon) reloadConfig() {
 		changes = append(changes, fmt.Sprintf("timeout %v->%v", oldVal, newConfig.Timeout))
 	}
 
-	// runners: apply to new tasks
+	// runners: rebuild runner instance for new tasks
 	if len(newConfig.Runners) > 0 {
 		oldRunners := strings.Join(d.config.Runners, ", ")
 		newRunners := strings.Join(newConfig.Runners, ", ")
 		if oldRunners != newRunners {
 			d.config.Runners = newConfig.Runners
+			d.runner = runner.New(newConfig.Runners, d.config.Timeout)
 			changes = append(changes, fmt.Sprintf("runners %s->%s", oldRunners, newRunners))
 		}
 	}
 
-	// tick_interval: will be picked up on next tick
+	// tick_interval: reset the ticker to the new interval
 	if newConfig.TickInterval != d.config.TickInterval {
 		oldVal := d.config.TickInterval
 		d.config.TickInterval = newConfig.TickInterval
+		d.tickerMu.Lock()
+		d.ticker.Reset(newConfig.TickInterval)
+		d.tickerMu.Unlock()
 		changes = append(changes, fmt.Sprintf("tick_interval %v->%v", oldVal, newConfig.TickInterval))
+	}
+
+	// token rates: apply to new runs
+	if newConfig.InputTokenRate != d.config.InputTokenRate {
+		d.config.InputTokenRate = newConfig.InputTokenRate
+		changes = append(changes, "input_token_rate updated")
+	}
+	if newConfig.OutputTokenRate != d.config.OutputTokenRate {
+		d.config.OutputTokenRate = newConfig.OutputTokenRate
+		changes = append(changes, "output_token_rate updated")
 	}
 
 	if len(changes) > 0 {
