@@ -172,6 +172,14 @@ runners:
 | `anvil task stop-on-idle <name>` | Finish current run then stop rescheduling |
 | `anvil task unlock <name>` | Remove stale lock file to allow retry |
 
+**Task status:**
+
+| Status | Meaning |
+|--------|---------|
+| `idle` | Task is queued but not running |
+| `running` | Task is currently executing |
+| `locked` | Stale lock file found (daemon crashed mid-execution); use `unlock` to allow retry |
+
 **Project management:**
 
 | Command | Description |

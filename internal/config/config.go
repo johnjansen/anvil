@@ -40,6 +40,10 @@ func WatchedDir() string {
 	return filepath.Join(Dir(), "watched")
 }
 
+func PidFile() string {
+	return filepath.Join(Dir(), "daemon.pid")
+}
+
 func EnsureDir() error {
 	if err := os.MkdirAll(Dir(), 0755); err != nil {
 		return err
