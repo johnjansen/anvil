@@ -123,6 +123,7 @@ type RunningTask struct {
 	TaskID    string
 	PID       int
 	Started   time.Time
+	Timeout   time.Duration // task-specific timeout (0 = use global)
 	Cancel    context.CancelFunc
 	LogPath   string
 	SessionID string
@@ -386,6 +387,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		TaskID:  t.ID,
 		PID:     os.Getpid(),
 		Started: startTime,
+		Timeout: timeout,
 		Cancel:  cancel,
 	}
 	d.tasksMu.Unlock()
@@ -757,15 +759,20 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
+		// Use per-task timeout if set, otherwise fall back to global config
+		timeout := task.Timeout
+		if timeout == 0 {
+			timeout = d.config.Timeout
+		}
 		result = append(result, TaskInfo{
 			Project:       task.Project,
 			Name:          task.Name,
 			PID:           task.PID,
 			Started:       task.Started.Format(time.RFC3339),
 			Elapsed:       elapsed.Round(time.Second).String(),
-			Timeout:       d.config.Timeout.String(),
-			TimeRemaining: (d.config.Timeout - elapsed).String(),
-			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
+			Timeout:       timeout.String(),
+			TimeRemaining: (timeout - elapsed).String(),
+			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
 			Status:        task.Status,
@@ -798,15 +805,20 @@ func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
+		// Use per-task timeout if set, otherwise fall back to global config
+		timeout := task.Timeout
+		if timeout == 0 {
+			timeout = d.config.Timeout
+		}
 		result = append(result, TaskInfo{
 			Project:       task.Project,
 			Name:          task.Name,
 			PID:           task.PID,
 			Started:       task.Started.Format(time.RFC3339),
 			Elapsed:       elapsed.Round(time.Second).String(),
-			Timeout:       d.config.Timeout.String(),
-			TimeRemaining: (d.config.Timeout - elapsed).String(),
-			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
+			Timeout:       timeout.String(),
+			TimeRemaining: (timeout - elapsed).String(),
+			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
 		})
