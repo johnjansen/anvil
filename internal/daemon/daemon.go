@@ -436,6 +436,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/kill", d.handleKill)
 	mux.HandleFunc("/drain", d.handleDrain)
 	mux.HandleFunc("/drain/task", d.handleDrainTask)
+	mux.HandleFunc("/run", d.handleRun)
 	mux.HandleFunc("/status", d.handleStatus)
 	mux.HandleFunc("/timeout", d.handleTimeout)
 
@@ -611,6 +612,13 @@ func (d *Daemon) handleDrain(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "draining"})
 }
 
+// RunRequest is the JSON payload for /run (force-trigger a task).
+type RunRequest struct {
+	ProjectPath string `json:"project_path"`
+	TaskID      string `json:"task_id"`
+	TaskName    string `json:"task_name"`
+}
+
 // DrainTaskRequest is the JSON payload for /drain/task.
 type DrainTaskRequest struct {
 	ID string `json:"id"`
@@ -639,6 +647,89 @@ func (d *Daemon) handleDrainTask(w http.ResponseWriter, r *http.Request) {
 	dlog.Info("stop-on-idle set for task %s — will not reschedule after current run", req.ID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "drained", "id": req.ID})
+}
+
+func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req RunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.ProjectPath == "" || req.TaskID == "" {
+		http.Error(w, "project_path and task_id are required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the task is already running
+	d.tasksMu.RLock()
+	for _, task := range d.tasks {
+		if task.TaskID == req.TaskID {
+			d.tasksMu.RUnlock()
+			http.Error(w, fmt.Sprintf("task %s is already running", req.TaskName), http.StatusConflict)
+			return
+		}
+	}
+	d.tasksMu.RUnlock()
+
+	// Load the project and find the todo
+	proj, err := project.Load(req.ProjectPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to load project: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	allTodos, err := proj.LoadTodos()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to load todos: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	var found *project.Todo
+	for i := range allTodos {
+		if allTodos[i].ID == req.TaskID {
+			found = &allTodos[i]
+			break
+		}
+	}
+	if found == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+
+	// Enqueue for immediate dispatch (bypass cron, skip pre_check by clearing it)
+	todo := *found
+	todo.PreCheck = "" // Skip pre_check for forced runs
+
+	taskKey := fmt.Sprintf("%s/%s", proj.Path, todo.Name)
+
+	d.inFlightMu.Lock()
+	d.inFlight[taskKey]++
+	d.inFlightMu.Unlock()
+
+	projName := filepath.Base(proj.Path)
+	dlog.Info("force-run requested for %s/%s — dispatching immediately", projName, todo.Name)
+
+	select {
+	case d.workQueue <- workItem{project: proj, todo: todo}:
+		// dispatched
+	default:
+		d.inFlightMu.Lock()
+		d.inFlight[taskKey]--
+		if d.inFlight[taskKey] <= 0 {
+			delete(d.inFlight, taskKey)
+		}
+		d.inFlightMu.Unlock()
+		http.Error(w, "work queue full — try again later", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "name": todo.Name})
 }
 
 func (d *Daemon) tick(now time.Time) {
@@ -1015,6 +1106,27 @@ func SendDrainTaskRequest(id string) error {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("daemon drain task failed: %s", string(body))
 	}
+	return nil
+}
+
+// SendRunRequest asks the daemon to immediately dispatch a task.
+func SendRunRequest(projectPath, taskID, taskName string) error {
+	data, err := json.Marshal(RunRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/run", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	}
+
 	return nil
 }
 

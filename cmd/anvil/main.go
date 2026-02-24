@@ -127,6 +127,7 @@ Task subcommands:
   get <name>                Show task details including run status
   log [-f] <name>           Show execution log (-f to follow)
   rm <name>                 Remove a task (kills if running)
+  run <name>                Trigger immediate execution (bypass cron)
   kill <name>               Kill a running task
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
@@ -723,6 +724,8 @@ func taskCmd(args []string) {
 		taskLogCmd(args[1:])
 	case "rm":
 		taskRmCmd(args[1:])
+	case "run":
+		taskRunCmd(args[1:])
 	case "kill":
 		taskKillCmd(args[1:])
 	case "stop-on-idle":
@@ -1077,6 +1080,46 @@ func taskRmCmd(args []string) {
 	}
 
 	fmt.Printf("removed p%d/%s\n", todo.Priority, todo.Name)
+}
+
+func taskRunCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task run <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running — start it with: anvil watch")
+		os.Exit(1)
+	}
+
+	if err := daemon.SendRunRequest(abs, todo.ID, todo.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to run task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("▶ Dispatched %s for immediate execution\n", todo.Name)
 }
 
 func taskKillCmd(args []string) {
