@@ -36,7 +36,7 @@ type Daemon struct {
 	config      *config.Config
 	runner      *runner.Runner
 	workQueue   chan workItem
-	inFlight    map[string]bool // taskKey -> true; set when queued, cleared when done
+	inFlight    map[string]int // taskKey -> count; incremented when queued, decremented when done
 	inFlightMu  sync.Mutex
 	stop        chan struct{}
 	stopOnce    sync.Once
@@ -83,7 +83,7 @@ func New(cfg *config.Config) *Daemon {
 		config:       cfg,
 		runner:       runner.New(cfg.Runners, cfg.Timeout),
 		workQueue:    make(chan workItem, poolSize*4),
-		inFlight:     make(map[string]bool),
+		inFlight:     make(map[string]int),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 		socketPath:   filepath.Join(config.Dir(), "daemon.sock"),
@@ -181,10 +181,13 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}()
 
-	// Clear in-flight entry when the task completes
+	// Decrement in-flight count when the task completes; remove key at zero
 	defer func() {
 		d.inFlightMu.Lock()
-		delete(d.inFlight, taskKey)
+		d.inFlight[taskKey]--
+		if d.inFlight[taskKey] <= 0 {
+			delete(d.inFlight, taskKey)
+		}
 		d.inFlightMu.Unlock()
 	}()
 
@@ -590,21 +593,28 @@ func (d *Daemon) tick(now time.Time) {
 		taskKey := fmt.Sprintf("%s/%s", pt.proj.Path, pt.todo.Name)
 		projName := filepath.Base(pt.proj.Path)
 
-		// Skip if already in-flight (queued or executing)
+		// Skip if already at max concurrent instances (queued or executing)
+		maxConcurrent := pt.todo.MaxConcurrent
+		if maxConcurrent < 1 {
+			maxConcurrent = 1
+		}
 		d.inFlightMu.Lock()
-		if d.inFlight[taskKey] {
+		if d.inFlight[taskKey] >= maxConcurrent {
 			d.inFlightMu.Unlock()
 			dlog.Info("skip %s/%s — already in-flight", projName, pt.todo.Name)
 			continue
 		}
-		d.inFlight[taskKey] = true
+		d.inFlight[taskKey]++
 		d.inFlightMu.Unlock()
 
 		// Skip dispatch if daemon-wide drain is active
 		if atomic.LoadInt32(&d.draining) == 1 {
 			dlog.Info("skip %s/%s — draining", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
-			delete(d.inFlight, taskKey)
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
 			d.inFlightMu.Unlock()
 			continue
 		}
@@ -616,7 +626,10 @@ func (d *Daemon) tick(now time.Time) {
 		if taskDrained {
 			dlog.Info("skip %s/%s — stop-on-idle set", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
-			delete(d.inFlight, taskKey)
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
 			d.inFlightMu.Unlock()
 			continue
 		}
@@ -630,7 +643,10 @@ func (d *Daemon) tick(now time.Time) {
 		default:
 			dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
-			delete(d.inFlight, taskKey)
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
 			d.inFlightMu.Unlock()
 		}
 	}
