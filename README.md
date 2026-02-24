@@ -186,6 +186,20 @@ Temporarily paused task...
 
 The task is skipped during tick evaluation but remains in the system. Set `disabled: false` or remove the line to resume.
 
+### Task timeout
+
+Override the global timeout for a specific task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+timeout: 15m
+---
+Run with a 15-minute timeout instead of the default.
+```
+
+Valid units: `s` (seconds), `m` (minutes), `h` (hours). Set to `0` or omit to use the global default (configured in `~/.anvil/config.yaml`, default: 5 minutes).
+
 ## Configuration
 
 `~/.anvil/config.yaml`:

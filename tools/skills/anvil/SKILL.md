@@ -186,6 +186,21 @@ Temporarily paused task...
 
 The task is skipped during tick evaluation but remains in the project. Set `disabled: false` or remove the line to resume.
 
+## timeout
+
+Set `timeout` to override the global timeout for a specific task. The global timeout is configured in `~/.anvil/config.yaml` (default: 5 minutes):
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+timeout: 15m
+---
+Run with a 15-minute timeout instead of the default.
+```
+
+Valid units: `s` (seconds), `m` (minutes), `h` (hours). Set to `0` or omit to use the global default.
+
 ## on_success / on_failure
 
 Run shell commands after a task completes. Useful for notifications, cleanup, or chaining workflows:
