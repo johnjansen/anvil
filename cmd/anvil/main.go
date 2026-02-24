@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -21,7 +22,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var version = "0.3.0"
+// version is set at build time via -ldflags "-X main.version=<tag>".
+// If not set (e.g. go run), init() falls back to the module version from debug.BuildInfo.
+var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
