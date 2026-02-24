@@ -59,6 +59,8 @@ func main() {
 		os.Exit(1)
 	case "status":
 		statusCmd()
+	case "cleanup":
+		cleanupCmd(os.Args[2:])
 	case "ps":
 		psCmd()
 	case "init":
@@ -565,6 +567,186 @@ func reloadCmd(args []string) {
 	}
 
 	fmt.Println("config reload triggered")
+}
+
+func cleanupCmd(args []string) {
+	olderThan := ""
+	dryRun := false
+
+	for _, a := range args {
+		if a == "--dry-run" || a == "-n" {
+			dryRun = true
+		} else if strings.HasPrefix(a, "--older-than=") {
+			olderThan = strings.TrimPrefix(a, "--older-than=")
+		} else if strings.HasPrefix(a, "-o=") {
+			olderThan = strings.TrimPrefix(a, "-o=")
+		}
+	}
+
+	var maxAge time.Duration
+	if olderThan != "" {
+		var err error
+		maxAge, err = time.ParseDuration(olderThan)
+		if err != nil {
+			log.Fatalf("invalid duration: %s (use format like 7d, 24h)", olderThan)
+		}
+	}
+
+	watched, err := loadAllWatched()
+	if err != nil {
+		log.Fatalf("failed to read watched: %v", err)
+	}
+
+	if len(watched) == 0 {
+		fmt.Println("no watched projects")
+		return
+	}
+
+	// If no retention config and no --older-than, show current config
+	cfg, _ := config.Load()
+	if maxAge == 0 && cfg.Retention.MaxAge == 0 && cfg.Retention.MaxRuns == 0 {
+		fmt.Println("No retention policy configured. Set in ~/.anvil/config.yaml:")
+		fmt.Println("  retention:")
+		fmt.Println("    max_age: 7d")
+		fmt.Println("    max_runs: 50")
+		fmt.Println("")
+		fmt.Println("Or use --older-than to prune manually:")
+		fmt.Println("  anvil cleanup --older-than 3d")
+		return
+	}
+
+	action := "Would prune"
+	if dryRun {
+		action = "Would prune"
+	} else {
+		action = "Pruned"
+	}
+
+	totalFreed := 0
+
+	for _, w := range watched {
+		// Prune logs
+		logsDir := filepath.Join(w.Path, ".anvil", "logs")
+		if _, err := os.Stat(logsDir); err == nil {
+			count, freed := pruneDir(logsDir, maxAge, 0, dryRun)
+			totalFreed += freed
+			if count > 0 {
+				fmt.Printf("%s %d log files from %s\n", action, count, w.Path)
+			}
+		}
+
+		// Prune runs
+		runsDir := filepath.Join(w.Path, ".anvil", "runs")
+		if _, err := os.Stat(runsDir); err == nil {
+			count, freed := pruneDir(runsDir, maxAge, cfg.Retention.MaxRuns, dryRun)
+			totalFreed += freed
+			if count > 0 {
+				fmt.Printf("%s %d run files from %s\n", action, count, w.Path)
+			}
+		}
+	}
+
+	if dryRun {
+		fmt.Printf("Total space that would be freed: %d bytes\n", totalFreed)
+		fmt.Println("(use without --dry-run to actually delete)")
+	} else {
+		fmt.Printf("Total space freed: %d bytes\n", totalFreed)
+	}
+}
+
+func pruneDir(dir string, maxAge time.Duration, maxRuns int, dryRun bool) (int, int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, 0
+	}
+
+	// Collect task directories
+	var taskDirs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			taskDirs = append(taskDirs, filepath.Join(dir, entry.Name()))
+		}
+	}
+
+	deleted := 0
+	freed := 0
+
+	for _, taskDir := range taskDirs {
+		taskEntries, err := os.ReadDir(taskDir)
+		if err != nil {
+			continue
+		}
+
+		// Collect files with modification times
+		type fileInfo struct {
+			name    string
+			path    string
+			size    int64
+			modTime time.Time
+		}
+
+		var files []fileInfo
+		for _, entry := range taskEntries {
+			if entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			files = append(files, fileInfo{
+				name:    entry.Name(),
+				path:    filepath.Join(taskDir, entry.Name()),
+				size:    info.Size(),
+				modTime: info.ModTime(),
+			})
+		}
+
+		if len(files) == 0 {
+			continue
+		}
+
+		// Sort by modification time (oldest first)
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].modTime.Before(files[j].modTime)
+		})
+
+		now := time.Now()
+		cutoff := now.Add(-maxAge)
+
+		// Mark files to delete by age
+		toDelete := make(map[string]fileInfo)
+		if maxAge > 0 {
+			for _, f := range files {
+				if f.modTime.Before(cutoff) {
+					toDelete[f.path] = f
+				}
+			}
+		}
+
+		// Mark files to delete by count (keep maxRuns newest)
+		if maxRuns > 0 && len(files) > maxRuns {
+			for i := 0; i < len(files)-maxRuns; i++ {
+				f := files[i]
+				toDelete[f.path] = f
+			}
+		}
+
+		// Delete marked files
+		for _, f := range toDelete {
+			if !dryRun {
+				if err := os.Remove(f.path); err == nil {
+					deleted++
+					freed += int(f.size)
+				}
+			} else {
+				deleted++
+				freed += int(f.size)
+			}
+		}
+	}
+
+	return deleted, freed
 }
 
 func psCmd() {
