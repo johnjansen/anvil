@@ -37,6 +37,7 @@ type Todo struct {
 	MaxConcurrent   int      // max simultaneous instances (0 = default 1)
 	SkipPermissions bool     // if true, append --dangerously-skip-permissions to runner command
 	AllowedTools    []string // if non-empty, append --allowedTools <tools> to runner command
+	PreCheck        string   // optional shell command; task is skipped silently if it exits non-zero
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -98,6 +99,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			maxConcurrent := 0
 			skipPermissions := false
 			var allowedTools []string
+			preCheck := ""
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -113,6 +115,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						MaxConcurrent   int      `yaml:"max_concurrent"`
 						SkipPermissions bool     `yaml:"skip_permissions"`
 						AllowedTools    []string `yaml:"allowed_tools"`
+						PreCheck        string   `yaml:"pre_check"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -121,6 +124,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						maxConcurrent = fmData.MaxConcurrent
 						skipPermissions = fmData.SkipPermissions
 						allowedTools = fmData.AllowedTools
+						preCheck = fmData.PreCheck
 					}
 				}
 			}
@@ -136,6 +140,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				MaxConcurrent:   maxConcurrent,
 				SkipPermissions: skipPermissions,
 				AllowedTools:    allowedTools,
+				PreCheck:        preCheck,
 			})
 		}
 	}

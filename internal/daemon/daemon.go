@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -246,6 +247,18 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			dlog.Warn("could not write lock file %s: %v", lockPath, err)
 		} else {
 			defer os.Remove(lockPath)
+		}
+	}
+
+	// Pre-check: if set, run a shell guard and skip silently on non-zero exit.
+	// This lets recurring tasks avoid expensive agent invocations when there
+	// is nothing to do (e.g. no open issues), eliminating idle noise.
+	if t.PreCheck != "" {
+		precheckCmd := exec.CommandContext(ctx, "sh", "-c", t.PreCheck)
+		precheckCmd.Dir = proj.Path
+		if precheckErr := precheckCmd.Run(); precheckErr != nil {
+			// Pre-check failed — nothing to do; exit without logging as done/failed.
+			return
 		}
 	}
 
