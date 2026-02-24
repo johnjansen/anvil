@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/johnjansen/anvil/internal/cron"
 	"gopkg.in/yaml.v3"
 )
 
@@ -236,6 +237,13 @@ func (p *Project) AddTodo(priority int, schedule string, content string) (string
 	}
 	if strings.TrimSpace(content) == "" {
 		return "", fmt.Errorf("task content must not be empty")
+	}
+
+	// Validate cron expression before writing the task file.
+	if schedule != "" {
+		if _, err := cron.Parse(schedule); err != nil {
+			return "", fmt.Errorf("invalid schedule %q: %w", schedule, err)
+		}
 	}
 
 	dir := filepath.Join(p.Path, ".anvil", "todos", fmt.Sprintf("p%d", priority))

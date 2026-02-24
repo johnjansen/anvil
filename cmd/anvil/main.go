@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
+	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/tools"
@@ -692,6 +693,16 @@ func taskCreateCmd(args []string) {
 	}
 
 	fmt.Printf("added %s\n", relPath)
+
+	// Show next run time for scheduled tasks.
+	if schedule != "" {
+		if p, err := cron.Parse(schedule); err == nil {
+			if next, err := p.Next(time.Now()); err == nil {
+				until := time.Until(next).Round(time.Minute)
+				fmt.Fprintf(os.Stderr, "Next run: %s (%s from now)\n", next.Format("Mon 15:04"), until)
+			}
+		}
+	}
 }
 
 func taskLsCmd(args []string) {
