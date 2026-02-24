@@ -36,6 +36,10 @@ anvil task create [options] <task text>
 Options:
 - `-p, --priority <0-9>` — Priority level (default: 1). Lower = higher priority.
 - `-s, --schedule <cron>` — Cron expression for when to run.
+- `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
+- `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
+- `--max-concurrent <n>` — Max parallel instances (default: 1).
+- `--skip-permissions` — Bypass all tool permission prompts.
 
 **Important:** The default schedule is `* * * * *` (every minute). Always pass `-s` with an appropriate schedule unless you intentionally want every-minute execution.
 
@@ -52,6 +56,18 @@ anvil add -s "" "Migrate the database schema"
 
 # Persistent task (runs continuously, exits and re-dispatches on each tick)
 anvil add -s "persistent" "Monitor a queue and process items"
+
+# Task with pre-check to skip if nothing to do
+anvil add -s "*/30 * * * *" --pre-check "gh issue list --state open --label untriaged | grep -q ." "Triage GitHub issues"
+
+# Task with limited tools
+anvil add -s "*/5 * * * *" --allowed-tools "Bash,Read,Write" "Process queued items"
+
+# Task that skips permission prompts
+anvil add -s "*/15 * * * *" --skip-permissions "Run automated checks"
+
+# Task with max concurrent instances
+anvil add -s "*/5 * * * *" --max-concurrent 2 "Process in parallel"
 ```
 
 Task files are stored in `.anvil/todos/p<N>/<slugified-name>.md` with YAML frontmatter containing the schedule and a UUID.
