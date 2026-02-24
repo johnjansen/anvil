@@ -287,6 +287,8 @@ runners:
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task queue` | Show daemon queue status and skip reasons |
 | `anvil task edit <name> [-s schedule] [-p priority]` | Edit task schedule/priority |
+| `anvil task pause <name>` | Pause a task (sets disabled: true) |
+| `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 
 **Task status:**
 
