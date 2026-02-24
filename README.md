@@ -226,6 +226,24 @@ runners:
 | `anvil project get [path]` | Show project and running tasks |
 | `anvil project rm [path] [--clean]` | Unwatch a project (--clean removes .anvil/ too) |
 
+## Runtime Status Reporting
+
+Tasks can report their current status to the daemon by printing a special line to stdout:
+
+```
+##anvil:status Triaging 3 new issues
+```
+
+The daemon picks up the status text and displays it in `anvil task ls` and heartbeat logs. Status lines are stripped from the task's output — they never appear in log files. Use this to give visibility into long-running tasks:
+
+```python
+print("##anvil:status Scanning repository...")
+# ... do work ...
+print("##anvil:status Found 5 issues, triaging...")
+```
+
+Any line starting with `##anvil:status ` (note the trailing space) is intercepted. All other output passes through normally.
+
 ## Cron Format
 
 Standard 5-field: `minute hour day month weekday`

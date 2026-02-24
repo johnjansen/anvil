@@ -177,6 +177,16 @@ Hooks run in the project directory with a 60-second timeout. Environment variabl
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
+## Runtime Status Reporting
+
+Tasks can report their current status to the daemon by printing a special line to stdout:
+
+```
+##anvil:status Triaging 3 new issues
+```
+
+The daemon picks up the status text and displays it in `anvil task ls` and heartbeat logs. Status lines are stripped from the task's output — they never appear in log files. Any line starting with `##anvil:status ` (note the trailing space) is intercepted. All other output passes through normally.
+
 ## Runner Fallback Chain
 
 The daemon supports an ordered list of runner commands in `~/.anvil/config.yaml`. If the first runner fails, it tries the next:
