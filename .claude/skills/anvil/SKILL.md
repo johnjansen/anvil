@@ -21,6 +21,9 @@ anvil watch
 # Or run in background (daemonized)
 anvil watch [-d|--daemonize]
 anvil watch --stop             # stop the daemon
+
+# Reload config without restarting
+anvil reload
 ```
 
 `anvil init` defaults to the current directory, pass a path to target a different project. It both initializes the project structure and registers it with the daemon.

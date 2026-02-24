@@ -260,7 +260,13 @@ runners:
 
 ### Hot Reload
 
-Send SIGHUP to the daemon to reload the config without restarting:
+Reload the daemon configuration without restarting:
+
+```bash
+anvil reload
+```
+
+Or send SIGHUP manually:
 
 ```bash
 kill -HUP $(cat ~/.anvil/daemon.pid)
@@ -279,6 +285,7 @@ The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil status` | Show watched projects |
+| `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil update [--check]` | Update to latest release |
 

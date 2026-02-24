@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -85,6 +86,7 @@ type Daemon struct {
 	stop        chan struct{}
 	stopOnce    sync.Once
 	done        chan struct{}
+	reload      chan struct{} // SIGHUP trigger for config reload
 	lastTick    time.Time // last minute we processed (truncated to minute)
 	socketPath  string
 	tasks       map[string]*RunningTask
@@ -163,6 +165,7 @@ func New(cfg *config.Config) *Daemon {
 		inFlight:     make(map[string]int),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
+		reload:       make(chan struct{}, 1),
 		socketPath:   filepath.Join(config.Dir(), "daemon.sock"),
 		tasks:        make(map[string]*RunningTask),
 		drainedTasks: make(map[string]bool),
@@ -188,6 +191,19 @@ func (d *Daemon) Run() {
 	// Clean up PID file on shutdown
 	defer removePIDFile()
 
+	// Set up SIGHUP handler for config reload
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	go func() {
+		for range sigChan {
+			select {
+			case d.reload <- struct{}{}:
+			default:
+				// reload channel already has a pending signal
+			}
+		}
+	}()
+
 	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
 		poolSize = 1
@@ -200,6 +216,11 @@ func (d *Daemon) Run() {
 
 	// Start socket server
 	go d.startSocketServer()
+
+	// Start SIGHUP handler for config reload
+	sighupChan := make(chan os.Signal, 1)
+	signal.Notify(sighupChan, syscall.SIGHUP)
+	defer signal.Stop(sighupChan)
 
 	// Start worker pool
 	var workerWg sync.WaitGroup
@@ -222,6 +243,10 @@ func (d *Daemon) Run() {
 			workerWg.Wait()
 			os.Remove(d.socketPath)
 			return
+		case <-sighupChan:
+			d.reloadConfig()
+		case <-d.reload:
+			d.reloadConfig()
 		case now := <-ticker.C:
 			d.tick(now)
 		}
@@ -238,6 +263,56 @@ func (d *Daemon) Stop() {
 // Done returns a channel that is closed when the daemon has fully stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
+}
+
+// reloadConfig reads the config file and updates the daemon's configuration.
+// It logs what changed and applies updates to max_workers, timeout, runners, and tick_interval.
+// Running tasks are not affected - only new task dispatches use the updated config.
+func (d *Daemon) reloadConfig() {
+	newConfig, err := config.Load()
+	if err != nil {
+		dlog.Warn("failed to reload config: %v", err)
+		return
+	}
+
+	var changes []string
+
+	// max_workers: can grow or shrink
+	if newConfig.MaxWorkers != d.config.MaxWorkers {
+		oldVal := d.config.MaxWorkers
+		d.config.MaxWorkers = newConfig.MaxWorkers
+		changes = append(changes, fmt.Sprintf("max_workers %d->%d", oldVal, newConfig.MaxWorkers))
+	}
+
+	// timeout: apply to new tasks
+	if newConfig.Timeout != d.config.Timeout {
+		oldVal := d.config.Timeout
+		d.config.Timeout = newConfig.Timeout
+		changes = append(changes, fmt.Sprintf("timeout %v->%v", oldVal, newConfig.Timeout))
+	}
+
+	// runners: apply to new tasks
+	if len(newConfig.Runners) > 0 {
+		oldRunners := strings.Join(d.config.Runners, ", ")
+		newRunners := strings.Join(newConfig.Runners, ", ")
+		if oldRunners != newRunners {
+			d.config.Runners = newConfig.Runners
+			changes = append(changes, fmt.Sprintf("runners %s->%s", oldRunners, newRunners))
+		}
+	}
+
+	// tick_interval: will be picked up on next tick
+	if newConfig.TickInterval != d.config.TickInterval {
+		oldVal := d.config.TickInterval
+		d.config.TickInterval = newConfig.TickInterval
+		changes = append(changes, fmt.Sprintf("tick_interval %v->%v", oldVal, newConfig.TickInterval))
+	}
+
+	if len(changes) > 0 {
+		dlog.Info("config reloaded: %s", strings.Join(changes, ", "))
+	} else {
+		dlog.Info("config reloaded: no changes")
+	}
 }
 
 // worker pulls work items from the queue and executes them one at a time.
@@ -644,6 +719,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/status", d.handleStatus)
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
+	mux.HandleFunc("/reload", d.handleReload)
+	mux.HandleFunc("/reload", d.handleReload)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -791,6 +868,22 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Trigger reload via the channel
+	select {
+	case d.reload <- struct{}{}:
+		fmt.Fprintf(w, "config reload triggered")
+	default:
+		// Channel already has a pending signal
+		fmt.Fprintf(w, "config reload already in progress")
+	}
 }
 
 func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
@@ -1503,6 +1596,22 @@ func SendKillRequest(id string) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("daemon kill failed: %s", string(body))
+	}
+
+	return nil
+}
+
+// SendReloadRequest sends a reload request to the daemon to reload its config.
+func SendReloadRequest() error {
+	resp, err := socketClient().Post("http://daemon/reload", "application/json", bytes.NewBufferString("{}"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon reload failed: %s", string(body))
 	}
 
 	return nil

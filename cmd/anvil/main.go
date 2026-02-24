@@ -87,6 +87,8 @@ func main() {
 		projectCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
+	case "reload":
+		reloadCmd(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("anvil %s\n", version)
 	case "help", "-h", "--help":
@@ -111,6 +113,7 @@ Commands:
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
   status                   Show watched projects
+  reload                   Reload daemon configuration (SIGHUP)
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
@@ -486,6 +489,30 @@ func statusCmd() {
 		todos, _ := proj.LoadTodos()
 		fmt.Printf("  %s  todos=%d\n", w.Path, len(todos))
 	}
+}
+
+func reloadCmd(args []string) {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Println("Usage: anvil reload")
+		fmt.Println("")
+		fmt.Println("Reload the daemon configuration without restarting.")
+		fmt.Println("")
+		fmt.Println("Sends SIGHUP to the daemon to reload ~/.anvil/config.yaml.")
+		fmt.Println("New tasks will use the updated config; running tasks are unaffected.")
+		return
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	if err := daemon.SendReloadRequest(); err != nil {
+		fmt.Printf("failed to reload config: %v\n", err)
+		return
+	}
+
+	fmt.Println("config reload triggered")
 }
 
 func psCmd() {
