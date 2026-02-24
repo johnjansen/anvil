@@ -10,13 +10,15 @@ import (
 )
 
 type Config struct {
-	TickInterval time.Duration `yaml:"tick_interval"`
-	Runner       string        `yaml:"runner"`
-	Runners      []string      `yaml:"runners"`
-	Timeout      time.Duration `yaml:"timeout"`
-	MaxWorkers   int           `yaml:"max_workers"`
-	MaxTodos     int           `yaml:"max_todos"` // deprecated: use max_workers
-	Hooks        HooksConfig   `yaml:"hooks"`
+	TickInterval    time.Duration `yaml:"tick_interval"`
+	Runner          string        `yaml:"runner"`
+	Runners         []string      `yaml:"runners"`
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxWorkers      int           `yaml:"max_workers"`
+	MaxTodos        int           `yaml:"max_todos"` // deprecated: use max_workers
+	Hooks           HooksConfig   `yaml:"hooks"`
+	InputTokenRate  float64       `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
+	OutputTokenRate float64       `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
 }
 
 // HooksConfig defines global lifecycle hooks that run for all tasks.

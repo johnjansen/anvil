@@ -123,6 +123,7 @@ type RunningTask struct {
 	TaskID    string
 	PID       int
 	Started   time.Time
+	Timeout   time.Duration // task-specific timeout (0 = use global)
 	Cancel    context.CancelFunc
 	LogPath   string
 	SessionID string
@@ -386,6 +387,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		TaskID:  t.ID,
 		PID:     os.Getpid(),
 		Started: startTime,
+		Timeout: timeout,
 		Cancel:  cancel,
 	}
 	d.tasksMu.Unlock()
@@ -487,6 +489,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var usedSessionID string
 	var logPath string
 	var usedRunnerIdx int
+	var stderrOutput string
 	var err error
 
 	for attempt := 0; ; attempt++ {
@@ -496,7 +499,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			break
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {
@@ -563,15 +566,33 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
+	// Parse token usage from runner stderr
+	tokenUsage := runner.ParseTokenUsage(stderrOutput)
+
+	// Calculate estimated cost using configured or default rates
+	inputRate := d.config.InputTokenRate
+	outputRate := d.config.OutputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0 // $3.00 per 1M input tokens (Sonnet default)
+	}
+	if outputRate <= 0 {
+		outputRate = 15.0 // $15.00 per 1M output tokens (Sonnet default)
+	}
+	estimatedCost := float64(tokenUsage.InputTokens)/1_000_000*inputRate +
+		float64(tokenUsage.OutputTokens)/1_000_000*outputRate
+
 	// Write run record after completion with outcome data
 	runRecord := project.RunRecord{
-		RunID:     runID,
-		TaskID:    t.ID,
-		SessionID: usedSessionID,
-		PID:       childPID,
-		Started:   startTime,
-		Finished:  time.Now(),
-		Success:   err == nil,
+		RunID:            runID,
+		TaskID:           t.ID,
+		SessionID:        usedSessionID,
+		PID:              childPID,
+		Started:          startTime,
+		Finished:         time.Now(),
+		Success:          err == nil,
+		InputTokens:      tokenUsage.InputTokens,
+		OutputTokens:     tokenUsage.OutputTokens,
+		EstimatedCostUSD: estimatedCost,
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
@@ -757,15 +778,20 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
+		// Use per-task timeout if set, otherwise fall back to global config
+		timeout := task.Timeout
+		if timeout == 0 {
+			timeout = d.config.Timeout
+		}
 		result = append(result, TaskInfo{
 			Project:       task.Project,
 			Name:          task.Name,
 			PID:           task.PID,
 			Started:       task.Started.Format(time.RFC3339),
 			Elapsed:       elapsed.Round(time.Second).String(),
-			Timeout:       d.config.Timeout.String(),
-			TimeRemaining: (d.config.Timeout - elapsed).String(),
-			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
+			Timeout:       timeout.String(),
+			TimeRemaining: (timeout - elapsed).String(),
+			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
 			Status:        task.Status,
@@ -798,15 +824,20 @@ func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
+		// Use per-task timeout if set, otherwise fall back to global config
+		timeout := task.Timeout
+		if timeout == 0 {
+			timeout = d.config.Timeout
+		}
 		result = append(result, TaskInfo{
 			Project:       task.Project,
 			Name:          task.Name,
 			PID:           task.PID,
 			Started:       task.Started.Format(time.RFC3339),
 			Elapsed:       elapsed.Round(time.Second).String(),
-			Timeout:       d.config.Timeout.String(),
-			TimeRemaining: (d.config.Timeout - elapsed).String(),
-			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
+			Timeout:       timeout.String(),
+			TimeRemaining: (timeout - elapsed).String(),
+			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
 		})
