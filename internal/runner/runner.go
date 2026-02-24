@@ -46,7 +46,7 @@ func New(commands []string, timeout time.Duration) *Runner {
 // Returns the actual session ID used (either the passed-in sessionID for resume,
 // or a freshly generated one), the log file path (empty if no log was written),
 // and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, onStart func(pid int, logPath string, sessionID string)) (usedSessionID string, logPath string, err error) {
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, err error) {
 	var lastErr error
 	var lastStderr string
 
@@ -113,11 +113,15 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		cmd.Env = cleanEnv()
 
 		var stdout, stderr bytes.Buffer
+		var sw *statusWriter
 		if logFile != nil {
-			cmd.Stdout = io.MultiWriter(&stdout, logFile)
+			stdoutBase := io.MultiWriter(&stdout, logFile)
+			sw = newStatusWriter(stdoutBase, onStatus)
+			cmd.Stdout = sw
 			cmd.Stderr = io.MultiWriter(&stderr, logFile)
 		} else {
-			cmd.Stdout = &stdout
+			sw = newStatusWriter(&stdout, onStatus)
+			cmd.Stdout = sw
 			cmd.Stderr = &stderr
 		}
 
@@ -134,6 +138,9 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		}
 
 		waitErr := cmd.Wait()
+		if sw != nil {
+			sw.Flush()
+		}
 		if waitErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				return "", logPath, fmt.Errorf("timed out after %s", r.Timeout)
@@ -173,6 +180,67 @@ func cleanEnv() []string {
 		env = append(env, e)
 	}
 	return env
+}
+
+// statusPrefix is the magic stdout prefix tasks use to report dynamic status.
+const statusPrefix = "##anvil:status "
+
+// statusWriter wraps an io.Writer and scans for lines with the statusPrefix.
+// When detected, it calls onStatus with the status text and strips the line
+// from the downstream writer. All other output passes through unchanged.
+type statusWriter struct {
+	downstream io.Writer
+	onStatus   func(string)
+	buf        []byte // partial line buffer
+}
+
+func newStatusWriter(downstream io.Writer, onStatus func(string)) *statusWriter {
+	return &statusWriter{downstream: downstream, onStatus: onStatus}
+}
+
+func (sw *statusWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	sw.buf = append(sw.buf, p...)
+
+	for {
+		idx := bytes.IndexByte(sw.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		line := string(sw.buf[:idx])
+		sw.buf = sw.buf[idx+1:]
+
+		if strings.HasPrefix(line, statusPrefix) {
+			status := strings.TrimSpace(line[len(statusPrefix):])
+			if status != "" && sw.onStatus != nil {
+				sw.onStatus(status)
+			}
+			// Strip status lines from downstream output
+			continue
+		}
+
+		// Pass non-status lines through
+		if _, err := sw.downstream.Write([]byte(line + "\n")); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+// Flush writes any remaining partial line to downstream.
+func (sw *statusWriter) Flush() {
+	if len(sw.buf) > 0 {
+		line := string(sw.buf)
+		if strings.HasPrefix(line, statusPrefix) {
+			status := strings.TrimSpace(line[len(statusPrefix):])
+			if status != "" && sw.onStatus != nil {
+				sw.onStatus(status)
+			}
+		} else {
+			sw.downstream.Write(sw.buf)
+		}
+		sw.buf = nil
+	}
 }
 
 // shellEscape wraps content in single quotes with proper escaping.

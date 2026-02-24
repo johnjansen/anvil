@@ -104,6 +104,7 @@ type RunningTask struct {
 	Cancel    context.CancelFunc
 	LogPath   string
 	SessionID string
+	Status    string // dynamic status reported by task via ##anvil:status
 }
 
 type KillRequest struct {
@@ -121,6 +122,7 @@ type TaskInfo struct {
 	PercentUsed float64 `json:"percent_used,omitempty"`
 	LogPath     string `json:"log_path,omitempty"`
 	SessionID   string `json:"session_id,omitempty"`
+	Status      string `json:"status,omitempty"`
 }
 
 func New(cfg *config.Config) *Daemon {
@@ -340,6 +342,12 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			task.SessionID = sid
 		}
 		d.tasksMu.Unlock()
+	}, func(status string) {
+		d.tasksMu.Lock()
+		if task, ok := d.tasks[taskKey]; ok {
+			task.Status = status
+		}
+		d.tasksMu.Unlock()
 	})
 
 	// Write run record after completion
@@ -469,6 +477,7 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
+			Status:        task.Status,
 		})
 	}
 
@@ -671,7 +680,11 @@ func (d *Daemon) tick(now time.Time) {
 		var busyNames []string
 		for _, task := range d.tasks {
 			elapsed := time.Since(task.Started).Round(time.Second)
-			busyNames = append(busyNames, fmt.Sprintf("%s (%s)", taskLogLink(task), elapsed))
+			label := taskLogLink(task)
+			if task.Status != "" {
+				label = task.Status
+			}
+			busyNames = append(busyNames, fmt.Sprintf("%s (%s)", label, elapsed))
 		}
 		d.tasksMu.RUnlock()
 		if len(busyNames) > 0 {

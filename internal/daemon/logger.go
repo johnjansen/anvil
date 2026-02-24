@@ -168,3 +168,9 @@ func (l *daemonLogger) Info(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	l.println(fmt.Sprintf("%s %s  %s", l.ts(), l.schedulerStr(), msg))
 }
+
+func (l *daemonLogger) Fatal(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	l.println(fmt.Sprintf("%s %s  %s", l.ts(), l.c(ansiRed, "[fatal]"), msg))
+	os.Exit(1)
+}

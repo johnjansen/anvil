@@ -400,16 +400,21 @@ func psCmd() {
 	}
 
 	// Print table header
-	fmt.Printf("%-30s %-20s %-10s %-10s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STARTED")
-	fmt.Printf("%s\n", strings.Repeat("-", 100))
+	fmt.Printf("%-30s %-20s %-10s %-10s %-30s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STATUS", "STARTED")
+	fmt.Printf("%s\n", strings.Repeat("-", 120))
 
 	// Print each task
 	for _, t := range tasks {
-		fmt.Printf("%-30s %-20s %-10d %-10s %s\n",
+		status := ""
+		if t.Status != "" {
+			status = t.Status
+		}
+		fmt.Printf("%-30s %-20s %-10d %-10s %-30s %s\n",
 			truncate(t.Project, 30),
 			truncate(t.Name, 20),
 			t.PID,
 			t.Elapsed,
+			truncate(status, 30),
 			t.Started)
 	}
 }
@@ -777,8 +782,12 @@ func taskLsCmd(args []string) {
 			status := "idle"
 			if t.IsLocked {
 				status = "locked"
-			} else if _, ok := runningByID[taskKey]; ok {
-				status = "running"
+			} else if rt, ok := runningByID[taskKey]; ok {
+				if rt.Status != "" {
+					status = rt.Status
+				} else {
+					status = "running"
+				}
 			}
 			preview := strings.TrimSpace(t.Content)
 			if len(preview) > 50 {
