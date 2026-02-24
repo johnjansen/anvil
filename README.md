@@ -151,19 +151,21 @@ runners:
 | Command | Description |
 |---------|-------------|
 | `anvil watch` | Start the daemon |
+| `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil init [path]` | Initialize a project |
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil status` | Show watched projects |
+| `anvil stop` | Stop the daemon (SIGTERM) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
-| `anvil update` | Update to latest release |
+| `anvil update [--check]` | Update to latest release |
 
 **Task management:**
 
 | Command | Description |
 |---------|-------------|
 | `anvil task ls` | List tasks in current project |
-| `anvil task ls --all` | List tasks across all projects |
+| `anvil task ls [-a|--all]` | List tasks across all projects |
 | `anvil task get <name>` | Show task details |
 | `anvil task log <name>` | Show execution log |
 | `anvil task log -f <name>` | Follow live log output |
@@ -185,8 +187,9 @@ runners:
 | Command | Description |
 |---------|-------------|
 | `anvil project ls` | List watched projects |
+| `anvil project ls [-a|--all]` | List watched projects |
 | `anvil project get [path]` | Show project and running tasks |
-| `anvil project rm [path]` | Unwatch a project |
+| `anvil project rm [path] [--clean]` | Unwatch a project (--clean removes .anvil/ too) |
 
 ## Cron Format
 

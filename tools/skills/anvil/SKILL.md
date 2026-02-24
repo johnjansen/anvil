@@ -17,6 +17,9 @@ anvil init
 
 # Start the daemon (once per machine)
 anvil watch
+
+# Or run in background (daemonized)
+anvil watch [-d|--daemonize]
 ```
 
 `anvil init` defaults to the current directory, pass a path to target a different project. It both initializes the project structure and registers it with the daemon.
@@ -225,16 +228,16 @@ anvil task kill <name>
 
 Sends a kill request to the daemon via unix socket. The daemon cancels the task's context directly for immediate termination. Accepts a task name or UUID.
 
-## Stop on Idle
+## Stopping the Daemon
 
 ```bash
-anvil stop-on-idle                   # daemon will finish running tasks then exit
-anvil task stop-on-idle <name>       # task will not be rescheduled after its current run
+anvil stop                     # send SIGTERM to stop the daemon
+anvil stop-on-idle             # drain running tasks then exit
 ```
 
-`anvil stop-on-idle` puts the whole daemon into drain mode — it finishes all currently running tasks and then exits cleanly. Useful for graceful shutdowns.
+`anvil stop` sends SIGTERM to the daemon for immediate shutdown.
 
-`anvil task stop-on-idle <name>` marks a single task: it completes its current run but is not rescheduled. Other tasks continue normally.
+`anvil stop-on-idle` puts the daemon into drain mode — it finishes all currently running tasks and then exits cleanly. Useful for graceful shutdowns.
 
 ## Task Subcommands
 
