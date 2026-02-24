@@ -394,6 +394,42 @@ func ReadCurrentRunRecord(projectPath, taskID string) (RunRecord, error) {
 	return rec, nil
 }
 
+// ReadAllRunRecords reads all run records for a task, sorted by start time (newest first).
+func ReadAllRunRecords(projectPath, taskID string) ([]RunRecord, error) {
+	dir := runsDir(projectPath, taskID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading runs dir: %w", err)
+	}
+
+	var records []RunRecord
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == "current" || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		recPath := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(recPath)
+		if err != nil {
+			continue // skip unreadable records
+		}
+		var rec RunRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			continue // skip malformed records
+		}
+		records = append(records, rec)
+	}
+
+	// Sort by start time, newest first
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Started.After(records[j].Started)
+	})
+
+	return records, nil
+}
+
 // LatestSessionID resolves the session ID for the most recent run of a task.
 // Returns an error if no run record exists (caller should start a fresh session).
 func LatestSessionID(projectPath, taskID string) (string, error) {

@@ -93,6 +93,10 @@ type Daemon struct {
 	draining    int32           // atomic: 1 = stop-on-idle mode active
 	drainedTasks map[string]bool // taskID -> true: per-task stop-on-idle
 	drainedMu   sync.Mutex
+	// persistentFailures tracks consecutive failure counts for persistent tasks
+	// to implement exponential backoff and hard-stop after max failures
+	persistentFailures   map[string]int
+	persistentFailuresMu sync.Mutex
 }
 
 type RunningTask struct {
@@ -140,6 +144,7 @@ func New(cfg *config.Config) *Daemon {
 		socketPath:   filepath.Join(config.Dir(), "daemon.sock"),
 		tasks:        make(map[string]*RunningTask),
 		drainedTasks: make(map[string]bool),
+		persistentFailures: make(map[string]int),
 	}
 }
 
@@ -350,16 +355,18 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		d.tasksMu.Unlock()
 	})
 
-	// Write run record after completion
+	// Write run record after completion with outcome data
 	runRecord := project.RunRecord{
 		RunID:     runID,
 		TaskID:    t.ID,
 		SessionID: usedSessionID,
 		PID:       childPID,
 		Started:   startTime,
+		Finished:  time.Now(),
+		Success:   err == nil,
 	}
-	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
-		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
+	if err != nil {
+		runRecord.Error = err.Error()
 	}
 
 	elapsed := time.Since(startTime)
@@ -381,6 +388,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 				dlog.Warn("could not remove %s: %v", t.Path, removeErr)
 			}
 		}
+	}
+
+	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
+		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
 }
 
@@ -805,7 +816,11 @@ func (d *Daemon) tick(now time.Time) {
 		totalTodos += len(allTodos)
 
 		for _, t := range allTodos {
-			if t.Schedule == "" || cron.Matches(t.Schedule, thisMinute) {
+			// Include task if:
+			// - one-shot (empty schedule)
+			// - cron schedule matches current minute
+			// - persistent task (run immediately on tick)
+			if t.Schedule == "" || t.IsPersistent() || cron.Matches(t.Schedule, thisMinute) {
 				// For one-shot todos, skip if a stale lock file exists from a
 				// previous daemon crash. The user must remove the lock file (or
 				// the todo file) to unblock the task.

@@ -732,6 +732,8 @@ func taskCmd(args []string) {
 		taskRunCmd(args[1:])
 	case "kill":
 		taskKillCmd(args[1:])
+	case "history":
+		taskHistoryCmd(args[1:])
 	case "stop-on-idle":
 		taskStopOnIdleCmd(args[1:])
 	case "unlock":
@@ -1197,6 +1199,96 @@ func taskKillCmd(args []string) {
 	}
 
 	fmt.Printf("killed task: %s\n", args[0])
+}
+
+func taskHistoryCmd(args []string) {
+	limit := 10
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "-n", "--limit":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit]\n")
+				os.Exit(1)
+			}
+			if _, err := fmt.Sscanf(args[i+1], "%d", &limit); err != nil {
+				fmt.Fprintf(os.Stderr, "invalid limit: %s\n", args[i+1])
+				os.Exit(1)
+			}
+			i += 2
+		default:
+			break
+		}
+	}
+	taskName := strings.Join(args[i:], " ")
+	if taskName == "" {
+		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit]\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	records, err := project.ReadAllRunRecords(abs, todo.ID)
+	if err != nil {
+		log.Fatalf("failed to read run history: %v", err)
+	}
+
+	if len(records) == 0 {
+		fmt.Println("no run history found")
+		return
+	}
+
+	if limit > 0 && len(records) > limit {
+		records = records[:limit]
+	}
+
+	// Print header
+	fmt.Printf("%-20s %10s %10s\n", "STARTED", "DURATION", "STATUS")
+	for _, rec := range records {
+		duration := ""
+		if !rec.Finished.IsZero() {
+			d := rec.Finished.Sub(rec.Started)
+			if d < time.Minute {
+				duration = fmt.Sprintf("%.0fs", d.Seconds())
+			} else {
+				duration = fmt.Sprintf("%.0fm %.0fs", d.Minutes(), d.Seconds()-60*float64(d.Minutes()))
+			}
+		}
+
+		status := "ok"
+		if !rec.Success {
+			status = "failed"
+			if rec.Error != "" {
+				// Truncate error for display
+				errMsg := rec.Error
+				if len(errMsg) > 20 {
+					errMsg = errMsg[:20] + "..."
+				}
+				status = errMsg
+			}
+		}
+
+		fmt.Printf("%-20s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, status)
+	}
 }
 
 func taskUnlockCmd(args []string) {
