@@ -315,6 +315,7 @@ Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/c
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil update [--check]` | Update to latest release |
+| `anvil doctor` | Run diagnostics to check for common issues |
 | `anvil version` | Show version |
 
 **Task management:**

@@ -22,6 +22,7 @@ import (
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
+	"github.com/johnjansen/anvil/internal/diagnostic"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/tools"
 
@@ -88,6 +89,8 @@ func main() {
 		projectCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
+	case "doctor":
+		doctorCmd()
 	case "reload":
 		reloadCmd(os.Args[2:])
 	case "version", "-v", "--version":
@@ -466,6 +469,49 @@ func unwatchCmd(args []string) {
 	}
 
 	fmt.Printf("unwatched %s\n", abs)
+}
+
+func doctorCmd() {
+	results := diagnostic.All()
+
+	if len(results) == 0 {
+		fmt.Println("All checks passed!")
+		return
+	}
+
+	fmt.Println("Anvil Diagnostics")
+	fmt.Println(strings.Repeat("=", 60))
+
+	var passes, warnings, failures int
+
+	for _, r := range results {
+		switch r.Status {
+		case "pass":
+			fmt.Printf("[PASS] %s\n", r.Name)
+			passes++
+		case "warn":
+			fmt.Printf("[WARN] %s\n", r.Name)
+			fmt.Printf("       %s\n", r.Message)
+			if r.Fix != "" {
+				fmt.Printf("       Fix: %s\n", r.Fix)
+			}
+			warnings++
+		case "fail":
+			fmt.Printf("[FAIL] %s\n", r.Name)
+			fmt.Printf("       %s\n", r.Message)
+			if r.Fix != "" {
+				fmt.Printf("       Fix: %s\n", r.Fix)
+			}
+			failures++
+		}
+	}
+
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Printf("Summary: %d pass, %d warn, %d fail\n", passes, warnings, failures)
+
+	if failures > 0 {
+		os.Exit(1)
+	}
 }
 
 func statusCmd() {
@@ -1190,6 +1236,15 @@ func taskGetCmd(args []string) {
 	fmt.Printf("File:     %s\n", todo.Path)
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
+	// Show next run time for scheduled tasks
+	if todo.Schedule != "" {
+		if p, err := cron.Parse(todo.Schedule); err == nil {
+			if next, err := p.Next(time.Now()); err == nil {
+				until := time.Until(next).Round(time.Minute)
+				fmt.Printf("Next:     %s (%s from now)\n", next.Format("Mon 15:04"), until)
+			}
+		}
+	}
 	fmt.Printf("Priority: %d\n", todo.Priority)
 	if todo.Disabled {
 		fmt.Printf("Disabled: true\n")
