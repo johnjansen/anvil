@@ -880,15 +880,33 @@ func taskLogCmd(args []string) {
 		}
 	}
 
-	if id == "" {
-		fmt.Fprintf(os.Stderr, "task has no session ID\n")
-		os.Exit(1)
+	// Try to resolve session ID: first from run records, then from the running daemon.
+	var sessionID string
+
+	if id != "" {
+		sessionID, _ = project.LatestSessionID(abs, id)
 	}
 
-	// Resolve the session ID from the latest run record (not the task ID)
-	sessionID, err := project.LatestSessionID(abs, id)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "no session log found for task: %v\n", err)
+	// If we couldn't resolve a session ID from disk, check if the task is
+	// currently running — the daemon tracks the session ID in memory.
+	if sessionID == "" && todoName != "" && daemon.IsDaemonRunning() {
+		if tasks, psErr := daemon.SendPsRequest(); psErr == nil {
+			fullKey := fmt.Sprintf("%s/%s", abs, todoName)
+			for _, t := range tasks {
+				if t.Name == fullKey && t.SessionID != "" {
+					sessionID = t.SessionID
+					break
+				}
+			}
+		}
+	}
+
+	if sessionID == "" {
+		if id == "" {
+			fmt.Fprintf(os.Stderr, "task has no ID in frontmatter and is not currently running\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "no session log found for task\n")
+		}
 		os.Exit(1)
 	}
 

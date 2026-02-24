@@ -96,13 +96,14 @@ type Daemon struct {
 }
 
 type RunningTask struct {
-	Project string
-	Name    string
-	TaskID  string
-	PID     int
-	Started time.Time
-	Cancel  context.CancelFunc
-	LogPath string
+	Project   string
+	Name      string
+	TaskID    string
+	PID       int
+	Started   time.Time
+	Cancel    context.CancelFunc
+	LogPath   string
+	SessionID string
 }
 
 type KillRequest struct {
@@ -119,6 +120,7 @@ type TaskInfo struct {
 	TimeRemaining string `json:"time_remaining,omitempty"`
 	PercentUsed float64 `json:"percent_used,omitempty"`
 	LogPath     string `json:"log_path,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
 }
 
 func New(cfg *config.Config) *Daemon {
@@ -329,24 +331,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskLabel := projName + "/" + t.Name
 	var childPID int
 	logDir := filepath.Join(proj.Path, ".anvil", "logs", t.ID)
-	usedSessionID, logPath, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, func(pid int) {
+	usedSessionID, logPath, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, func(pid int, lp string, sid string) {
 		childPID = pid
 		d.tasksMu.Lock()
 		if task, ok := d.tasks[taskKey]; ok {
 			task.PID = pid
+			task.LogPath = lp
+			task.SessionID = sid
 		}
 		d.tasksMu.Unlock()
 	})
-
-	// Store the log path in the running task entry so /ps can expose it.
-	// At this point the task is still in d.tasks (the defer hasn't run yet).
-	if logPath != "" {
-		d.tasksMu.Lock()
-		if task, ok := d.tasks[taskKey]; ok {
-			task.LogPath = logPath
-		}
-		d.tasksMu.Unlock()
-	}
 
 	// Write run record after completion
 	runRecord := project.RunRecord{
@@ -474,6 +468,7 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 			TimeRemaining: (d.config.Timeout - elapsed).String(),
 			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
+			SessionID:     task.SessionID,
 		})
 	}
 
@@ -513,6 +508,7 @@ func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
 			TimeRemaining: (d.config.Timeout - elapsed).String(),
 			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
+			SessionID:     task.SessionID,
 		})
 	}
 

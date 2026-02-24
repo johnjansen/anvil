@@ -38,14 +38,15 @@ func New(commands []string, timeout time.Duration) *Runner {
 // (stdout+stderr teed in real time). The file is named <runID>.log. Pass empty
 // string to skip log file creation (behaviour identical to before).
 //
-// onStart, if non-nil, is called with the child process PID right after the
-// process starts (before waiting for it to complete). This allows callers to
-// record the PID while the task is running.
+// onStart, if non-nil, is called right after the child process starts
+// (before waiting for it to complete). It receives the child PID, the log
+// file path (empty if no log was written), and the session ID being used for
+// this execution. This allows callers to record metadata while the task runs.
 //
 // Returns the actual session ID used (either the passed-in sessionID for resume,
 // or a freshly generated one), the log file path (empty if no log was written),
 // and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, onStart func(pid int)) (usedSessionID string, logPath string, err error) {
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, onStart func(pid int, logPath string, sessionID string)) (usedSessionID string, logPath string, err error) {
 	var lastErr error
 	var lastStderr string
 
@@ -127,9 +128,9 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 			continue
 		}
 
-		// Report child PID to caller while the process is running
+		// Report child PID, log path, and session ID to caller while the process is running
 		if onStart != nil {
-			onStart(cmd.Process.Pid)
+			onStart(cmd.Process.Pid, logPath, actualSessionID)
 		}
 
 		waitErr := cmd.Wait()
