@@ -249,6 +249,7 @@ runners:
 | `anvil task stop-on-idle <name>` | Finish current run then stop rescheduling |
 | `anvil task unlock <name>` | Remove stale lock file to allow retry |
 | `anvil task history <name> [-n limit]` | Show run history (default 10 runs) |
+| `anvil task history <name> -f` | Follow mode - watch for new runs |
 | `anvil task history <name> --failures` | Show only failed runs |
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task edit <name> [-s schedule] [-p priority]` | Edit task schedule/priority |

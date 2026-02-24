@@ -319,6 +319,7 @@ Sends a kill request to the daemon via unix socket. The daemon cancels the task'
 ```bash
 anvil task history <name>      # show last 10 runs
 anvil task history <name> -n 5 # show last 5 runs
+anvil task history <name> -f   # follow mode - watch for new runs
 anvil task history <name> --failures   # show only failed runs
 anvil task history <name> --json       # output in JSON format
 ```
