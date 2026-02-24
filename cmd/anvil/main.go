@@ -1203,12 +1203,14 @@ func taskKillCmd(args []string) {
 
 func taskHistoryCmd(args []string) {
 	limit := 10
+	showFailuresOnly := false
+	jsonOutput := false
 	i := 0
 	for i < len(args) {
 		switch args[i] {
 		case "-n", "--limit":
 			if i+1 >= len(args) {
-				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit]\n")
+				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [--failures] [--json]\n")
 				os.Exit(1)
 			}
 			if _, err := fmt.Sscanf(args[i+1], "%d", &limit); err != nil {
@@ -1216,13 +1218,19 @@ func taskHistoryCmd(args []string) {
 				os.Exit(1)
 			}
 			i += 2
+		case "-f", "--failures", "--show-failures-only":
+			showFailuresOnly = true
+			i++
+		case "--json":
+			jsonOutput = true
+			i++
 		default:
 			break
 		}
 	}
 	taskName := strings.Join(args[i:], " ")
 	if taskName == "" {
-		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [--failures] [--json]\n")
 		os.Exit(1)
 	}
 
@@ -1257,8 +1265,28 @@ func taskHistoryCmd(args []string) {
 		return
 	}
 
+	// Filter failures if requested
+	if showFailuresOnly {
+		var filtered []project.RunRecord
+		for _, rec := range records {
+			if !rec.Success {
+				filtered = append(filtered, rec)
+			}
+		}
+		records = filtered
+	}
+
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(records, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
 	}
 
 	// Print header
