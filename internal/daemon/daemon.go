@@ -489,6 +489,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var usedSessionID string
 	var logPath string
 	var usedRunnerIdx int
+	var stderrOutput string
 	var err error
 
 	for attempt := 0; ; attempt++ {
@@ -498,7 +499,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			break
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {
@@ -565,15 +566,33 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
+	// Parse token usage from runner stderr
+	tokenUsage := runner.ParseTokenUsage(stderrOutput)
+
+	// Calculate estimated cost using configured or default rates
+	inputRate := d.config.InputTokenRate
+	outputRate := d.config.OutputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0 // $3.00 per 1M input tokens (Sonnet default)
+	}
+	if outputRate <= 0 {
+		outputRate = 15.0 // $15.00 per 1M output tokens (Sonnet default)
+	}
+	estimatedCost := float64(tokenUsage.InputTokens)/1_000_000*inputRate +
+		float64(tokenUsage.OutputTokens)/1_000_000*outputRate
+
 	// Write run record after completion with outcome data
 	runRecord := project.RunRecord{
-		RunID:     runID,
-		TaskID:    t.ID,
-		SessionID: usedSessionID,
-		PID:       childPID,
-		Started:   startTime,
-		Finished:  time.Now(),
-		Success:   err == nil,
+		RunID:            runID,
+		TaskID:           t.ID,
+		SessionID:        usedSessionID,
+		PID:              childPID,
+		Started:          startTime,
+		Finished:         time.Now(),
+		Success:          err == nil,
+		InputTokens:      tokenUsage.InputTokens,
+		OutputTokens:     tokenUsage.OutputTokens,
+		EstimatedCostUSD: estimatedCost,
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
