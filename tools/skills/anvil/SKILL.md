@@ -231,13 +231,10 @@ Sends a kill request to the daemon via unix socket. The daemon cancels the task'
 ## Stopping the Daemon
 
 ```bash
-anvil stop                     # send SIGTERM to stop the daemon
 anvil stop-on-idle             # drain running tasks then exit
 ```
 
-`anvil stop` sends SIGTERM to the daemon for immediate shutdown.
-
-`anvil stop-on-idle` puts the daemon into drain mode — it finishes all currently running tasks and then exits cleanly. Useful for graceful shutdowns.
+`anvil stop-on-idle` puts the daemon into drain mode — it finishes all currently running tasks and then exits cleanly. Useful for graceful shutdowns. To stop the daemon immediately, send SIGTERM directly (e.g. `kill $(cat ~/.anvil/daemon.pid)`).
 
 ## Task Subcommands
 

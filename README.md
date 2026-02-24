@@ -2,7 +2,7 @@
 
 Scheduled LLM tasks for your projects. Write a task in plain English, give it a cron schedule, and anvil runs it automatically through Claude.
 
-##Claude Skill
+## Claude Skill
 
 Anvil includes a [Claude skill](https://github.com/johnjansen/anvil/blob/main/tools/skills/anvil/SKILL.md) that can automatically create scheduled jobs for you. Just describe what you want automated, and the skill will generate the task file with the proper schedule and content.
 
@@ -133,7 +133,7 @@ skip_permissions: true
 ```yaml
 runners:
   - claude
-max_workers: 10    # parallel tasks
+max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 5s  # how often to check for work
 ```
@@ -153,10 +153,9 @@ runners:
 | `anvil watch` | Start the daemon |
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil init [path]` | Initialize a project |
-| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority) |
+| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil status` | Show watched projects |
-| `anvil stop` | Stop the daemon (SIGTERM) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil update [--check]` | Update to latest release |
 
