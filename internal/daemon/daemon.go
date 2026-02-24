@@ -103,6 +103,10 @@ type Daemon struct {
 	// Map value is the time when the cooldown expires.
 	persistentCooldowns map[string]time.Time
 	persistentCooldownsMu sync.Mutex
+	// starvationTrackers tracks when persistent tasks started waiting for a worker slot.
+	// Used to implement starvation prevention - after N minutes, persistent tasks yield to higher priority work.
+	starvationTrackers map[string]time.Time
+	starvationTrackersMu sync.Mutex
 	// runnerCooldowns tracks runner indices that are temporarily skipped due to failures.
 	// Map value is the time when the cooldown expires.
 	runnerCooldowns map[int]time.Time
@@ -171,6 +175,7 @@ func New(cfg *config.Config) *Daemon {
 		drainedTasks: make(map[string]bool),
 		persistentFailures: make(map[string]int),
 		persistentCooldowns: make(map[string]time.Time),
+	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
 	}
@@ -638,6 +643,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		d.persistentCooldownsMu.Lock()
 		d.persistentCooldowns[taskKey] = time.Now().Add(t.PersistentCooldown)
 		d.persistentCooldownsMu.Unlock()
+		// Clear starvation tracker - task completed successfully
+		d.starvationTrackersMu.Lock()
+		delete(d.starvationTrackers, taskKey)
+		d.starvationTrackersMu.Unlock()
 		dlog.Info("persistent task %s completed — next run in %v", t.Name, t.PersistentCooldown)
 	}
 
@@ -1303,12 +1312,75 @@ func (d *Daemon) tick(now time.Time) {
 			d.persistentCooldownsMu.Unlock()
 		}
 
+		// Starvation prevention: if a persistent task has been waiting too long,
+		// skip it to let higher-priority work through. This prevents low-priority
+		// persistent tasks from blocking high-priority cron jobs indefinitely.
+		if pt.todo.IsPersistent() {
+			d.starvationTrackersMu.Lock()
+			waitStart, exists := d.starvationTrackers[taskKey]
+			if !exists {
+				// First time seeing this task as pending - start tracking
+				d.starvationTrackers[taskKey] = now
+				waitStart = now
+			}
+			waitDuration := now.Sub(waitStart)
+			d.starvationTrackersMu.Unlock()
+
+			// After 5 minutes of waiting, yield to let higher priority work through
+			if waitDuration > 5*time.Minute {
+				// Check if there are higher-priority tasks waiting
+				// If yes, skip this persistent task to let them through
+				d.pendingTasksMu.RLock()
+				hasHigherPriorityWaiting := false
+				for key, reason := range d.pendingTasks {
+					if key != taskKey && reason != "persistent task in cooldown" {
+						// Check if this is a higher priority task
+						for _, otherPt := range dueTodos {
+							otherKey := fmt.Sprintf("%s/%s", otherPt.proj.Path, otherPt.todo.Name)
+							if otherKey == key && otherPt.todo.Priority < pt.todo.Priority {
+								hasHigherPriorityWaiting = true
+								break
+							}
+						}
+						if hasHigherPriorityWaiting {
+							break
+						}
+					}
+				}
+				d.pendingTasksMu.RUnlock()
+
+				if hasHigherPriorityWaiting {
+					dlog.Info("skip %s/%s — starvation prevention: yielding after %v of waiting", projName, pt.todo.Name, waitDuration.Round(time.Second))
+					d.pendingTasksMu.Lock()
+					d.pendingTasks[taskKey] = "starvation prevention: yielding"
+					d.pendingTasksMu.Unlock()
+					d.inFlightMu.Lock()
+					d.inFlight[taskKey]--
+					if d.inFlight[taskKey] <= 0 {
+						delete(d.inFlight, taskKey)
+					}
+					d.inFlightMu.Unlock()
+					// Clear starvation tracker - we're letting it wait longer
+					d.starvationTrackersMu.Lock()
+					delete(d.starvationTrackers, taskKey)
+					d.starvationTrackersMu.Unlock()
+					continue
+				}
+			}
+		}
+
 		dlog.Dispatch(projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
 
 		// Non-blocking send; if queue is full, clear in-flight and warn
 		select {
 		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo}:
 			dispatched++
+			// Clear starvation tracker for persistent tasks when dispatched
+			if pt.todo.IsPersistent() {
+				d.starvationTrackersMu.Lock()
+				delete(d.starvationTrackers, taskKey)
+				d.starvationTrackersMu.Unlock()
+			}
 		default:
 			dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
 			d.pendingTasksMu.Lock()
