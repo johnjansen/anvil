@@ -8,11 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,7 +52,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "'anvil serve' has been renamed. Did you mean 'anvil watch'?")
 		serveCmd()
 	case "watch":
-		serveCmd()
+		watchCmd2(os.Args[2:])
 	case "unwatch":
 		fmt.Fprintln(os.Stderr, "'anvil unwatch' has been removed. Did you mean 'anvil project rm [path]'?")
 		os.Exit(1)
@@ -104,7 +106,8 @@ Usage:
 
 Commands:
   init [path]              Initialize a project and register it for watching
-  watch                    Start the daemon (once per machine)
+  watch [-d|--daemonize]   Start the daemon (once per machine)
+  watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
   status                   Show watched projects
@@ -213,14 +216,6 @@ func registerProject(abs string) {
 }
 
 func serveCmd() {
-	// Parse --daemonize flag
-	daemonize := false
-	for _, arg := range os.Args[2:] {
-		if arg == "--daemonize" || arg == "-d" {
-			daemonize = true
-		}
-	}
-
 	if err := config.EnsureDir(); err != nil {
 		log.Fatalf("failed to create ~/.anvil: %v", err)
 	}
@@ -230,13 +225,6 @@ func serveCmd() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// Daemonize if requested
-	if daemonize {
-		daemonizeServe(cfg)
-		return
-	}
-
-	// Run in foreground
 	d := daemon.New(cfg)
 
 	sigCh := make(chan os.Signal, 1)
@@ -253,29 +241,119 @@ func serveCmd() {
 	}
 }
 
-// daemonizeServe runs the daemon in the background
-func daemonizeServe(cfg *config.Config) {
-	// Fork the process
-	pid := os.Getpid()
-
-	// On Unix, use syscall fork
-	// We'll use a simpler approach: just run the daemon in background
-	// and write the PID file before starting
-
-	// The daemon will handle its own PID file management
-	// Write PID file before starting
-	if err := os.WriteFile(config.PidFile(), []byte(fmt.Sprintf("%d\n", pid)), 0644); err != nil {
-		log.Fatalf("failed to write PID file: %v", err)
+// watchCmd2 handles "anvil watch" with optional --daemonize/-d, --stop, and --child flags.
+func watchCmd2(args []string) {
+	daemonize := false
+	stop := false
+	child := false
+	for _, arg := range args {
+		switch arg {
+		case "--daemonize", "-d":
+			daemonize = true
+		case "--stop":
+			stop = true
+		case "--child":
+			child = true
+		}
 	}
 
-	// Note: true daemonization on Unix requires fork+setsid+umask+chdir
-	// For simplicity, we run the daemon in foreground but detached
-	// The actual backgrounding is handled by the shell or process manager
-	// In a real daemonization, we would fork here and have the parent exit
+	if stop {
+		stopDaemon()
+		return
+	}
+
+	if child {
+		runDaemonChild()
+		return
+	}
+
+	if daemonize {
+		daemonizeProcess()
+		return
+	}
+
+	// Default: run in foreground (existing behavior)
+	serveCmd()
+}
+
+// readDaemonPID reads the PID from the daemon PID file.
+// Returns 0 if the file doesn't exist or the process is not alive.
+func readDaemonPID() int {
+	data, err := os.ReadFile(config.PidFile())
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	// Check if process is alive
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return 0
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		// Process not alive — clean up stale PID file
+		os.Remove(config.PidFile())
+		return 0
+	}
+	return pid
+}
+
+// daemonizeProcess re-execs the current binary with --child in a detached session.
+func daemonizeProcess() {
+	if err := config.EnsureDir(); err != nil {
+		log.Fatalf("failed to create ~/.anvil: %v", err)
+	}
+
+	if pid := readDaemonPID(); pid != 0 {
+		fmt.Fprintf(os.Stderr, "daemon already running (PID %d)\n", pid)
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("failed to find executable path: %v", err)
+	}
+
+	logFile, err := os.OpenFile(config.DaemonLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("failed to open daemon log: %v", err)
+	}
+
+	cmd := exec.Command(exe, "watch", "--child")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		log.Fatalf("failed to start daemon: %v", err)
+	}
+
+	logFile.Close()
+	fmt.Fprintf(os.Stderr, "daemon started (PID %d)\n", cmd.Process.Pid)
+}
+
+// runDaemonChild is the internal entry point for the detached child process.
+func runDaemonChild() {
+	if err := config.EnsureDir(); err != nil {
+		log.Fatalf("failed to create ~/.anvil: %v", err)
+	}
+
+	pid := os.Getpid()
+	if err := os.WriteFile(config.PidFile(), []byte(strconv.Itoa(pid)), 0644); err != nil {
+		log.Fatalf("failed to write PID file: %v", err)
+	}
+	defer os.Remove(config.PidFile())
+
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
 
 	d := daemon.New(cfg)
 
-	// Set up signal handling to clean up PID file
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
@@ -284,18 +362,40 @@ func daemonizeServe(cfg *config.Config) {
 	select {
 	case sig := <-sigCh:
 		log.Printf("received %v, shutting down", sig)
-		cleanupAndStop(d)
+		d.Stop()
 	case <-d.Done():
-		// daemon stopped itself (e.g. stop-on-idle drain completed)
-		cleanupAndStop(d)
+		d.Stop()
 	}
 }
 
-// cleanupAndStop stops the daemon and removes the PID file
-func cleanupAndStop(d *daemon.Daemon) {
-	d.Stop()
-	// Remove PID file on clean shutdown
-	os.Remove(config.PidFile())
+// stopDaemon sends SIGTERM to the running daemon and waits for it to exit.
+func stopDaemon() {
+	pid := readDaemonPID()
+	if pid == 0 {
+		fmt.Fprintln(os.Stderr, "no daemon running")
+		return
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "no daemon running")
+		return
+	}
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to stop daemon: %v\n", err)
+		return
+	}
+
+	// Wait up to 5 seconds for the PID file to disappear
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := os.Stat(config.PidFile()); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "daemon stopped (PID %d)\n", pid)
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "daemon did not stop in time (PID %d)\n", pid)
 }
 
 // watchCmd is the legacy "register a project" command, now superseded by

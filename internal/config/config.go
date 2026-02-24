@@ -44,6 +44,10 @@ func PidFile() string {
 	return filepath.Join(Dir(), "daemon.pid")
 }
 
+func DaemonLogPath() string {
+	return filepath.Join(Dir(), "daemon.log")
+}
+
 func EnsureDir() error {
 	if err := os.MkdirAll(Dir(), 0755); err != nil {
 		return err
