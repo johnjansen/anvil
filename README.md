@@ -90,6 +90,21 @@ anvil add -s "persistent" "Monitor a queue and process items as they arrive"
 
 Persistent tasks exit after each unit of work and are immediately re-dispatched on the next scheduler tick. This is useful for event-driven workflows where you want the task to run frequently but not block the worker between work units.
 
+#### Persistent task options
+
+For persistent tasks, you can configure:
+
+```yaml
+---
+schedule: "persistent"
+persistent_cooldown: 5s      # wait between restart cycles (default: 0 = immediate)
+persistent_max_runtime: 10m  # max runtime before forced restart (default: 0 = no limit)
+---
+```
+
+- `persistent_cooldown` — wait time after a persistent task completes before re-dispatching. Default is 0 (immediate restart).
+- `persistent_max_runtime` — maximum runtime before the task is forcibly restarted. Useful for preventing runaway tasks. Default is 0 (no limit).
+
 ### Priority
 
 Lower number = higher priority. Default is `p1`:

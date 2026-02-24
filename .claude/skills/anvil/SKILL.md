@@ -72,6 +72,47 @@ anvil add -s "*/5 * * * *" --max-concurrent 2 "Process in parallel"
 
 Task files are stored in `.anvil/todos/p<N>/<slugified-name>.md` with YAML frontmatter containing the schedule and a UUID.
 
+## Persistent Tasks
+
+Pass `persistent` as the schedule to run continuously:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "persistent"
+---
+```
+
+Persistent tasks exit after each unit of work and are immediately re-dispatched on the next scheduler tick. This is useful for event-driven workflows.
+
+### persistent_cooldown
+
+For persistent tasks, set `persistent_cooldown` to wait between restart cycles:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "persistent"
+persistent_cooldown: 5s
+---
+```
+
+Default is 0 (immediate restart).
+
+### persistent_max_runtime
+
+Set `persistent_max_runtime` to enforce a maximum runtime before forced restart:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "persistent"
+persistent_max_runtime: 10m
+---
+```
+
+Useful for preventing runaway tasks. Default is 0 (no limit).
+
 ## Session Continuity
 
 By default, recurring tasks resume previous sessions and one-shot tasks start fresh. Override this with `resume` in the frontmatter:

@@ -97,6 +97,10 @@ type Daemon struct {
 	// to implement exponential backoff and hard-stop after max failures
 	persistentFailures   map[string]int
 	persistentFailuresMu sync.Mutex
+	// persistentCooldowns tracks when a persistent task can next be dispatched.
+	// Map value is the time when the cooldown expires.
+	persistentCooldowns map[string]time.Time
+	persistentCooldownsMu sync.Mutex
 	// runnerCooldowns tracks runner indices that are temporarily skipped due to failures.
 	// Map value is the time when the cooldown expires.
 	runnerCooldowns map[int]time.Time
@@ -149,6 +153,7 @@ func New(cfg *config.Config) *Daemon {
 		tasks:        make(map[string]*RunningTask),
 		drainedTasks: make(map[string]bool),
 		persistentFailures: make(map[string]int),
+		persistentCooldowns: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 	}
 }
@@ -265,8 +270,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	}()
 
 	// Use task-specific timeout if set, otherwise fall back to global config
+	// For persistent tasks, use PersistentMaxRuntime if set (forces cycle after max runtime)
 	timeout := d.config.Timeout
-	if t.Timeout > 0 {
+	if t.IsPersistent() && t.PersistentMaxRuntime > 0 {
+		timeout = t.PersistentMaxRuntime
+	} else if t.Timeout > 0 {
 		timeout = t.Timeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -495,6 +503,26 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		if t.OnFailure != "" {
 			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
 		}
+		// For persistent tasks, track failures and apply exponential backoff
+		if t.IsPersistent() {
+			d.persistentFailuresMu.Lock()
+			d.persistentFailures[taskKey]++
+			failCount := d.persistentFailures[taskKey]
+			d.persistentFailuresMu.Unlock()
+			// Calculate exponential backoff: base * 2^(failCount-1), default base is 1 minute
+			baseBackoff := t.RetryDelay
+			if baseBackoff <= 0 {
+				baseBackoff = 1 * time.Minute
+			}
+			backoffDuration := baseBackoff
+			for i := 1; i < failCount; i++ {
+				backoffDuration *= 2
+			}
+			d.persistentCooldownsMu.Lock()
+			d.persistentCooldowns[taskKey] = time.Now().Add(backoffDuration)
+			d.persistentCooldownsMu.Unlock()
+			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v", t.Name, failCount, backoffDuration)
+		}
 	} else {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
 		// Run on_success hook if defined
@@ -507,6 +535,20 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 				dlog.Warn("could not remove %s: %v", t.Path, removeErr)
 			}
 		}
+		// Clear failure count on successful completion for persistent tasks
+		if t.IsPersistent() {
+			d.persistentFailuresMu.Lock()
+			delete(d.persistentFailures, taskKey)
+			d.persistentFailuresMu.Unlock()
+		}
+	}
+
+	// For persistent tasks, set cooldown after each cycle completes
+	if t.IsPersistent() && t.PersistentCooldown > 0 {
+		d.persistentCooldownsMu.Lock()
+		d.persistentCooldowns[taskKey] = time.Now().Add(t.PersistentCooldown)
+		d.persistentCooldownsMu.Unlock()
+		dlog.Info("persistent task %s completed — next run in %v", t.Name, t.PersistentCooldown)
 	}
 
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
@@ -1051,6 +1093,23 @@ func (d *Daemon) tick(now time.Time) {
 			}
 			d.inFlightMu.Unlock()
 			continue
+		}
+
+		// Skip dispatch if persistent task is in cooldown
+		if pt.todo.IsPersistent() && pt.todo.PersistentCooldown > 0 {
+			d.persistentCooldownsMu.Lock()
+			if expires, ok := d.persistentCooldowns[taskKey]; ok && now.Before(expires) {
+				d.persistentCooldownsMu.Unlock()
+				dlog.Info("skip %s/%s — persistent task in cooldown (expires %v)", projName, pt.todo.Name, expires.Round(time.Second))
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
+			d.persistentCooldownsMu.Unlock()
 		}
 
 		dlog.Dispatch(projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)

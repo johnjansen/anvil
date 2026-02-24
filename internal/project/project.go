@@ -46,6 +46,9 @@ type Todo struct {
 	Timeout         time.Duration // task-specific timeout (0 = use global default)
 	Retry           int      // number of retries on failure (0 = no retry)
 	RetryDelay      time.Duration // delay between retries (default 1m, used with Retry)
+	// Persistent task configuration
+	PersistentCooldown time.Duration // cooldown between restart cycles (default 0 = immediate)
+	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -123,6 +126,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var timeout time.Duration
 			retry := 0
 			var retryDelay time.Duration
+			var persistentCooldown time.Duration
+			var persistentMaxRuntime time.Duration
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -132,19 +137,21 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 					fm := parts[0]
 					body = parts[1]
 					var fmData struct {
-						Schedule        string   `yaml:"schedule"`
-						ID              string   `yaml:"id"`
-						Resume          *bool    `yaml:"resume"`
-						MaxConcurrent   int      `yaml:"max_concurrent"`
-						SkipPermissions bool     `yaml:"skip_permissions"`
-						AllowedTools    []string `yaml:"allowed_tools"`
-						PreCheck        string   `yaml:"pre_check"`
-						OnSuccess       string   `yaml:"on_success"`
-						OnFailure       string   `yaml:"on_failure"`
-						Disabled        bool     `yaml:"disabled"`
-						Timeout         string   `yaml:"timeout"`
-						Retry           int      `yaml:"retry"`
-						RetryDelay      string   `yaml:"retry_delay"`
+						Schedule            string   `yaml:"schedule"`
+						ID                  string   `yaml:"id"`
+						Resume              *bool    `yaml:"resume"`
+						MaxConcurrent       int      `yaml:"max_concurrent"`
+						SkipPermissions     bool     `yaml:"skip_permissions"`
+						AllowedTools        []string `yaml:"allowed_tools"`
+						PreCheck            string   `yaml:"pre_check"`
+						OnSuccess           string   `yaml:"on_success"`
+						OnFailure           string   `yaml:"on_failure"`
+						Disabled            bool     `yaml:"disabled"`
+						Timeout             string   `yaml:"timeout"`
+						Retry               int      `yaml:"retry"`
+						RetryDelay          string   `yaml:"retry_delay"`
+						PersistentCooldown  string   `yaml:"persistent_cooldown"`
+						PersistentMaxRuntime string `yaml:"persistent_max_runtime"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -164,29 +171,37 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.RetryDelay != "" {
 							retryDelay, _ = time.ParseDuration(fmData.RetryDelay)
 						}
+						if fmData.PersistentCooldown != "" {
+							persistentCooldown, _ = time.ParseDuration(fmData.PersistentCooldown)
+						}
+						if fmData.PersistentMaxRuntime != "" {
+							persistentMaxRuntime, _ = time.ParseDuration(fmData.PersistentMaxRuntime)
+						}
 					}
 				}
 			}
 
 			todos = append(todos, Todo{
-				Path:            fp,
-				Name:            e.Name(),
-				Priority:        pri,
-				Content:         body,
-				Schedule:        schedule,
-				ID:              id,
-				Resume:          resume,
-				MaxConcurrent:   maxConcurrent,
-				SkipPermissions: skipPermissions,
-				AllowedTools:    allowedTools,
-				PreCheck:        preCheck,
-				OnSuccess:       onSuccess,
-				OnFailure:       onFailure,
-				IsLocked:        hasLock,
-				Disabled:        disabled,
-				Timeout:         timeout,
-				Retry:           retry,
-				RetryDelay:      retryDelay,
+				Path:                fp,
+				Name:                e.Name(),
+				Priority:            pri,
+				Content:             body,
+				Schedule:            schedule,
+				ID:                  id,
+				Resume:              resume,
+				MaxConcurrent:       maxConcurrent,
+				SkipPermissions:     skipPermissions,
+				AllowedTools:        allowedTools,
+				PreCheck:            preCheck,
+				OnSuccess:           onSuccess,
+				OnFailure:           onFailure,
+				IsLocked:            hasLock,
+				Disabled:            disabled,
+				Timeout:             timeout,
+				Retry:               retry,
+				RetryDelay:          retryDelay,
+				PersistentCooldown:  persistentCooldown,
+				PersistentMaxRuntime: persistentMaxRuntime,
 			})
 		}
 	}
