@@ -243,7 +243,12 @@ runners:
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 5s  # how often to check for work
+hooks:
+  on_success: "echo 'Task completed' >> ~/.anvil/history.log"
+  on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
 ```
+
+Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
 
 Multiple runners with fallback:
 
@@ -252,6 +257,16 @@ runners:
   - claude -p "you are a helpful task runner"
   - claude --model haiku -p "you are a helpful task runner"
 ```
+
+### Hot Reload
+
+Send SIGHUP to the daemon to reload the config without restarting:
+
+```bash
+kill -HUP $(cat ~/.anvil/daemon.pid)
+```
+
+The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
 
 ## CLI Reference
 
