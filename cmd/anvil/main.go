@@ -581,13 +581,14 @@ func addCmd(args []string) {
 	// Handle -h/--help before creating task
 	for _, arg := range args {
 		if arg == "-h" || arg == "--help" {
-			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
+			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--runner cmd] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
 
 Add a new task to the project.
 
 Options:
   -p, --priority n        Priority 0-9 (default: 1)
   -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
+  --runner cmd           Runner command override (e.g., "claude --model haiku")
   --pre-check cmd        Command to run before task execution
   --allowed-tools tools  Comma-separated list of allowed tools
   --max-concurrent n     Max concurrent runs (default: 1)
@@ -601,6 +602,7 @@ Examples:
   anvil add "Review pull requests"
   anvil add -p 2 -s "0 9 * * *" "Daily standup notes"
   anvil add --pre-check "git diff --quiet" "Sync documentation"
+  anvil add -s "*/30 * * * *" --runner "claude --model haiku" "Triage issues"
   anvil add -s "*/30 * * * *" --file triage-prompt.md
   cat prompt.md | anvil add -s "*/30 * * * *" -
   anvil add -s "*/30 * * * *" <<'EOF'
@@ -674,6 +676,9 @@ func getCmd(args []string) {
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
 	fmt.Printf("Priority: %d\n", todo.Priority)
+	if todo.Runner != "" {
+		fmt.Printf("Runner:   %s\n", todo.Runner)
+	}
 	if todo.ID != "" {
 		sessionPath := project.SessionPath(abs, todo.ID)
 		if _, err := os.Stat(sessionPath); err == nil {
@@ -836,6 +841,7 @@ func taskCreateCmd(args []string) {
 	allowedTools := ""
 	maxConcurrent := 1
 	skipPermissions := false
+	runnerCmd := ""
 	filePath := ""
 	readStdin := false
 
@@ -845,6 +851,7 @@ func taskCreateCmd(args []string) {
 	preCheckSet := false
 	allowedToolsSet := false
 	maxConcurrentSet := false
+	runnerSet := false
 
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -901,6 +908,13 @@ func taskCreateCmd(args []string) {
 			}
 			maxConcurrent = n
 			maxConcurrentSet = true
+		case "--runner":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --runner")
+			}
+			i++
+			runnerCmd = args[i]
+			runnerSet = true
 		case "--skip-permissions":
 			skipPermissions = true
 		case "-f", "--file":
@@ -948,9 +962,9 @@ func taskCreateCmd(args []string) {
 	// Parse frontmatter from file/stdin content and merge with CLI flags.
 	// CLI flags take precedence over frontmatter values.
 	if filePath != "" || readStdin {
-		taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions = parseFrontmatterAndMerge(
-			taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions,
-			prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet,
+		taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd = parseFrontmatterAndMerge(
+			taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd,
+			prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet, runnerSet,
 		)
 	}
 
@@ -974,7 +988,7 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to load project: %v", err)
 	}
 
-	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions)
+	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd)
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}
@@ -1003,17 +1017,17 @@ func taskCreateCmd(args []string) {
 // Returns the body (without frontmatter) and the merged configuration values.
 func parseFrontmatterAndMerge(
 	content string,
-	priority int, schedule, preCheck, allowedTools string, maxConcurrent int, skipPermissions bool,
-	prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet bool,
-) (string, int, string, string, string, int, bool) {
+	priority int, schedule, preCheck, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string,
+	prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet, runnerSet bool,
+) (string, int, string, string, string, int, bool, string) {
 	if !strings.HasPrefix(content, "---\n") {
-		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
 	}
 
 	parts := strings.SplitN(content[4:], "\n---\n", 2)
 	if len(parts) != 2 {
 		// No closing delimiter found; treat entire content as body.
-		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
 	}
 
 	fm := parts[0]
@@ -1026,10 +1040,11 @@ func parseFrontmatterAndMerge(
 		AllowedTools    string `yaml:"allowed_tools"`
 		MaxConcurrent   *int   `yaml:"max_concurrent"`
 		SkipPermissions bool   `yaml:"skip_permissions"`
+		Runner          string `yaml:"runner"`
 	}
 	if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 		// If frontmatter is invalid YAML, treat the whole thing as body.
-		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
 	}
 
 	// Merge: CLI flags take precedence over frontmatter.
@@ -1054,8 +1069,11 @@ func parseFrontmatterAndMerge(
 	if fmData.SkipPermissions {
 		skipPermissions = true
 	}
+	if !runnerSet && fmData.Runner != "" {
+		runnerCmd = fmData.Runner
+	}
 
-	return body, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+	return body, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
 }
 
 func taskLsCmd(args []string) {

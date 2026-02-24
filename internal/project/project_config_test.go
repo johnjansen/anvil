@@ -298,3 +298,144 @@ func TestLoadTodos_ExplicitZeroOverridesDefault(t *testing.T) {
 		t.Errorf("expected retry=0 (explicit override of default), got %d", todo.Retry)
 	}
 }
+
+func TestLoadTodos_RunnerFromFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+	taskContent := "---\nid: \"test-runner-1\"\nschedule: \"*/30 * * * *\"\nrunner: \"claude --model haiku\"\n---\nTriage issues\n"
+	os.WriteFile(filepath.Join(todosDir, "triage.md"), []byte(taskContent), 0644)
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if todos[0].Runner != "claude --model haiku" {
+		t.Errorf("expected runner='claude --model haiku', got %q", todos[0].Runner)
+	}
+}
+
+func TestLoadTodos_RunnerFromProjectDefaults(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+	configContent := `defaults:
+  runner: "claude --model sonnet"
+`
+	os.WriteFile(filepath.Join(anvilDir, "config.yaml"), []byte(configContent), 0644)
+
+	taskContent := "---\nid: \"test-runner-2\"\nschedule: \"*/5 * * * *\"\n---\nDo something\n"
+	os.WriteFile(filepath.Join(todosDir, "task.md"), []byte(taskContent), 0644)
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if todos[0].Runner != "claude --model sonnet" {
+		t.Errorf("expected runner from defaults, got %q", todos[0].Runner)
+	}
+}
+
+func TestLoadTodos_RunnerFrontmatterOverridesDefault(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+	configContent := `defaults:
+  runner: "claude --model sonnet"
+`
+	os.WriteFile(filepath.Join(anvilDir, "config.yaml"), []byte(configContent), 0644)
+
+	taskContent := "---\nid: \"test-runner-3\"\nschedule: \"*/30 * * * *\"\nrunner: \"claude --model haiku\"\n---\nCheap triage\n"
+	os.WriteFile(filepath.Join(todosDir, "triage.md"), []byte(taskContent), 0644)
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if todos[0].Runner != "claude --model haiku" {
+		t.Errorf("expected task runner to override default, got %q", todos[0].Runner)
+	}
+}
+
+func TestAddTodo_WithRunner(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos")
+	os.MkdirAll(todosDir, 0755)
+
+	proj := &Project{Path: dir}
+	_, err := proj.AddTodo(1, "*/30 * * * *", "Triage issues", "", "", 0, false, "claude --model haiku")
+	if err != nil {
+		t.Fatalf("AddTodo error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if todos[0].Runner != "claude --model haiku" {
+		t.Errorf("expected runner='claude --model haiku', got %q", todos[0].Runner)
+	}
+}
+
+func TestAddTodo_WithoutRunner(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos")
+	os.MkdirAll(todosDir, 0755)
+
+	proj := &Project{Path: dir}
+	_, err := proj.AddTodo(1, "*/30 * * * *", "Review PRs", "", "", 0, false, "")
+	if err != nil {
+		t.Fatalf("AddTodo error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if todos[0].Runner != "" {
+		t.Errorf("expected empty runner, got %q", todos[0].Runner)
+	}
+}
