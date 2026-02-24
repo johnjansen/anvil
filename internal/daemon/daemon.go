@@ -338,7 +338,15 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		precheckCmd := exec.CommandContext(ctx, "sh", "-c", t.PreCheck)
 		precheckCmd.Dir = proj.Path
 		if precheckErr := precheckCmd.Run(); precheckErr != nil {
-			// Pre-check failed — nothing to do; exit without logging as done/failed.
+			taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+			// Distinguish between check ran and returned non-zero vs failed to start
+			if precheckCmd.ProcessState != nil {
+				// Command ran but exited non-zero — expected skip case
+				dlog.Info("pre_check skipped %s (exit %d)", taskLabel, precheckCmd.ProcessState.ExitCode())
+			} else {
+				// Command failed to start (binary not found, permission denied, etc.)
+				dlog.Warn("pre_check failed for %s: %v", taskLabel, precheckErr)
+			}
 			return
 		}
 	}
