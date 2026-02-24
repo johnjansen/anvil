@@ -1,6 +1,6 @@
 ---
 name: anvil
-description: Manage recurring tasks and todos with the anvil CLI. Use when users ask to add tasks, list todos, delete tasks, check task logs, kill running tasks, initialize a project for anvil, or watch a project. Trigger phrases include "add a task", "add a todo", "list todos", "show my tasks", "delete a task", "remove a todo", "create a recurring job", "check task log", "kill task", "stop task", "initialize anvil", "watch this project", "anvil init", "anvil add", "anvil list", "anvil get", "anvil delete", "anvil log", "anvil kill", "anvil watch", "anvil status", "anvil ps", "what tasks are running", "show running tasks".
+description: Manage recurring tasks and todos with the anvil CLI. Use when users ask to add tasks, list todos, delete tasks, check task logs, kill running tasks, initialize a project for anvil, or watch a project. Trigger phrases include "add a task", "add a todo", "list todos", "show my tasks", "delete a task", "remove a todo", "create a recurring job", "check task log", "kill task", "stop task", "initialize anvil", "watch this project", "anvil init", "anvil add", "anvil task", "anvil project", "anvil kill", "anvil watch", "anvil status", "what tasks are running", "show running tasks".
 ---
 
 # Anvil CLI
@@ -153,44 +153,34 @@ runner: claude -p "you are a task runner"
 ## Listing Tasks
 
 ```bash
-# List todos for the current project
-anvil list
-
-# Use the task subcommand for more options
 anvil task ls           # list tasks in current project
 anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
 ```
 
-Output columns: priority, schedule, status, name, content preview.
+Output columns: priority, schedule, status (running/idle), name, content preview.
 
 ## Getting Task Details
 
 ```bash
-anvil get <name>
-# or (also shows run status):
 anvil task get <name>
 ```
 
-Shows full details: file path, ID, schedule, priority, session path (if exists), and full content. `anvil task get` additionally shows whether the task is currently running. The name can be with or without the `.md` extension.
+Shows full details: file path, ID, schedule, priority, session path (if exists), run status, and full content. The name can be with or without the `.md` extension.
 
 ## Deleting Tasks
 
 ```bash
-anvil delete <name>
-# or (also kills if running):
 anvil task rm <name>
 ```
 
-Removes the todo file. `anvil task rm` will also kill the task if it's currently running.
+Removes the todo file. Also kills the task if it's currently running.
 
 ## Viewing Logs
 
 ```bash
-anvil log <name>           # print session log
-anvil log -f <name>        # follow (tail -f style)
-anvil task log <name>      # same via task subcommand
-anvil task log -f <name>   # follow mode
+anvil task log <name>      # print session log
+anvil task log -f <name>   # follow (tail -f style)
 ```
 
 Shows the session log (JSONL) for a task's most recent execution. Accepts a task name or UUID directly. Follow mode (`-f`) waits for the log file to appear and streams new output until the task completes or Ctrl+C is pressed.
@@ -207,10 +197,10 @@ The `logs` command shows raw stdout/stderr output from worker processes. Without
 ## Running Tasks
 
 ```bash
-anvil ps
+anvil task ls
 ```
 
-Shows currently running tasks with project, name, PID, start time, and elapsed time. Queries the daemon via unix socket at `~/.anvil/daemon.sock`.
+Shows tasks with their running/idle status. Use `anvil task ls --all` to see tasks across all watched projects.
 
 ## Killing Running Tasks
 
@@ -267,9 +257,8 @@ Shows watched projects and todo counts.
 ## Unwatching
 
 ```bash
-anvil unwatch
-# or:
 anvil project rm
+anvil project rm [path] --clean   # also removes .anvil/ directory
 ```
 
-Stops the daemon from monitoring this project. Does not delete any task files.
+Stops the daemon from monitoring this project. Does not delete any task files unless `--clean` is passed.

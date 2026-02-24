@@ -51,23 +51,29 @@ func main() {
 	case "watch":
 		serveCmd()
 	case "unwatch":
-		unwatchCmd(os.Args[2:])
+		fmt.Fprintln(os.Stderr, "'anvil unwatch' has been removed. Did you mean 'anvil project rm [path]'?")
+		os.Exit(1)
 	case "status":
 		statusCmd()
 	case "ps":
-		psCmd()
+		fmt.Fprintln(os.Stderr, "'anvil ps' has been removed. Did you mean 'anvil task ls'?")
+		os.Exit(1)
 	case "init":
 		initCmd(os.Args[2:])
 	case "add":
 		addCmd(os.Args[2:])
 	case "list":
-		listCmd()
+		fmt.Fprintln(os.Stderr, "'anvil list' has been removed. Did you mean 'anvil task ls'?")
+		os.Exit(1)
 	case "get":
-		getCmd(os.Args[2:])
+		fmt.Fprintln(os.Stderr, "'anvil get' has been removed. Did you mean 'anvil task get <name>'?")
+		os.Exit(1)
 	case "delete":
-		deleteCmd(os.Args[2:])
+		fmt.Fprintln(os.Stderr, "'anvil delete' has been removed. Did you mean 'anvil task rm <name>'?")
+		os.Exit(1)
 	case "log":
-		logCmd(os.Args[2:])
+		fmt.Fprintln(os.Stderr, "'anvil log' has been removed. Did you mean 'anvil task log <name>'?")
+		os.Exit(1)
 	case "logs":
 		logsCmd(os.Args[2:])
 	case "stop-on-idle":
@@ -98,14 +104,9 @@ Usage:
 Commands:
   init [path]              Initialize a project and register it for watching
   watch                    Start the daemon (once per machine)
-  add [options] <task>     Add a todo task to the current project
-  list                     List all todos in the current project
-  get <name>               Show details of a todo by name
-  delete <name>            Delete a todo by name
-  log [-f] <name>          Show session log for a todo (-f to follow)
-  logs [<name>]            Follow raw worker output (all tasks if no name given)
+  add [options] <task>     Add a task to the current project
+  logs [<name>]            Raw worker output (all tasks if no name given)
   status                   Show watched projects
-  ps                       Show running tasks
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
@@ -114,23 +115,21 @@ Commands:
 
 Add options:
   -p, --priority int    Task priority 0-9 (default 1)
-  -s, --schedule string Cron schedule (default "* * * * *")
+  -s, --schedule string Cron schedule (default "* * * * *"), "" for one-shot
 
 Task subcommands:
   create [options] <task>   Create a new task
-  -p, --priority int        Task priority 0-9 (default 1)
-  -s, --schedule string     Cron schedule (default "* * * * *"), "" for one-shot
-  ls                        List tasks in current project
-  get <name>                Show details of a task
-  log <name>                Show execution log for a task
+  ls [-a|--all]             List tasks (--all for all watched projects)
+  get <name>                Show task details including run status
+  log [-f] <name>           Show execution log (-f to follow)
   rm <name>                 Remove a task (kills if running)
   kill <name>               Kill a running task
   stop-on-idle <name>       Finish current run then stop rescheduling task
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
-  ls [-a|--all]            List watched projects (default: current directory)
-  get [path]               Show project details (default: current directory)
+  ls [-a|--all]            List watched projects
+  get [path]               Show project details and running tasks
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
 
 Configuration:

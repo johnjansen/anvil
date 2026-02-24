@@ -180,7 +180,7 @@ watched_at: 2026-02-23T13:07:49Z
 ---
 ```
 
-`anvil watch` creates these files. `anvil unwatch` deletes the hash directory. The daemon scans `watched/` on every tick to discover registered projects.
+`anvil watch` creates these files. `anvil project rm` deletes the hash directory. The daemon scans `watched/` on every tick to discover registered projects.
 
 ### Daemon Config
 
@@ -202,16 +202,10 @@ Single binary. One subcommand starts the daemon, everything else talks to it.
 ```
 anvil init [path]                    Initialize a project and register it for watching
 anvil watch                          Start the daemon (run once per machine)
-anvil unwatch [path]                 Stop watching a project directory
 anvil update [--check]               Update anvil to the latest release
-anvil add [options] <task>           Add a todo to the current project
-anvil list                           List all todos in the current project
-anvil get <name>                     Show details of a todo by name
-anvil delete <name>                  Delete a todo by name
-anvil log [-f] <name>                Show session log for a todo (-f to follow)
+anvil add [options] <task>           Add a task to the current project
 anvil logs [<name>]                  Raw worker output (live if running, last run if not)
 anvil status                         Show all watched projects and their state
-anvil ps                             Show currently executing tasks
 anvil stop-on-idle                   Drain running tasks then exit the daemon
 anvil task <subcommand>              Task management commands
 anvil project <subcommand>           Project management commands
