@@ -310,10 +310,12 @@ Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/c
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
+| `anvil ps` | Show running tasks |
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil update [--check]` | Update to latest release |
+| `anvil version` | Show version |
 
 **Task management:**
 

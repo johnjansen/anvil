@@ -433,8 +433,11 @@ The `logs` command shows raw stdout/stderr output from worker processes. Without
 ## Running Tasks
 
 ```bash
+anvil ps
 anvil task ls
 ```
+
+Use `anvil ps` to show currently running tasks. Use `anvil task ls` to see tasks across all watched projects.
 
 Shows tasks with their running/idle status. Use `anvil task ls --all` to see tasks across all watched projects.
 
@@ -515,6 +518,16 @@ anvil update --check     # check if an update is available without installing
 
 `anvil update` fetches the latest GitHub release, downloads the platform binary, and replaces the current executable. Use `--check` to see if a newer version exists without actually updating.
 
+## Version
+
+```bash
+anvil version    # show current version
+anvil -v         # shorthand
+anvil --version  # also valid
+```
+
+Shows the currently installed anvil version.
+
 ## Daemon Log
 
 ```bash
@@ -529,19 +542,10 @@ View the daemon's log output. Useful for debugging daemon issues or monitoring d
 
 ```bash
 anvil status
+anvil ps
 ```
 
-Shows watched projects and todo counts.
-
-## Viewing Daemon Logs
-
-```bash
-anvil daemon log              # view last 50 lines
-anvil daemon log -f           # follow mode (tail -f style)
-anvil daemon log -n 100       # view last 100 lines
-```
-
-View the daemon's own log file for debugging or monitoring daemon activity.
+`anvil status` shows watched projects and todo counts. `anvil ps` shows currently running tasks.
 
 ## Unwatching
 
