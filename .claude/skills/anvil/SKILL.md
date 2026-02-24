@@ -88,6 +88,8 @@ schedule: "persistent"
 
 Persistent tasks exit after each unit of work and are immediately re-dispatched on the next scheduler tick. This is useful for event-driven workflows.
 
+**Each cycle starts fresh** — the daemon generates a new session ID for each execution. There's no session persistence between cycles; each run begins as if it were the first time.
+
 ### persistent_cooldown
 
 For persistent tasks, set `persistent_cooldown` to wait between restart cycles:
@@ -115,6 +117,10 @@ persistent_max_runtime: 10m
 ```
 
 Useful for preventing runaway tasks. Default is 0 (no limit).
+
+### Starvation prevention
+
+If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
 
 ## Session Continuity
 

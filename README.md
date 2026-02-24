@@ -82,17 +82,19 @@ anvil add -s "" "Migrate the database schema to add the new users table"
 
 ### Persistent tasks
 
-Pass `persistent` as the schedule to run continuously, exiting and re-dispatching on each tick:
+Pass `persistent` as the schedule to run continuously:
 
 ```bash
 anvil add -s "persistent" "Monitor a queue and process items as they arrive"
 ```
 
-Persistent tasks exit after each unit of work and are immediately re-dispatched on the next scheduler tick. This is useful for event-driven workflows where you want the task to run frequently but not block the worker between work units.
+Persistent tasks are designed for event-driven workflows. Here's how they work:
 
-#### Persistent task options
+1. **Each cycle is a fresh run** — The task executes, completes its work, and exits. A new process starts on the next scheduler tick.
 
-For persistent tasks, you can configure:
+2. **Immediate re-dispatch** — When the task exits, the scheduler re-dispatches it on the next tick (by default, every 10 seconds). This allows the task to check for new work frequently without blocking a worker between jobs.
+
+3. **Configure behavior** — Use `persistent_cooldown` to wait between cycles, and `persistent_max_runtime` to force restart after a maximum runtime:
 
 ```yaml
 ---
@@ -104,6 +106,14 @@ persistent_max_runtime: 10m  # max runtime before forced restart (default: 0 = n
 
 - `persistent_cooldown` — wait time after a persistent task completes before re-dispatching. Default is 0 (immediate restart).
 - `persistent_max_runtime` — maximum runtime before the task is forcibly restarted. Useful for preventing runaway tasks. Default is 0 (no limit).
+
+#### Starvation prevention
+
+If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
+
+#### Starvation prevention
+
+If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
 
 ### Priority
 
