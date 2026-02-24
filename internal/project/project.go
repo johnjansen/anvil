@@ -42,6 +42,7 @@ type Todo struct {
 	OnSuccess       string   // optional shell command to run after successful completion
 	OnFailure       string   // optional shell command to run after failed completion
 	IsLocked        bool     // true if a stale lock file exists
+	Disabled        bool     // if true, task is paused and skipped during tick evaluation
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -114,6 +115,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			preCheck := ""
 			onSuccess := ""
 			onFailure := ""
+			disabled := false
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -132,6 +134,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						PreCheck        string   `yaml:"pre_check"`
 						OnSuccess       string   `yaml:"on_success"`
 						OnFailure       string   `yaml:"on_failure"`
+						Disabled        bool     `yaml:"disabled"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -143,6 +146,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						preCheck = fmData.PreCheck
 						onSuccess = fmData.OnSuccess
 						onFailure = fmData.OnFailure
+						disabled = fmData.Disabled
 					}
 				}
 			}
@@ -162,6 +166,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnSuccess:       onSuccess,
 				OnFailure:       onFailure,
 				IsLocked:        hasLock,
+				Disabled:        disabled,
 			})
 		}
 	}

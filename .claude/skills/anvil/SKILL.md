@@ -171,6 +171,21 @@ Check GitHub for new untriaged issues and apply labels.
 
 The `pre_check` command runs in the project directory. Zero exit = proceed; non-zero = skip quietly.
 
+## disabled
+
+Set `disabled: true` to pause a task without deleting it:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/15 * * * *"
+disabled: true
+---
+Temporarily paused task...
+```
+
+The task is skipped during tick evaluation but remains in the project. Set `disabled: false` or remove the line to resume.
+
 ## on_success / on_failure
 
 Run shell commands after a task completes. Useful for notifications, cleanup, or chaining workflows:

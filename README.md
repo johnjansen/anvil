@@ -172,6 +172,20 @@ Hooks run in the project directory with a 60-second timeout. The following envir
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
+### Pause/Resume tasks
+
+Set `disabled: true` in the frontmatter to pause a task without deleting it:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+disabled: true
+---
+Temporarily paused task...
+```
+
+The task is skipped during tick evaluation but remains in the system. Set `disabled: false` or remove the line to resume.
+
 ## Configuration
 
 `~/.anvil/config.yaml`:

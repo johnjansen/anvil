@@ -816,6 +816,10 @@ func (d *Daemon) tick(now time.Time) {
 		totalTodos += len(allTodos)
 
 		for _, t := range allTodos {
+			// Skip disabled tasks silently
+			if t.Disabled {
+				continue
+			}
 			// Include task if:
 			// - one-shot (empty schedule)
 			// - cron schedule matches current minute
