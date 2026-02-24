@@ -246,6 +246,15 @@ anvil project get [path]             # show project details and running tasks
 anvil project rm [path] [--clean]    # unwatch (--clean removes .anvil/ too)
 ```
 
+## Updating Anvil
+
+```bash
+anvil update             # download and install the latest release
+anvil update --check     # check if an update is available without installing
+```
+
+`anvil update` fetches the latest GitHub release, downloads the platform binary, and replaces the current executable. Use `--check` to see if a newer version exists without actually updating.
+
 ## Checking Status
 
 ```bash
