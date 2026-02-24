@@ -78,6 +78,8 @@ func main() {
 		os.Exit(1)
 	case "logs":
 		logsCmd(os.Args[2:])
+	case "daemon":
+		daemonCmd(os.Args[2:])
 	case "stop-on-idle":
 		stopOnIdleCmd()
 	case "task":
@@ -117,6 +119,7 @@ Commands:
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
+  daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
   version                  Show version
 
@@ -145,6 +148,9 @@ Project subcommands:
   ls [-a|--all]            List watched projects
   get [path]               Show project details and running tasks
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
+
+Daemon subcommands:
+  log [-f] [-n lines]    View daemon log (-f to follow, -n for last N lines)
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -1930,6 +1936,135 @@ func taskEditCmd(args []string) {
 	}
 
 	fmt.Printf("edited: %s\n", todo.Name)
+}
+
+func daemonCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: anvil daemon <subcommand>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Subcommands:")
+		fmt.Fprintln(os.Stderr, "  log [-f] [-n lines]   View daemon log (-f to follow, -n for last N lines)")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "log":
+		daemonLogCmd(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func daemonLogCmd(args []string) {
+	follow := false
+	numLines := 50
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-f", "--follow":
+			follow = true
+		case "-n":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -n")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				log.Fatalf("invalid line count: %s", args[i])
+			}
+			numLines = n
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil daemon log [-f] [-n lines]
+
+View the daemon log file (~/.anvil/daemon.log).
+
+Options:
+  -f, --follow   Follow the log (like tail -f)
+  -n lines       Show last N lines (default 50)
+`)
+			os.Exit(0)
+		}
+	}
+
+	logPath := config.DaemonLogPath()
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "no daemon log found (daemon has not run yet)")
+		os.Exit(1)
+	}
+
+	// Read and display the last N lines.
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		log.Fatalf("failed to read daemon log: %v", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	// Remove trailing empty line from Split.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	start := 0
+	if len(lines) > numLines {
+		start = len(lines) - numLines
+	}
+	for _, line := range lines[start:] {
+		fmt.Println(line)
+	}
+
+	if !follow {
+		return
+	}
+
+	// Follow mode: tail the file for new content.
+	f, err := os.Open(logPath)
+	if err != nil {
+		log.Fatalf("failed to open daemon log: %v", err)
+	}
+	defer f.Close()
+
+	// Seek to end.
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		log.Fatalf("failed to seek: %v", err)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-sigCh:
+			return
+		default:
+		}
+
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			os.Stdout.Write(buf[:n])
+			continue
+		}
+		if readErr != nil && readErr != io.EOF {
+			return
+		}
+
+		// Check if the file was rotated (new file at same path).
+		newInfo, statErr := os.Stat(logPath)
+		if statErr == nil {
+			curInfo, _ := f.Stat()
+			if curInfo != nil && !os.SameFile(curInfo, newInfo) {
+				// File was rotated — reopen.
+				f.Close()
+				f, err = os.Open(logPath)
+				if err != nil {
+					return
+				}
+			}
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func stopOnIdleCmd() {
