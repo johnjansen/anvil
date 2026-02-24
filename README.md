@@ -80,6 +80,16 @@ Pass an empty schedule to run once and delete:
 anvil add -s "" "Migrate the database schema to add the new users table"
 ```
 
+### Persistent tasks
+
+Pass `persistent` as the schedule to run continuously, exiting and re-dispatching on each tick:
+
+```bash
+anvil add -s "persistent" "Monitor a queue and process items as they arrive"
+```
+
+Persistent tasks exit after each unit of work and are immediately re-dispatched on the next scheduler tick. This is useful for event-driven workflows where you want the task to run frequently but not block the worker between work units.
+
 ### Priority
 
 Lower number = higher priority. Default is `p1`:
@@ -188,6 +198,7 @@ runners:
 |---------|-------------|
 | `anvil watch` | Start the daemon |
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
+| `anvil watch --stop` | Stop the running daemon |
 | `anvil init [path]` | Initialize a project |
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
@@ -200,6 +211,7 @@ runners:
 | Command | Description |
 |---------|-------------|
 | `anvil task ls` | List tasks in current project |
+| `anvil task run <name>` | Trigger immediate execution (bypass cron) |
 | `anvil task ls [-a|--all]` | List tasks across all projects |
 | `anvil task get <name>` | Show task details |
 | `anvil task log <name>` | Show execution log |
@@ -221,6 +233,7 @@ runners:
 
 | Command | Description |
 |---------|-------------|
+| `anvil project create [path]` | Initialize and watch a project in one step |
 | `anvil project ls` | List watched projects |
 | `anvil project ls [-a|--all]` | List watched projects |
 | `anvil project get [path]` | Show project and running tasks |

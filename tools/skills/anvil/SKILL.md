@@ -20,6 +20,7 @@ anvil watch
 
 # Or run in background (daemonized)
 anvil watch [-d|--daemonize]
+anvil watch --stop             # stop the daemon
 ```
 
 `anvil init` defaults to the current directory, pass a path to target a different project. It both initializes the project structure and registers it with the daemon.
@@ -48,6 +49,9 @@ anvil add -p 1 -s "0 9 * * 1-5" "Check GitHub issues and triage"
 
 # One-shot task (no schedule — runs once on next tick, then gets deleted)
 anvil add -s "" "Migrate the database schema"
+
+# Persistent task (runs continuously, exits and re-dispatches on each tick)
+anvil add -s "persistent" "Monitor a queue and process items"
 ```
 
 Task files are stored in `.anvil/todos/p<N>/<slugified-name>.md` with YAML frontmatter containing the schedule and a UUID.
@@ -282,6 +286,7 @@ anvil task ls [-a|--all]             # list tasks (--all for all projects)
 anvil task get <name>                # show task details including run status
 anvil task log [-f] <name>           # show execution log (-f to follow)
 anvil task rm <name>                 # remove task (kills if running)
+anvil task run <name>                # trigger immediate execution (bypass cron)
 anvil task kill <name>               # kill a running task
 anvil task stop-on-idle <name>       # finish current run then stop rescheduling
 anvil task unlock <name>             # remove stale lock file to allow retry
