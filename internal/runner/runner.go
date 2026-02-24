@@ -89,7 +89,11 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 			cmdStr += " --dangerously-skip-permissions"
 		}
 		if len(allowedTools) > 0 {
-			cmdStr += " --allowedTools " + strings.Join(allowedTools, " ")
+			quoted := make([]string, len(allowedTools))
+			for i, t := range allowedTools {
+				quoted[i] = shellEscape(t)
+			}
+			cmdStr += " --allowedTools " + strings.Join(quoted, " ")
 		}
 		if resume {
 			cmdStr += " --resume " + sessionID

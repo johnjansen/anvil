@@ -1,6 +1,10 @@
 ---
 id: "c30c5484-3cb1-4343-b607-7a1a58233c88"
-schedule: "*/2 * * * *"
+schedule: "*/10 * * * *"
+resume: false
+pre_check: "gh issue list --state open --json number --limit 1 | grep -q '\"number\"'"
+allowed_tools:
+  - Bash(gh:*)
 ---
 Triage GitHub issues on johnjansen/anvil.
 
