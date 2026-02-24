@@ -541,6 +541,29 @@ func truncate(s string, maxLen int) string {
 }
 
 func addCmd(args []string) {
+	// Handle -h/--help before creating task
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] <task text>
+
+Add a new task to the project.
+
+Options:
+  -p, --priority n        Priority 0-9 (default: 1)
+  -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
+  --pre-check cmd        Command to run before task execution
+  --allowed-tools tools  Comma-separated list of allowed tools
+  --max-concurrent n     Max concurrent runs (default: 1)
+  --skip-permissions     Skip permission checks
+
+Examples:
+  anvil add "Review pull requests"
+  anvil add -p 2 -s "0 9 * * *" "Daily standup notes"
+  anvil add --pre-check "git diff --quiet" "Sync documentation"
+`)
+			os.Exit(0)
+		}
+	}
 	taskCreateCmd(args)
 }
 
