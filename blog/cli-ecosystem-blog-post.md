@@ -129,9 +129,9 @@ It also changes how teams share context. New contributors read the spec director
 
 ## Skills: Teaching Your AI Assistant the Ecosystem
 
-There's one more layer worth mentioning. Each tool ships with **skills** — markdown files that teach AI coding assistants how to use the CLI. Drop a skill file into `.claude/skills/` and your assistant picks up the full interface.
+There's one more layer worth mentioning. Each tool ships with **skills** — markdown files that teach AI coding assistants how to use the CLI. When you run `anvil init`, the [anvil skill](anvil-skill.md) is automatically installed into your project's `.claude/skills/` directory. Your assistant picks up the full interface immediately — no setup, no configuration.
 
-Here's what that looks like in practice with the anvil skill:
+Here's what that looks like in practice:
 
 ```
 You:    add a task to review open PRs every weekday morning
@@ -147,7 +147,7 @@ Claude: I'll add a recurring task for that.
 
 No docs lookup, no remembering flags. The skill file has the full CLI reference, so the assistant translates intent into the right command.
 
-Skills also bridge the tools. In projects using both speckit and beads, a `/speckit.taskstobeads` skill reads the task breakdown and creates beads issues with priorities, labels, and dependency chains already wired up:
+Skills also bridge the tools. In projects using both speckit and beads, a [`/speckit.taskstobeads`](speckit-taskstobeads-skill.md) skill reads the task breakdown and creates beads issues with priorities, labels, and dependency chains already wired up:
 
 ```
 You:    /speckit.taskstobeads
