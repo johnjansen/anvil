@@ -151,6 +151,32 @@ Check GitHub for new untriaged issues and apply labels.
 
 The `pre_check` command runs in the project directory. Zero exit = proceed; non-zero = skip quietly.
 
+## on_success / on_failure
+
+Run shell commands after a task completes. Useful for notifications, cleanup, or chaining workflows:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+on_success: "echo 'done' >> /tmp/anvil.log"
+on_failure: "curl -X POST https://slack.example.com/webhook -d '{\"text\":\"Task failed\"}'"
+---
+```
+
+Hooks run in the project directory with a 60-second timeout. Environment variables available:
+
+- `ANVIL_TASK_NAME` — task filename
+- `ANVIL_EXIT_CODE` — `0` for success, `1` for failure
+- `ANVIL_LOG_PATH` — path to raw log file
+- `ANVIL_PROJECT` — project directory path
+- `ANVIL_SESSION_ID` — Claude session ID used
+- `ANVIL_START_TIME` — RFC 3339 start timestamp
+- `ANVIL_END_TIME` — RFC 3339 end timestamp
+- `ANVIL_ELAPSED_MS` — elapsed time in milliseconds
+
+Hook errors are logged as warnings but do not affect the task outcome.
+
 ## Runner Fallback Chain
 
 The daemon supports an ordered list of runner commands in `~/.anvil/config.yaml`. If the first runner fails, it tries the next:

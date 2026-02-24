@@ -126,6 +126,34 @@ Or skip all permission prompts:
 skip_permissions: true
 ```
 
+### Lifecycle hooks
+
+Run shell commands after a task succeeds or fails:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+on_success: "echo 'Task completed' >> /tmp/anvil.log"
+on_failure: "curl -X POST https://slack.example.com/webhook -d '{\"text\":\"Task failed\"}'"
+---
+Triage GitHub issues...
+```
+
+Hooks run in the project directory with a 60-second timeout. The following environment variables are available:
+
+| Variable | Description |
+|----------|-------------|
+| `ANVIL_TASK_NAME` | Task filename |
+| `ANVIL_EXIT_CODE` | `0` for success, `1` for failure |
+| `ANVIL_LOG_PATH` | Path to the raw log file |
+| `ANVIL_PROJECT` | Project directory path |
+| `ANVIL_SESSION_ID` | Claude session ID used |
+| `ANVIL_START_TIME` | RFC 3339 start timestamp |
+| `ANVIL_END_TIME` | RFC 3339 end timestamp |
+| `ANVIL_ELAPSED_MS` | Elapsed time in milliseconds |
+
+Hook errors are logged as warnings but do not affect the task outcome.
+
 ## Configuration
 
 `~/.anvil/config.yaml`:
