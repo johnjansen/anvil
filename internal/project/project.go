@@ -249,7 +249,8 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 	}
 
 	// Validate cron expression before writing the task file.
-	if schedule != "" {
+	// Skip validation for "persistent" since it's a special keyword, not a cron expression.
+	if schedule != "" && schedule != "persistent" {
 		if _, err := cron.Parse(schedule); err != nil {
 			return "", fmt.Errorf("invalid schedule %q: %w", schedule, err)
 		}

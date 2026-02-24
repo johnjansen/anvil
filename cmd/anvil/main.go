@@ -1404,7 +1404,7 @@ func taskEditCmd(args []string) {
 	// If targeted flags provided, apply them without opening editor
 	if newSchedule != nil || newPriority != nil {
 		// Validate schedule if provided
-		if newSchedule != nil && *newSchedule != "" {
+		if newSchedule != nil && *newSchedule != "" && *newSchedule != "persistent" {
 			if _, err := cron.Parse(*newSchedule); err != nil {
 				log.Fatalf("invalid schedule %q: %v", *newSchedule, err)
 			}
@@ -1520,7 +1520,7 @@ func taskEditCmd(args []string) {
 				var fmData struct {
 					Schedule string `yaml:"schedule"`
 				}
-				if yaml.Unmarshal([]byte(parts[0]), &fmData) == nil && fmData.Schedule != "" {
+				if yaml.Unmarshal([]byte(parts[0]), &fmData) == nil && fmData.Schedule != "" && fmData.Schedule != "persistent" {
 					if _, err := cron.Parse(fmData.Schedule); err != nil {
 						log.Fatalf("invalid schedule %q after edit: %v", fmData.Schedule, err)
 					}
