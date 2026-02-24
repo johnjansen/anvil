@@ -259,7 +259,12 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		d.inFlightMu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), d.config.Timeout)
+	// Use task-specific timeout if set, otherwise fall back to global config
+	timeout := d.config.Timeout
+	if t.Timeout > 0 {
+		timeout = t.Timeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	runID := newRunID()

@@ -43,6 +43,7 @@ type Todo struct {
 	OnFailure       string   // optional shell command to run after failed completion
 	IsLocked        bool     // true if a stale lock file exists
 	Disabled        bool     // if true, task is paused and skipped during tick evaluation
+	Timeout         time.Duration // task-specific timeout (0 = use global default)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -116,6 +117,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			onSuccess := ""
 			onFailure := ""
 			disabled := false
+			var timeout time.Duration
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -135,6 +137,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnSuccess       string   `yaml:"on_success"`
 						OnFailure       string   `yaml:"on_failure"`
 						Disabled        bool     `yaml:"disabled"`
+						Timeout         string   `yaml:"timeout"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -147,6 +150,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						onSuccess = fmData.OnSuccess
 						onFailure = fmData.OnFailure
 						disabled = fmData.Disabled
+						if fmData.Timeout != "" {
+							timeout, _ = time.ParseDuration(fmData.Timeout)
+						}
 					}
 				}
 			}
@@ -167,6 +173,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnFailure:       onFailure,
 				IsLocked:        hasLock,
 				Disabled:        disabled,
+				Timeout:         timeout,
 			})
 		}
 	}
