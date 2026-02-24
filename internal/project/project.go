@@ -52,6 +52,9 @@ type RunRecord struct {
 	SessionID string    `json:"session_id"`
 	PID       int       `json:"pid"`
 	Started   time.Time `json:"started"`
+	Finished  time.Time `json:"finished,omitempty"` // when the run ended
+	Success   bool      `json:"success"`           // whether the runner returned nil error
+	Error     string    `json:"error,omitempty"`   // last runner error message if failed
 }
 
 // Load reads a project's .anvil/anvil.yaml and returns a Project
@@ -166,6 +169,12 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 	return todos, nil
 }
 
+// IsPersistent returns true if this task is configured to run persistently.
+// Persistent tasks exit after each unit of work and are immediately re-dispatched.
+func (t Todo) IsPersistent() bool {
+	return t.Schedule == "persistent"
+}
+
 // RemoveTodo deletes a todo file from disk
 func RemoveTodo(todo Todo) error {
 	return os.Remove(todo.Path)
@@ -231,7 +240,7 @@ func writeEmbeddedFS(destDir string, fsys fs.FS) error {
 
 // AddTodo writes a new todo file into the project's .anvil/todos/pN/ directory.
 // It returns the relative path like "p1/check-github-for-issues.md".
-func (p *Project) AddTodo(priority int, schedule string, content string) (string, error) {
+func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool) (string, error) {
 	if priority < 0 || priority > 9 {
 		return "", fmt.Errorf("priority must be 0-9, got %d", priority)
 	}
@@ -274,6 +283,18 @@ func (p *Project) AddTodo(priority int, schedule string, content string) (string
 	// Set resume: false explicitly for one-shot tasks
 	if schedule == "" {
 		sb.WriteString("resume: false\n")
+	}
+	if preCheck != "" {
+		sb.WriteString(fmt.Sprintf("pre_check: %q\n", preCheck))
+	}
+	if allowedTools != "" {
+		sb.WriteString(fmt.Sprintf("allowed_tools: %q\n", allowedTools))
+	}
+	if maxConcurrent != 0 {
+		sb.WriteString(fmt.Sprintf("max_concurrent: %d\n", maxConcurrent))
+	}
+	if skipPermissions {
+		sb.WriteString("skip_permissions: true\n")
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)

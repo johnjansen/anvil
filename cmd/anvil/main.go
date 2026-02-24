@@ -118,8 +118,12 @@ Commands:
   version                  Show version
 
 Add options:
-  -p, --priority int    Task priority 0-9 (default 1)
-  -s, --schedule string Cron schedule (default "* * * * *"), "" for one-shot
+  -p, --priority int          Task priority 0-9 (default 1)
+  -s, --schedule string        Cron schedule (default "* * * * *"), "" for one-shot
+      --pre-check string       Shell command to skip task if non-zero exit
+      --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read")
+      --max-concurrent int    Max parallel instances (default 1)
+      --skip-permissions       Bypass all tool permission prompts
 
 Task subcommands:
   create [options] <task>   Create a new task
@@ -732,6 +736,8 @@ func taskCmd(args []string) {
 		taskStopOnIdleCmd(args[1:])
 	case "unlock":
 		taskUnlockCmd(args[1:])
+	case "edit":
+		taskEditCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -741,7 +747,11 @@ func taskCmd(args []string) {
 
 func taskCreateCmd(args []string) {
 	priority := 1
-	schedule := "* * * * *"
+	schedule := ""
+	preCheck := ""
+	allowedTools := ""
+	maxConcurrent := 1
+	skipPermissions := false
 
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -768,13 +778,40 @@ func taskCreateCmd(args []string) {
 			}
 			i++
 			schedule = args[i]
+		case "--pre-check":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --pre-check")
+			}
+			i++
+			preCheck = args[i]
+		case "--allowed-tools":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --allowed-tools")
+			}
+			i++
+			allowedTools = args[i]
+		case "--max-concurrent":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --max-concurrent")
+			}
+			i++
+			n := 0
+			for _, c := range args[i] {
+				if c < '0' || c > '9' {
+					log.Fatalf("invalid max-concurrent: %s (must be a number)", args[i])
+				}
+				n = n*10 + int(c-'0')
+			}
+			maxConcurrent = n
+		case "--skip-permissions":
+			skipPermissions = true
 		default:
 			rest = append(rest, args[i])
 		}
 	}
 
 	if len(rest) == 0 {
-		log.Fatal("usage: anvil task create [-p priority] [-s schedule] <task text>")
+		log.Fatal("usage: anvil task create [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] <task text>")
 	}
 
 	taskText := strings.Join(rest, " ")
@@ -795,7 +832,7 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to load project: %v", err)
 	}
 
-	relPath, err := proj.AddTodo(priority, schedule, taskText)
+	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions)
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}
@@ -1195,6 +1232,207 @@ func taskUnlockCmd(args []string) {
 	}
 
 	fmt.Printf("unlocked: %s\n", todo.Name)
+}
+
+func taskEditCmd(args []string) {
+	// Parse flags
+	var newSchedule *string
+	var newPriority *int
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "-s", "--schedule":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -s/--schedule")
+			}
+			i++
+			newSchedule = &args[i]
+		case "-p", "--priority":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -p/--priority")
+			}
+			i++
+			n := 0
+			for _, c := range args[i] {
+				if c < '0' || c > '9' {
+					log.Fatalf("invalid priority: %s (must be 0-9)", args[i])
+				}
+				n = n*10 + int(c-'0')
+			}
+			if n > 9 {
+				log.Fatalf("priority must be 0-9, got %d", n)
+			}
+			newPriority = &n
+		default:
+			break
+		}
+		i++
+	}
+
+	// Remaining arg should be task name
+	nameArgs := args
+	if newSchedule != nil || newPriority != nil {
+		// Strip the flags we consumed
+		for len(nameArgs) > 0 && (nameArgs[0] == "-s" || nameArgs[0] == "--schedule" || nameArgs[0] == "-p" || nameArgs[0] == "--priority") {
+			if len(nameArgs) >= 2 {
+				nameArgs = nameArgs[2:]
+			} else {
+				break
+			}
+		}
+	}
+
+	if len(nameArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority]\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, nameArgs[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", nameArgs[0])
+		os.Exit(1)
+	}
+
+	// If targeted flags provided, apply them without opening editor
+	if newSchedule != nil || newPriority != nil {
+		// Validate schedule if provided
+		if newSchedule != nil && *newSchedule != "" {
+			if _, err := cron.Parse(*newSchedule); err != nil {
+				log.Fatalf("invalid schedule %q: %v", *newSchedule, err)
+			}
+		}
+
+		// Determine new priority (default to current)
+		priority := todo.Priority
+		if newPriority != nil {
+			priority = *newPriority
+		}
+
+		// Read current file content
+		raw, err := os.ReadFile(todo.Path)
+		if err != nil {
+			log.Fatalf("failed to read task file: %v", err)
+		}
+
+		// Parse and update front-matter
+		contentStr := string(raw)
+		body := contentStr
+
+		if strings.HasPrefix(contentStr, "---\n") {
+			parts := strings.SplitN(contentStr[4:], "\n---\n", 2)
+			if len(parts) == 2 {
+				fm := parts[0]
+				body = parts[1]
+
+				var fmData struct {
+					Schedule        string   `yaml:"schedule"`
+					ID              string   `yaml:"id"`
+					Resume          *bool    `yaml:"resume"`
+					MaxConcurrent   int      `yaml:"max_concurrent"`
+					SkipPermissions bool     `yaml:"skip_permissions"`
+					AllowedTools    []string `yaml:"allowed_tools"`
+					PreCheck        string   `yaml:"pre_check"`
+					OnSuccess       string   `yaml:"on_success"`
+					OnFailure       string   `yaml:"on_failure"`
+				}
+				if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
+					// Update schedule if provided
+					if newSchedule != nil {
+						fmData.Schedule = *newSchedule
+					}
+
+					// Marshal back
+					fmBytes, err := yaml.Marshal(fmData)
+					if err != nil {
+						log.Fatalf("failed to marshal front-matter: %v", err)
+					}
+
+					// Build new file content
+					var sb strings.Builder
+					sb.WriteString("---\n")
+					sb.WriteString(string(fmBytes))
+					sb.WriteString("---\n")
+					sb.WriteString(body)
+
+					// If priority changed, move to new directory
+					if priority != todo.Priority {
+						newDir := filepath.Join(abs, ".anvil", "todos", fmt.Sprintf("p%d", priority))
+						if err := os.MkdirAll(newDir, 0755); err != nil {
+							log.Fatalf("failed to create priority directory: %v", err)
+						}
+						newPath := filepath.Join(newDir, filepath.Base(todo.Path))
+						if err := os.Rename(todo.Path, newPath); err != nil {
+							log.Fatalf("failed to move task to new priority: %v", err)
+						}
+						fmt.Printf("updated priority: p%d -> p%d\n", todo.Priority, priority)
+					} else {
+						// Write back in place
+						if err := os.WriteFile(todo.Path, []byte(sb.String()), 0644); err != nil {
+							log.Fatalf("failed to write task file: %v", err)
+						}
+					}
+
+					if newSchedule != nil {
+						fmt.Printf("updated schedule: %s\n", *newSchedule)
+					}
+					return
+				}
+			}
+		}
+		log.Fatal("failed to parse task front-matter")
+	}
+
+	// No flags: open in editor
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	cmd := exec.Command(editor, todo.Path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("editor exited with error: %v", err)
+	}
+
+	// Validate the edited file's schedule if it has one
+	raw, err := os.ReadFile(todo.Path)
+	if err == nil {
+		contentStr := string(raw)
+		if strings.HasPrefix(contentStr, "---\n") {
+			parts := strings.SplitN(contentStr[4:], "\n---\n", 2)
+			if len(parts) == 2 {
+				var fmData struct {
+					Schedule string `yaml:"schedule"`
+				}
+				if yaml.Unmarshal([]byte(parts[0]), &fmData) == nil && fmData.Schedule != "" {
+					if _, err := cron.Parse(fmData.Schedule); err != nil {
+						log.Fatalf("invalid schedule %q after edit: %v", fmData.Schedule, err)
+					}
+				}
+			}
+		}
+	}
+
+	fmt.Printf("edited: %s\n", todo.Name)
 }
 
 func stopOnIdleCmd() {
