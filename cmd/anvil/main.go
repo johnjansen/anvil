@@ -775,6 +775,8 @@ func taskCmd(args []string) {
 		taskResumeCmd(args[1:])
 	case "queue":
 		taskQueueCmd(args[1:])
+	case "timeout":
+		taskTimeoutCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -1513,6 +1515,59 @@ func taskQueueCmd(_ []string) {
 			t.Priority,
 			t.Status,
 			skipReason)
+	}
+}
+
+func taskTimeoutCmd(args []string) {
+	allTasks := false
+	for _, a := range args {
+		if a == "--all" || a == "-a" {
+			allTasks = true
+		}
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	tasks, err := daemon.SendTimeoutRequest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get timeout status: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("no running tasks")
+		return
+	}
+
+	// Filter by task name if provided and not --all
+	targetName := ""
+	if !allTasks && len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		targetName = args[0]
+	}
+
+	fmt.Printf("%-40s %-15s %-15s %-10s %s\n", "TASK", "ELAPSED", "TIMEOUT", "REMAINING", "PROGRESS")
+	fmt.Printf("%s\n", strings.Repeat("-", 100))
+
+	for _, t := range tasks {
+		// Filter by target name if specified
+		if targetName != "" && !strings.Contains(t.Name, targetName) {
+			continue
+		}
+
+		elapsed := t.Elapsed
+		timeout := t.Timeout
+		remaining := t.TimeRemaining
+		percent := t.PercentUsed
+
+		fmt.Printf("%-40s %-15s %-15s %-10s %.1f%%\n",
+			truncate(t.Name, 40),
+			elapsed,
+			timeout,
+			remaining,
+			percent)
 	}
 }
 
