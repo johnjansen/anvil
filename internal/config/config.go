@@ -16,8 +16,11 @@ type Config struct {
 	Timeout      time.Duration  `yaml:"timeout"`
 	MaxWorkers   int            `yaml:"max_workers"`
 	MaxTodos     int            `yaml:"max_todos"` // deprecated: use max_workers
-	Hooks        HooksConfig    `yaml:"hooks"`
-	Retention    RetentionConfig `yaml:"retention"`
+	Hooks           HooksConfig     `yaml:"hooks"`
+	Retention       RetentionConfig `yaml:"retention"`
+	InputTokenRate  float64         `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
+	OutputTokenRate float64         `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
+	AutoUpdate      bool            `yaml:"auto_update"`       // opt-in: auto-update binary on daemon startup
 }
 
 // RetentionConfig defines data retention policies for logs and runs.
