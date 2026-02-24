@@ -16,64 +16,111 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the project-level config from <project>/.anvil/anvil.yaml
+// Config holds project-level configuration defaults loaded from .anvil/config.yaml.
+// These defaults apply to all tasks unless explicitly overridden in individual task frontmatter.
 type Config struct {
-	// No project‑level configuration needed; todos carry their own schedule
+	Defaults TaskDefaults `yaml:"defaults"`
+}
+
+// TaskDefaults contains fields that can be set at the project level and inherited by all tasks.
+// Task frontmatter overrides project defaults (task-level wins).
+type TaskDefaults struct {
+	SkipPermissions      bool     `yaml:"skip_permissions"`
+	AllowedTools         []string `yaml:"allowed_tools"`
+	PreCheck             string   `yaml:"pre_check"`
+	OnSuccess            string   `yaml:"on_success"`
+	OnFailure            string   `yaml:"on_failure"`
+	Timeout              string   `yaml:"timeout"`
+	Retry                int      `yaml:"retry"`
+	RetryDelay           string   `yaml:"retry_delay"`
+	MaxConcurrent        int      `yaml:"max_concurrent"`
+	PersistentCooldown   string   `yaml:"persistent_cooldown"`
+	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
+}
+
+// ConfigPath returns the path to the project config file.
+func ConfigPath(projectPath string) string {
+	return filepath.Join(projectPath, ".anvil", "config.yaml")
+}
+
+// LoadConfig reads the project-level config from .anvil/config.yaml.
+// Returns a zero-value Config if the file does not exist.
+func LoadConfig(projectPath string) (Config, error) {
+	data, err := os.ReadFile(ConfigPath(projectPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Config{}, nil
+		}
+		return Config{}, fmt.Errorf("reading project config: %w", err)
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parsing project config: %w", err)
+	}
+	return cfg, nil
 }
 
 // Project represents a watched project directory
 type Project struct {
-	Path string
+	Path   string
+	Config Config
 }
 
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
-	Path            string // absolute path to the file
-	Name            string // filename
-	Priority        int    // 0-9, from pN/ directory
-	Content         string // file contents (after front‑matter)
-	Schedule        string // cron expression from front‑matter
-	ID              string // UUID for session tracking
-	Resume          *bool    // nil = default (true for recurring, false for one-shot), explicit overrides
-	MaxConcurrent   int      // max simultaneous instances (0 = default 1)
-	SkipPermissions bool     // if true, append --dangerously-skip-permissions to runner command
-	AllowedTools    []string // if non-empty, append --allowedTools <tools> to runner command
-	PreCheck        string   // optional shell command; task is skipped silently if it exits non-zero
-	OnSuccess       string   // optional shell command to run after successful completion
-	OnFailure       string   // optional shell command to run after failed completion
-	IsLocked        bool     // true if a stale lock file exists
-	Disabled        bool     // if true, task is paused and skipped during tick evaluation
+	Path            string        // absolute path to the file
+	Name            string        // filename
+	Priority        int           // 0-9, from pN/ directory
+	Content         string        // file contents (after front-matter)
+	Schedule        string        // cron expression from front-matter
+	ID              string        // UUID for session tracking
+	Resume          *bool         // nil = default (true for recurring, false for one-shot), explicit overrides
+	MaxConcurrent   int           // max simultaneous instances (0 = default 1)
+	SkipPermissions bool          // if true, append --dangerously-skip-permissions to runner command
+	AllowedTools    []string      // if non-empty, append --allowedTools <tools> to runner command
+	PreCheck        string        // optional shell command; task is skipped silently if it exits non-zero
+	OnSuccess       string        // optional shell command to run after successful completion
+	OnFailure       string        // optional shell command to run after failed completion
+	IsLocked        bool          // true if a stale lock file exists
+	Disabled        bool          // if true, task is paused and skipped during tick evaluation
 	Timeout         time.Duration // task-specific timeout (0 = use global default)
-	Retry           int      // number of retries on failure (0 = no retry)
+	Retry           int           // number of retries on failure (0 = no retry)
 	RetryDelay      time.Duration // delay between retries (default 1m, used with Retry)
 	// Persistent task configuration
-	PersistentCooldown time.Duration // cooldown between restart cycles (default 0 = immediate)
+	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
 // It links a task ID to the Claude session ID and child process PID used for that run.
 type RunRecord struct {
-	RunID     string    `json:"run_id"`
-	TaskID    string    `json:"task_id"`
-	SessionID string    `json:"session_id"`
-	PID       int       `json:"pid"`
-	Started   time.Time `json:"started"`
-	Finished  time.Time `json:"finished,omitempty"` // when the run ended
-	Success   bool      `json:"success"`           // whether the runner returned nil error
-	OutputSummary string `json:"output_summary,omitempty"` // first and last N lines of output
-	Error     string    `json:"error,omitempty"`   // last runner error message if failed
+	RunID         string    `json:"run_id"`
+	TaskID        string    `json:"task_id"`
+	SessionID     string    `json:"session_id"`
+	PID           int       `json:"pid"`
+	Started       time.Time `json:"started"`
+	Finished      time.Time `json:"finished,omitempty"`       // when the run ended
+	Success       bool      `json:"success"`                  // whether the runner returned nil error
+	OutputSummary string    `json:"output_summary,omitempty"` // first and last N lines of output
+	Error         string    `json:"error,omitempty"`           // last runner error message if failed
 }
 
-// Load reads a project's .anvil/anvil.yaml and returns a Project
+// Load reads a project's .anvil/config.yaml and returns a Project.
+// If the config file does not exist, the project loads with zero-value defaults.
 func Load(path string) (*Project, error) {
-	// No per‑project configuration file is required; simply return the Project.
-	return &Project{Path: path}, nil
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Project{Path: path, Config: cfg}, nil
 }
 
-// LoadTodos returns all todo files sorted by priority (p0 first) then by name (oldest first)
+// LoadTodos returns all todo files sorted by priority (p0 first) then by name (oldest first).
+// Project-level defaults from .anvil/config.yaml are applied to any task field not explicitly
+// set in the task's frontmatter.
 func (p *Project) LoadTodos() ([]Todo, error) {
 	todosDir := filepath.Join(p.Path, ".anvil", "todos")
+	defaults := p.Config.Defaults
 	var todos []Todo
 
 	for pri := 0; pri <= 9; pri++ {
@@ -86,7 +133,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			return nil, fmt.Errorf("reading todos p%d: %w", pri, err)
 		}
 
-		// Sort by name so oldest‑timestamped files come first
+		// Sort by name so oldest-timestamped files come first
 		sort.Slice(entries, func(i, j int) bool {
 			return entries[i].Name() < entries[j].Name()
 		})
@@ -106,7 +153,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			_, lockErr := os.Stat(lockPath)
 			hasLock := lockErr == nil
 
-			// Parse optional front‑matter for a schedule.
+			// Parse optional front-matter for a schedule.
 			// Expected format:
 			// ---
 			// schedule: "*/15 * * * *"
@@ -130,30 +177,37 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var persistentMaxRuntime time.Duration
 			body := contentStr
 
+			// Track which frontmatter keys were explicitly set so project defaults
+			// only apply to fields omitted from the task frontmatter.
+			var fmKeys map[string]interface{}
+
 			if strings.HasPrefix(contentStr, "---\n") {
-				// Find closing front‑matter delimiter.
+				// Find closing front-matter delimiter.
 				parts := strings.SplitN(contentStr[4:], "\n---\n", 2)
 				if len(parts) == 2 {
 					fm := parts[0]
 					body = parts[1]
 					var fmData struct {
-						Schedule            string   `yaml:"schedule"`
-						ID                  string   `yaml:"id"`
-						Resume              *bool    `yaml:"resume"`
-						MaxConcurrent       int      `yaml:"max_concurrent"`
-						SkipPermissions     bool     `yaml:"skip_permissions"`
-						AllowedTools        []string `yaml:"allowed_tools"`
-						PreCheck            string   `yaml:"pre_check"`
-						OnSuccess           string   `yaml:"on_success"`
-						OnFailure           string   `yaml:"on_failure"`
-						Disabled            bool     `yaml:"disabled"`
-						Timeout             string   `yaml:"timeout"`
-						Retry               int      `yaml:"retry"`
-						RetryDelay          string   `yaml:"retry_delay"`
-						PersistentCooldown  string   `yaml:"persistent_cooldown"`
-						PersistentMaxRuntime string `yaml:"persistent_max_runtime"`
+						Schedule             string   `yaml:"schedule"`
+						ID                   string   `yaml:"id"`
+						Resume               *bool    `yaml:"resume"`
+						MaxConcurrent        int      `yaml:"max_concurrent"`
+						SkipPermissions      bool     `yaml:"skip_permissions"`
+						AllowedTools         []string `yaml:"allowed_tools"`
+						PreCheck             string   `yaml:"pre_check"`
+						OnSuccess            string   `yaml:"on_success"`
+						OnFailure            string   `yaml:"on_failure"`
+						Disabled             bool     `yaml:"disabled"`
+						Timeout              string   `yaml:"timeout"`
+						Retry                int      `yaml:"retry"`
+						RetryDelay           string   `yaml:"retry_delay"`
+						PersistentCooldown   string   `yaml:"persistent_cooldown"`
+						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
+						// Parse raw keys to detect which fields were explicitly set.
+						_ = yaml.Unmarshal([]byte(fm), &fmKeys)
+
 						schedule = fmData.Schedule
 						id = fmData.ID
 						resume = fmData.Resume
@@ -181,32 +235,97 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				}
 			}
 
+			// Apply project defaults for fields not explicitly set in frontmatter.
+			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
+				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime)
+
 			todos = append(todos, Todo{
-				Path:                fp,
-				Name:                e.Name(),
-				Priority:            pri,
-				Content:             body,
-				Schedule:            schedule,
-				ID:                  id,
-				Resume:              resume,
-				MaxConcurrent:       maxConcurrent,
-				SkipPermissions:     skipPermissions,
-				AllowedTools:        allowedTools,
-				PreCheck:            preCheck,
-				OnSuccess:           onSuccess,
-				OnFailure:           onFailure,
-				IsLocked:            hasLock,
-				Disabled:            disabled,
-				Timeout:             timeout,
-				Retry:               retry,
-				RetryDelay:          retryDelay,
-				PersistentCooldown:  persistentCooldown,
+				Path:                 fp,
+				Name:                 e.Name(),
+				Priority:             pri,
+				Content:              body,
+				Schedule:             schedule,
+				ID:                   id,
+				Resume:               resume,
+				MaxConcurrent:        maxConcurrent,
+				SkipPermissions:      skipPermissions,
+				AllowedTools:         allowedTools,
+				PreCheck:             preCheck,
+				OnSuccess:            onSuccess,
+				OnFailure:            onFailure,
+				IsLocked:             hasLock,
+				Disabled:             disabled,
+				Timeout:              timeout,
+				Retry:                retry,
+				RetryDelay:           retryDelay,
+				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
 			})
 		}
 	}
 
 	return todos, nil
+}
+
+// applyDefaults fills in project-level defaults for any task field not explicitly set
+// in the task's frontmatter. fmKeys is the set of keys present in the parsed YAML;
+// a nil map means no frontmatter was present (all defaults apply).
+func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
+	skipPermissions *bool, allowedTools *[]string, preCheck *string,
+	onSuccess *string, onFailure *string, timeout *time.Duration,
+	retry *int, retryDelay *time.Duration, maxConcurrent *int,
+	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration) {
+
+	has := func(key string) bool {
+		if fmKeys == nil {
+			return false
+		}
+		_, ok := fmKeys[key]
+		return ok
+	}
+
+	if !has("skip_permissions") && defaults.SkipPermissions {
+		*skipPermissions = defaults.SkipPermissions
+	}
+	if !has("allowed_tools") && len(defaults.AllowedTools) > 0 {
+		*allowedTools = defaults.AllowedTools
+	}
+	if !has("pre_check") && defaults.PreCheck != "" {
+		*preCheck = defaults.PreCheck
+	}
+	if !has("on_success") && defaults.OnSuccess != "" {
+		*onSuccess = defaults.OnSuccess
+	}
+	if !has("on_failure") && defaults.OnFailure != "" {
+		*onFailure = defaults.OnFailure
+	}
+	if !has("timeout") && defaults.Timeout != "" {
+		if d, err := time.ParseDuration(defaults.Timeout); err == nil {
+			*timeout = d
+		}
+	}
+	if !has("retry") && defaults.Retry != 0 {
+		*retry = defaults.Retry
+	}
+	if !has("retry_delay") && defaults.RetryDelay != "" {
+		if d, err := time.ParseDuration(defaults.RetryDelay); err == nil {
+			*retryDelay = d
+		}
+	}
+	if !has("max_concurrent") && defaults.MaxConcurrent != 0 {
+		*maxConcurrent = defaults.MaxConcurrent
+	}
+	if !has("persistent_cooldown") && defaults.PersistentCooldown != "" {
+		if d, err := time.ParseDuration(defaults.PersistentCooldown); err == nil {
+			*persistentCooldown = d
+		}
+	}
+	if !has("persistent_max_runtime") && defaults.PersistentMaxRuntime != "" {
+		if d, err := time.ParseDuration(defaults.PersistentMaxRuntime); err == nil {
+			*persistentMaxRuntime = d
+		}
+	}
 }
 
 // IsPersistent returns true if this task is configured to run persistently.
@@ -303,7 +422,7 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 
 	base := slugify(content)
 	filename := base + ".md"
-	// Avoid silent overwrites on slug collision: append -2, -3, … if file exists.
+	// Avoid silent overwrites on slug collision: append -2, -3, ... if file exists.
 	fullCheck := filepath.Join(dir, filename)
 	if _, err := os.Stat(fullCheck); err == nil {
 		for i := 2; ; i++ {
