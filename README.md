@@ -229,9 +229,9 @@ Run with up to 3 retries, waiting 2 minutes between attempts.
 ```
 
 - `retry`: Number of retries on failure (0 = no retry, default: 0)
-- `retry_delay`: Delay between retries (default: 1m)
+- `retry_delay`: Initial delay between retries (default: 1m)
 
-The retry delay applies to all retry attempts. On each retry, the daemon waits for the configured delay before attempting the task again.
+The retry delay uses exponential backoff: the initial delay doubles after each retry attempt (delay * 2^attempt). For example, with retry_delay=1m, retries occur at 1m, 2m, 4m, etc.
 
 ## Configuration
 
