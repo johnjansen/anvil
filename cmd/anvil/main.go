@@ -3059,6 +3059,26 @@ func updateCmd(args []string) {
 	}
 
 	fmt.Printf("updated to %s\n", latest)
+
+	// Refresh skills in all watched directories
+	watched, err := loadAllWatched()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to load watched directories: %v\n", err)
+	} else if len(watched) > 0 {
+		fmt.Printf("refreshing skills in %d watched director%s...\n", len(watched), map[bool]string{true: "ies", false: "y"}[len(watched) > 1])
+		for _, w := range watched {
+			// Check if the directory still exists
+			if _, err := os.Stat(w.Path); os.IsNotExist(err) {
+				fmt.Printf("  skipping %s: directory no longer exists\n", w.Path)
+				continue
+			}
+			if err := project.Init(w.Path, tools.FS); err != nil {
+				fmt.Printf("  failed to refresh %s: %v\n", w.Path, err)
+				continue
+			}
+			fmt.Printf("  refreshed %s\n", w.Path)
+		}
+	}
 }
 
 // --- helpers ---

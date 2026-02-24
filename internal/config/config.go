@@ -10,13 +10,20 @@ import (
 )
 
 type Config struct {
-	TickInterval time.Duration `yaml:"tick_interval"`
-	Runner       string        `yaml:"runner"`
-	Runners      []string      `yaml:"runners"`
-	Timeout      time.Duration `yaml:"timeout"`
-	MaxWorkers   int           `yaml:"max_workers"`
-	MaxTodos     int           `yaml:"max_todos"` // deprecated: use max_workers
-	Hooks        HooksConfig   `yaml:"hooks"`
+	TickInterval time.Duration   `yaml:"tick_interval"`
+	Runner       string         `yaml:"runner"`
+	Runners      []string       `yaml:"runners"`
+	Timeout      time.Duration  `yaml:"timeout"`
+	MaxWorkers   int            `yaml:"max_workers"`
+	MaxTodos     int            `yaml:"max_todos"` // deprecated: use max_workers
+	Hooks        HooksConfig    `yaml:"hooks"`
+	Retention    RetentionConfig `yaml:"retention"`
+}
+
+// RetentionConfig defines data retention policies for logs and runs.
+type RetentionConfig struct {
+	MaxAge  time.Duration `yaml:"max_age"`  // delete logs/runs older than this
+	MaxRuns int           `yaml:"max_runs"` // keep at most this many runs per task
 }
 
 // HooksConfig defines global lifecycle hooks that run for all tasks.
