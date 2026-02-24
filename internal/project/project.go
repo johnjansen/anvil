@@ -251,7 +251,19 @@ func (p *Project) AddTodo(priority int, schedule string, content string) (string
 		return "", fmt.Errorf("creating todos/p%d: %w", priority, err)
 	}
 
-	filename := slugify(content) + ".md"
+	base := slugify(content)
+	filename := base + ".md"
+	// Avoid silent overwrites on slug collision: append -2, -3, … if file exists.
+	fullCheck := filepath.Join(dir, filename)
+	if _, err := os.Stat(fullCheck); err == nil {
+		for i := 2; ; i++ {
+			candidate := fmt.Sprintf("%s-%d.md", base, i)
+			if _, err := os.Stat(filepath.Join(dir, candidate)); os.IsNotExist(err) {
+				filename = candidate
+				break
+			}
+		}
+	}
 	id := newUUID()
 
 	var sb strings.Builder
