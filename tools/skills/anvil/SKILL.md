@@ -518,6 +518,29 @@ anvil update --check     # check if an update is available without installing
 
 `anvil update` fetches the latest GitHub release, downloads the platform binary, and replaces the current executable. Use `--check` to see if a newer version exists without actually updating.
 
+## Doctor
+
+```bash
+anvil doctor    # run diagnostics and check for issues
+```
+
+Runs a series of health checks on your anvil installation:
+
+- **daemon_pid** — Checks if the PID file exists
+- **daemon_process** — Verifies the daemon process is running
+- **daemon_socket** — Checks if the daemon socket is responsive
+- **config_exists** — Verifies config file exists
+- **config_parse** — Validates config file syntax
+- **config_runners** — Checks if runners are configured
+- **config_max_workers** — Verifies max_workers is set
+- **watched_projects** — Checks if watched projects exist and are accessible
+- **task_locks** — Checks for stale lock files
+- **task_ids** — Verifies all tasks have valid IDs
+- **task_cron** — Validates cron expressions in task schedules
+- **recent_runs** — Warns about tasks with 3+ consecutive failures in 24 hours
+
+Returns exit code 1 if any checks fail. Useful for troubleshooting issues with your anvil setup.
+
 ## Version
 
 ```bash
