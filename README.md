@@ -360,3 +360,11 @@ Standard 5-field: `minute hour day month weekday`
 0 */6 * * *       every 6 hours
 0 2 * * *         daily at 2am
 ```
+
+---
+
+_Built by anvil, with anvil and Claude Code_
+
+---
+
+Built by [anvil](https://github.com/johnjansen/anvil), with [anvil](https://github.com/johnjansen/anvil) and [Claude Code](https://claude.com/claude-code).
