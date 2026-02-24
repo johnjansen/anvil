@@ -105,6 +105,10 @@ type Daemon struct {
 	// Map value is the time when the cooldown expires.
 	runnerCooldowns map[int]time.Time
 	runnerCooldownsMu sync.Mutex
+	// pendingTasks tracks tasks that were due but not dispatched, with skip reasons.
+	// Used by CLI to show queue status.
+	pendingTasks  map[string]string // taskKey -> skip reason
+	pendingTasksMu sync.RWMutex
 }
 
 type RunningTask struct {
@@ -137,6 +141,16 @@ type TaskInfo struct {
 	Status      string `json:"status,omitempty"`
 }
 
+// TaskQueueInfo holds information about a task in the queue or its last skip reason.
+type TaskQueueInfo struct {
+	Project    string `json:"project"`
+	Name       string `json:"name"`
+	Priority   int    `json:"priority"`
+	Schedule   string `json:"schedule"`
+	Status     string `json:"status"`       // "running", "pending", "skipped"
+	SkipReason string `json:"skip_reason,omitempty"` // why task was skipped in last tick
+}
+
 func New(cfg *config.Config) *Daemon {
 	poolSize := cfg.MaxWorkers
 	if poolSize < 1 {
@@ -155,6 +169,7 @@ func New(cfg *config.Config) *Daemon {
 		persistentFailures: make(map[string]int),
 		persistentCooldowns: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
+		pendingTasks:  make(map[string]string),
 	}
 }
 
@@ -628,6 +643,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/run", d.handleRun)
 	mux.HandleFunc("/status", d.handleStatus)
 	mux.HandleFunc("/timeout", d.handleTimeout)
+	mux.HandleFunc("/queue", d.handleQueue)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -714,6 +730,63 @@ func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
 	// Sort by started time (oldest first)
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Started < result[j].Started
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var result []TaskQueueInfo
+
+	// First, get running tasks
+	d.tasksMu.RLock()
+	for _, task := range d.tasks {
+		result = append(result, TaskQueueInfo{
+			Project: task.Project,
+			Name:    task.Name,
+			Status:  "running",
+		})
+	}
+	d.tasksMu.RUnlock()
+
+	// Get pending/skipped tasks from the last tick
+	d.pendingTasksMu.RLock()
+	for taskKey, skipReason := range d.pendingTasks {
+		// Parse taskKey as project/path
+		parts := strings.Split(taskKey, "/")
+		projectPath := ""
+		taskName := ""
+		if len(parts) >= 2 {
+			projectPath = strings.Join(parts[:len(parts)-1], "/")
+			taskName = parts[len(parts)-1]
+		} else {
+			taskName = taskKey
+		}
+		status := "pending"
+		if skipReason != "" {
+			status = "skipped"
+		}
+		result = append(result, TaskQueueInfo{
+			Project:    projectPath,
+			Name:       taskName,
+			Status:     status,
+			SkipReason: skipReason,
+		})
+	}
+	d.pendingTasksMu.RUnlock()
+
+	// Sort by project/name for consistent output
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Project != result[j].Project {
+			return result[i].Project < result[j].Project
+		}
+		return result[i].Name < result[j].Name
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -975,6 +1048,11 @@ func (d *Daemon) tick(now time.Time) {
 		return
 	}
 
+	// Clear pending tasks from previous tick before processing new one
+	d.pendingTasksMu.Lock()
+	d.pendingTasks = make(map[string]string)
+	d.pendingTasksMu.Unlock()
+
 	// Collect all due todos across all projects for global priority ordering
 	type projectTodo struct {
 		proj *project.Project
@@ -1027,6 +1105,11 @@ func (d *Daemon) tick(now time.Time) {
 		return dueTodos[i].todo.Name < dueTodos[j].todo.Name
 	})
 
+	// Clear pending tasks from previous tick
+	d.pendingTasksMu.Lock()
+	d.pendingTasks = make(map[string]string)
+	d.pendingTasksMu.Unlock()
+
 	dispatched := 0
 	for _, pt := range dueTodos {
 		taskKey := fmt.Sprintf("%s/%s", pt.proj.Path, pt.todo.Name)
@@ -1041,6 +1124,9 @@ func (d *Daemon) tick(now time.Time) {
 		if d.inFlight[taskKey] >= maxConcurrent {
 			d.inFlightMu.Unlock()
 			dlog.Info("skip %s/%s — already in-flight", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "max concurrent"
+			d.pendingTasksMu.Unlock()
 			continue
 		}
 		d.inFlight[taskKey]++
@@ -1055,6 +1141,9 @@ func (d *Daemon) tick(now time.Time) {
 				delete(d.inFlight, taskKey)
 			}
 			d.inFlightMu.Unlock()
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "daemon draining"
+			d.pendingTasksMu.Unlock()
 			continue
 		}
 
@@ -1064,6 +1153,9 @@ func (d *Daemon) tick(now time.Time) {
 		d.drainedMu.Unlock()
 		if taskDrained {
 			dlog.Info("skip %s/%s — stop-on-idle set", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "stop-on-idle"
+			d.pendingTasksMu.Unlock()
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
 			if d.inFlight[taskKey] <= 0 {
@@ -1086,6 +1178,9 @@ func (d *Daemon) tick(now time.Time) {
 		d.runnerCooldownsMu.Unlock()
 		if allInCooldown {
 			dlog.Info("skip %s/%s — all runners in cooldown", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "all runners in cooldown"
+			d.pendingTasksMu.Unlock()
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
 			if d.inFlight[taskKey] <= 0 {
@@ -1101,6 +1196,9 @@ func (d *Daemon) tick(now time.Time) {
 			if expires, ok := d.persistentCooldowns[taskKey]; ok && now.Before(expires) {
 				d.persistentCooldownsMu.Unlock()
 				dlog.Info("skip %s/%s — persistent task in cooldown (expires %v)", projName, pt.todo.Name, expires.Round(time.Second))
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "persistent task in cooldown"
+				d.pendingTasksMu.Unlock()
 				d.inFlightMu.Lock()
 				d.inFlight[taskKey]--
 				if d.inFlight[taskKey] <= 0 {
@@ -1120,6 +1218,9 @@ func (d *Daemon) tick(now time.Time) {
 			dispatched++
 		default:
 			dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "work queue full"
+			d.pendingTasksMu.Unlock()
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
 			if d.inFlight[taskKey] <= 0 {
@@ -1303,6 +1404,26 @@ func SendTimeoutRequest() ([]TaskInfo, error) {
 	}
 
 	var tasks []TaskInfo
+	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+// SendQueueRequest queries the daemon's /queue endpoint and returns queue status.
+func SendQueueRequest() ([]TaskQueueInfo, error) {
+	resp, err := socketClient().Get("http://daemon/queue")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon request failed: %s", resp.Status)
+	}
+
+	var tasks []TaskQueueInfo
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
 		return nil, err
 	}
