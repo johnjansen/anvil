@@ -97,6 +97,10 @@ type Daemon struct {
 	// to implement exponential backoff and hard-stop after max failures
 	persistentFailures   map[string]int
 	persistentFailuresMu sync.Mutex
+	// runnerCooldowns tracks runner indices that are temporarily skipped due to failures.
+	// Map value is the time when the cooldown expires.
+	runnerCooldowns map[int]time.Time
+	runnerCooldownsMu sync.Mutex
 }
 
 type RunningTask struct {
@@ -145,6 +149,7 @@ func New(cfg *config.Config) *Daemon {
 		tasks:        make(map[string]*RunningTask),
 		drainedTasks: make(map[string]bool),
 		persistentFailures: make(map[string]int),
+		runnerCooldowns: make(map[int]time.Time),
 	}
 }
 
@@ -343,7 +348,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskLabel := projName + "/" + t.Name
 	var childPID int
 	logDir := filepath.Join(proj.Path, ".anvil", "logs", t.ID)
-	usedSessionID, logPath, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, func(pid int, lp string, sid string) {
+
+	// Build skip indices from unexpired runner cooldowns
+	skipIndices := make(map[int]bool)
+	d.runnerCooldownsMu.Lock()
+	now := time.Now()
+	for idx, expires := range d.runnerCooldowns {
+		if now.Before(expires) {
+			skipIndices[idx] = true
+		} else {
+			// Cooldown expired, remove it
+			delete(d.runnerCooldowns, idx)
+		}
+	}
+	d.runnerCooldownsMu.Unlock()
+
+	usedSessionID, logPath, usedRunnerIdx, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
 		childPID = pid
 		d.tasksMu.Lock()
 		if task, ok := d.tasks[taskKey]; ok {
@@ -384,6 +404,13 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	elapsed := time.Since(startTime)
 	if err != nil {
 		dlog.WorkerFail(workerID, projName, t.Name, err)
+		// If the runner failed, set a 5-minute cooldown to avoid retrying it immediately
+		if usedRunnerIdx >= 0 {
+			d.runnerCooldownsMu.Lock()
+			d.runnerCooldowns[usedRunnerIdx] = time.Now().Add(5 * time.Minute)
+			d.runnerCooldownsMu.Unlock()
+			dlog.Info("runner[%d] failed — marking as cooldown for 5 minutes", usedRunnerIdx)
+		}
 		// Run on_failure hook if defined
 		if t.OnFailure != "" {
 			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
@@ -915,6 +942,28 @@ func (d *Daemon) tick(now time.Time) {
 		d.drainedMu.Unlock()
 		if taskDrained {
 			dlog.Info("skip %s/%s — stop-on-idle set", projName, pt.todo.Name)
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
+		}
+
+		// Skip dispatch if all runners are in cooldown
+		d.runnerCooldownsMu.Lock()
+		now := time.Now()
+		allInCooldown := true
+		for idx := range d.runner.Commands {
+			if expires, ok := d.runnerCooldowns[idx]; !ok || now.After(expires) {
+				allInCooldown = false
+				break
+			}
+		}
+		d.runnerCooldownsMu.Unlock()
+		if allInCooldown {
+			dlog.Info("skip %s/%s — all runners in cooldown", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
 			if d.inFlight[taskKey] <= 0 {

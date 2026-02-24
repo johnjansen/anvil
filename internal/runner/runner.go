@@ -32,6 +32,9 @@ func New(commands []string, timeout time.Duration) *Runner {
 // Otherwise, uses --session-id to start a new session.
 // Tries each command in order until one succeeds.
 //
+// skipIndices, if non-nil, is a set of runner indices to skip (e.g., runners
+// in cooldown after recent failures). These runners are omitted from the attempt loop.
+//
 // taskLabel is a human-readable "project/task" string used in log output.
 //
 // logDir, if non-empty, is the directory where a raw log file will be written
@@ -45,10 +48,11 @@ func New(commands []string, timeout time.Duration) *Runner {
 //
 // Returns the actual session ID used (either the passed-in sessionID for resume,
 // or a freshly generated one), the log file path (empty if no log was written),
-// and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, err error) {
+// the index of the runner that was used (last attempted, -1 if none), and any error.
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, usedRunnerIndex int, err error) {
 	var lastErr error
 	var lastStderr string
+	var lastRunnerIndex int
 
 	// Safety guard: never pass --resume with an empty session ID
 	if resume && sessionID == "" {
@@ -81,6 +85,11 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 	}
 
 	for i, command := range r.Commands {
+		lastRunnerIndex = i
+		// Skip runners that are in cooldown
+		if skipIndices != nil && skipIndices[i] {
+			continue
+		}
 		actualSessionID := sessionID
 		cmdStr := command
 		// Append --dangerously-skip-permissions if the task opts in and the
@@ -143,19 +152,20 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		}
 		if waitErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				return "", logPath, fmt.Errorf("timed out after %s", r.Timeout)
+				return "", logPath, i, fmt.Errorf("timed out after %s", r.Timeout)
 			}
 			lastErr = waitErr
 			lastStderr = stderr.String()
+			lastRunnerIndex = i
 			log.Printf("runner[%d] [%s] failed: %v", i, taskLabel, waitErr)
 			continue
 		}
 
 		log.Printf("runner[%d] [%s] succeeded: %s", i, taskLabel, command)
-		return actualSessionID, logPath, nil
+		return actualSessionID, logPath, i, nil
 	}
 
-	return "", logPath, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
+	return "", logPath, lastRunnerIndex, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
 }
 
 // cleanEnv returns the current environment with Claude-nesting guard vars removed.
