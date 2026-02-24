@@ -418,7 +418,6 @@ anvil task kill <name>               # kill a running task
 anvil task stop-on-idle <name>       # finish current run then stop rescheduling
 anvil task unlock <name>             # remove stale lock file to allow retry
 anvil task queue                    # show daemon queue status and skip reasons
-anvil task queue                    # show daemon queue status
 ```
 
 ## Project Subcommands
