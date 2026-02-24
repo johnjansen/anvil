@@ -33,9 +33,10 @@ type Todo struct {
 	Content         string // file contents (after front‑matter)
 	Schedule        string // cron expression from front‑matter
 	ID              string // UUID for session tracking
-	Resume          *bool  // nil = default (true for recurring, false for one-shot), explicit overrides
-	MaxConcurrent   int    // max simultaneous instances (0 = default 1)
-	SkipPermissions bool   // if true, append --dangerously-skip-permissions to runner command
+	Resume          *bool    // nil = default (true for recurring, false for one-shot), explicit overrides
+	MaxConcurrent   int      // max simultaneous instances (0 = default 1)
+	SkipPermissions bool     // if true, append --dangerously-skip-permissions to runner command
+	AllowedTools    []string // if non-empty, append --allowedTools <tools> to runner command
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -96,6 +97,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var resume *bool
 			maxConcurrent := 0
 			skipPermissions := false
+			var allowedTools []string
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -105,11 +107,12 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 					fm := parts[0]
 					body = parts[1]
 					var fmData struct {
-						Schedule        string `yaml:"schedule"`
-						ID              string `yaml:"id"`
-						Resume          *bool  `yaml:"resume"`
-						MaxConcurrent   int    `yaml:"max_concurrent"`
-						SkipPermissions bool   `yaml:"skip_permissions"`
+						Schedule        string   `yaml:"schedule"`
+						ID              string   `yaml:"id"`
+						Resume          *bool    `yaml:"resume"`
+						MaxConcurrent   int      `yaml:"max_concurrent"`
+						SkipPermissions bool     `yaml:"skip_permissions"`
+						AllowedTools    []string `yaml:"allowed_tools"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -117,6 +120,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						resume = fmData.Resume
 						maxConcurrent = fmData.MaxConcurrent
 						skipPermissions = fmData.SkipPermissions
+						allowedTools = fmData.AllowedTools
 					}
 				}
 			}
@@ -131,6 +135,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Resume:          resume,
 				MaxConcurrent:   maxConcurrent,
 				SkipPermissions: skipPermissions,
+				AllowedTools:    allowedTools,
 			})
 		}
 	}

@@ -45,7 +45,7 @@ func New(commands []string, timeout time.Duration) *Runner {
 // Returns the actual session ID used (either the passed-in sessionID for resume,
 // or a freshly generated one), the log file path (empty if no log was written),
 // and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, content string, taskLabel string, logDir string, onStart func(pid int)) (usedSessionID string, logPath string, err error) {
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, onStart func(pid int)) (usedSessionID string, logPath string, err error) {
 	var lastErr error
 	var lastStderr string
 
@@ -87,6 +87,9 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		// if the runner includes the flag globally it applies unconditionally).
 		if skipPermissions && !strings.Contains(cmdStr, "--dangerously-skip-permissions") {
 			cmdStr += " --dangerously-skip-permissions"
+		}
+		if len(allowedTools) > 0 {
+			cmdStr += " --allowedTools " + strings.Join(allowedTools, " ")
 		}
 		if resume {
 			cmdStr += " --resume " + sessionID

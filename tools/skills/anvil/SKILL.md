@@ -89,6 +89,37 @@ skip_permissions: true
 
 The flag is appended only if the runner command doesn't already include it globally.
 
+## allowed_tools
+
+Set `allowed_tools` in the frontmatter to pre-approve a specific list of tools without bypassing all permission checks. This is the least-privilege alternative to `skip_permissions`.
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/5 * * * *"
+allowed_tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+---
+Task that can read, write, and run shell commands but nothing else.
+```
+
+The Claude CLI supports shell-globbing syntax to restrict tools to specific command prefixes:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+allowed_tools:
+  - Bash(gh:*)      # only gh subcommands
+  - Read
+---
+```
+
+`allowed_tools` and `skip_permissions` can coexist — both flags are appended independently. If both are set, `--dangerously-skip-permissions` takes precedence (it is a superset).
+
 ## Runner Fallback Chain
 
 The daemon supports an ordered list of runner commands in `~/.anvil/config.yaml`. If the first runner fails, it tries the next:
