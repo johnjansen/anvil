@@ -175,6 +175,11 @@ func initCmd(args []string) {
 
 	// Register project for watching (fold in old 'anvil watch' behavior)
 	registerProject(abs)
+
+	// Warn if daemon is not running
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintf(os.Stderr, "⚠ Daemon is not running. Run 'anvil watch' to start executing tasks.\n")
+	}
 }
 
 // registerProject registers a project directory with the daemon watcher.
@@ -849,6 +854,11 @@ func taskCreateCmd(args []string) {
 				fmt.Fprintf(os.Stderr, "Next run: %s (%s from now)\n", next.Format("Mon 15:04"), until)
 			}
 		}
+	}
+
+	// Warn if daemon is not running (only for scheduled tasks)
+	if schedule != "" && !daemon.IsDaemonRunning() {
+		fmt.Fprintf(os.Stderr, "⚠ Daemon is not running. Run 'anvil watch' to start executing tasks.\n")
 	}
 }
 
