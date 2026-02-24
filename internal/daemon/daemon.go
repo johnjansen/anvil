@@ -729,7 +729,6 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
 	mux.HandleFunc("/reload", d.handleReload)
-	mux.HandleFunc("/reload", d.handleReload)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
