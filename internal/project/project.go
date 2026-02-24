@@ -94,15 +94,18 @@ type Todo struct {
 // RunRecord persists metadata for a single task dispatch, written after completion.
 // It links a task ID to the Claude session ID and child process PID used for that run.
 type RunRecord struct {
-	RunID         string    `json:"run_id"`
-	TaskID        string    `json:"task_id"`
-	SessionID     string    `json:"session_id"`
-	PID           int       `json:"pid"`
-	Started       time.Time `json:"started"`
-	Finished      time.Time `json:"finished,omitempty"`       // when the run ended
-	Success       bool      `json:"success"`                  // whether the runner returned nil error
-	OutputSummary string    `json:"output_summary,omitempty"` // first and last N lines of output
-	Error         string    `json:"error,omitempty"`           // last runner error message if failed
+	RunID            string    `json:"run_id"`
+	TaskID           string    `json:"task_id"`
+	SessionID        string    `json:"session_id"`
+	PID              int       `json:"pid"`
+	Started          time.Time `json:"started"`
+	Finished         time.Time `json:"finished,omitempty"`        // when the run ended
+	Success          bool      `json:"success"`                   // whether the runner returned nil error
+	OutputSummary    string    `json:"output_summary,omitempty"`  // first and last N lines of output
+	Error            string    `json:"error,omitempty"`           // last runner error message if failed
+	InputTokens      int       `json:"input_tokens,omitempty"`    // tokens sent to the model
+	OutputTokens     int       `json:"output_tokens,omitempty"`   // tokens received from the model
+	EstimatedCostUSD float64   `json:"estimated_cost_usd,omitempty"` // estimated cost in USD
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.

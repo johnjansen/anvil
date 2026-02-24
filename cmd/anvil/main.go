@@ -87,6 +87,8 @@ func main() {
 		taskCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
+	case "usage":
+		usageCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
 	case "doctor":
@@ -119,6 +121,7 @@ Commands:
   ps                       Show running tasks
   status                   Show watched projects
   reload                   Reload daemon configuration (SIGHUP)
+  usage [options]           Show LLM token usage and estimated costs
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
@@ -3079,6 +3082,247 @@ func updateCmd(args []string) {
 			fmt.Printf("  refreshed %s\n", w.Path)
 		}
 	}
+}
+
+func usageCmd(args []string) {
+	var projectFilter string
+	var taskFilter string
+	var sinceStr string
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectFilter = args[i+1]
+				i += 2
+			} else {
+				fmt.Fprintln(os.Stderr, "--project requires a value")
+				os.Exit(1)
+			}
+		case "--task":
+			if i+1 < len(args) {
+				taskFilter = args[i+1]
+				i += 2
+			} else {
+				fmt.Fprintln(os.Stderr, "--task requires a value")
+				os.Exit(1)
+			}
+		case "--since":
+			if i+1 < len(args) {
+				sinceStr = args[i+1]
+				i += 2
+			} else {
+				fmt.Fprintln(os.Stderr, "--since requires a value")
+				os.Exit(1)
+			}
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `Usage: anvil usage [options]
+
+Show LLM token usage and estimated costs across tasks and projects.
+
+Options:
+  --project <path>   Filter to a specific project (default: all watched projects)
+  --task <name>      Filter to a specific task name
+  --since <date>     Show usage since date (YYYY-MM-DD, default: 7 days ago)
+`)
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
+
+	// Default: last 7 days
+	since := time.Now().AddDate(0, 0, -7)
+	if sinceStr != "" {
+		parsed, err := time.Parse("2006-01-02", sinceStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid date %q (expected YYYY-MM-DD): %v\n", sinceStr, err)
+			os.Exit(1)
+		}
+		since = parsed
+	}
+
+	// Resolve project filter to absolute path
+	if projectFilter != "" {
+		abs, err := filepath.Abs(projectFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad project path: %v\n", err)
+			os.Exit(1)
+		}
+		projectFilter = abs
+	}
+
+	// Discover projects
+	var projectPaths []string
+	if projectFilter != "" {
+		projectPaths = []string{projectFilter}
+	} else {
+		watched, err := loadAllWatched()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load watched projects: %v\n", err)
+			os.Exit(1)
+		}
+		for _, w := range watched {
+			projectPaths = append(projectPaths, w.Path)
+		}
+	}
+
+	if len(projectPaths) == 0 {
+		fmt.Println("No watched projects found.")
+		return
+	}
+
+	// Load global config for cost rates
+	cfg, _ := config.Load()
+	inputRate := cfg.InputTokenRate
+	outputRate := cfg.OutputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0
+	}
+	if outputRate <= 0 {
+		outputRate = 15.0
+	}
+
+	type taskUsage struct {
+		Project      string
+		TaskName     string
+		Runs         int
+		InputTokens  int
+		OutputTokens int
+		Cost         float64
+	}
+
+	var allUsage []taskUsage
+	var totalRuns int
+	var totalInput, totalOutput int
+	var totalCost float64
+
+	for _, projPath := range projectPaths {
+		proj, err := project.Load(projPath)
+		if err != nil {
+			continue
+		}
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			continue
+		}
+		projName := filepath.Base(projPath)
+
+		for _, todo := range todos {
+			if taskFilter != "" && todo.Name != taskFilter {
+				continue
+			}
+			records, err := project.ReadAllRunRecords(projPath, todo.ID)
+			if err != nil {
+				continue
+			}
+
+			var tu taskUsage
+			tu.Project = projName
+			tu.TaskName = todo.Name
+
+			for _, rec := range records {
+				if rec.Started.Before(since) {
+					continue
+				}
+				tu.Runs++
+				tu.InputTokens += rec.InputTokens
+				tu.OutputTokens += rec.OutputTokens
+				tu.Cost += rec.EstimatedCostUSD
+			}
+
+			// Recalculate cost if records had zero cost but had tokens
+			// (handles old records that may have tokens but no cost)
+			if tu.Cost == 0 && (tu.InputTokens > 0 || tu.OutputTokens > 0) {
+				tu.Cost = float64(tu.InputTokens)/1_000_000*inputRate +
+					float64(tu.OutputTokens)/1_000_000*outputRate
+			}
+
+			if tu.Runs > 0 {
+				allUsage = append(allUsage, tu)
+				totalRuns += tu.Runs
+				totalInput += tu.InputTokens
+				totalOutput += tu.OutputTokens
+				totalCost += tu.Cost
+			}
+		}
+	}
+
+	if totalRuns == 0 {
+		fmt.Printf("No runs found since %s.\n", since.Format("2006-01-02"))
+		return
+	}
+
+	// Sort by cost descending
+	sort.Slice(allUsage, func(i, j int) bool {
+		return allUsage[i].Cost > allUsage[j].Cost
+	})
+
+	// Print summary
+	fmt.Printf("Token usage since %s\n", since.Format("2006-01-02"))
+	fmt.Printf("Rates: $%.2f/1M input, $%.2f/1M output\n\n", inputRate, outputRate)
+
+	fmt.Printf("%-30s %-6s %12s %12s %10s\n", "TASK", "RUNS", "INPUT", "OUTPUT", "COST")
+	fmt.Printf("%-30s %-6s %12s %12s %10s\n", "----", "----", "-----", "------", "----")
+
+	limit := len(allUsage)
+	if limit > 15 {
+		limit = 15
+	}
+	for _, tu := range allUsage[:limit] {
+		name := tu.TaskName
+		if len(name) > 27 {
+			name = name[:27] + "..."
+		}
+		if len(projectPaths) > 1 {
+			label := tu.Project + "/" + name
+			if len(label) > 30 {
+				label = label[:27] + "..."
+			}
+			name = label
+		}
+		fmt.Printf("%-30s %-6d %12s %12s %10s\n",
+			name,
+			tu.Runs,
+			formatTokens(tu.InputTokens),
+			formatTokens(tu.OutputTokens),
+			formatCost(tu.Cost))
+	}
+	if len(allUsage) > limit {
+		fmt.Printf("  ... and %d more tasks\n", len(allUsage)-limit)
+	}
+
+	fmt.Printf("\n%-30s %-6d %12s %12s %10s\n",
+		"TOTAL",
+		totalRuns,
+		formatTokens(totalInput),
+		formatTokens(totalOutput),
+		formatCost(totalCost))
+}
+
+func formatTokens(n int) string {
+	if n == 0 {
+		return "N/A"
+	}
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func formatCost(c float64) string {
+	if c == 0 {
+		return "N/A"
+	}
+	if c < 0.01 {
+		return fmt.Sprintf("$%.4f", c)
+	}
+	return fmt.Sprintf("$%.2f", c)
 }
 
 // --- helpers ---
