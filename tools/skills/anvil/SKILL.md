@@ -376,6 +376,29 @@ defaults:
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
 
+### Log Retention
+
+Configure automatic cleanup of old logs and session data in `~/.anvil/config.yaml`:
+
+```yaml
+retention:
+  max_age: 7d    # delete logs older than 7 days
+  max_runs: 50   # keep only last 50 runs per task
+```
+
+Or run cleanup manually:
+
+```bash
+# Preview what would be deleted
+anvil cleanup --older-than=3d --dry-run
+
+# Actually delete logs older than 3 days
+anvil cleanup --older-than=3d
+
+# Use shorter duration syntax
+anvil cleanup -o=24h
+```
+
 ### Hot Reload
 
 Reload the daemon configuration without restarting:
