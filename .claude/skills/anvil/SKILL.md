@@ -118,6 +118,21 @@ allowed_tools:
 
 `allowed_tools` and `skip_permissions` can coexist — both flags are appended independently. If both are set, `--dangerously-skip-permissions` takes precedence (it is a superset).
 
+## pre_check
+
+Set `pre_check` to a shell command that gates task execution. If the command exits non-zero, the task is skipped silently — no log entry, no agent invocation. Use this to avoid expensive LLM calls when there's nothing to do:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/15 * * * *"
+pre_check: "gh issue list --state open --label untriaged | grep -q ."
+---
+Check GitHub for new untriaged issues and apply labels.
+```
+
+The `pre_check` command runs in the project directory. Zero exit = proceed; non-zero = skip quietly.
+
 ## Runner Fallback Chain
 
 The daemon supports an ordered list of runner commands in `~/.anvil/config.yaml`. If the first runner fails, it tries the next:

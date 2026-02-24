@@ -39,8 +39,8 @@ Set `ANVIL_INSTALL_DIR` to change the install location (default: `/usr/local/bin
                      └────────────────────────┘
 ```
 
-1. Start the daemon once: `anvil serve`
-2. From any project, register it: `anvil watch`
+1. Start the daemon once: `anvil watch`
+2. From any project, initialize it: `anvil init`
 3. Add recurring tasks: `anvil add -p 0 -s "*/30 * * * *" "Check GitHub for new issues and triage them"`
 4. On every tick the daemon iterates all watched projects, checks each todo's cron schedule, and runs matching tasks through the configured runner
 5. The daemon manages all running processes across all projects
@@ -141,6 +141,21 @@ allowed_tools:
 ```
 
 `allowed_tools` and `skip_permissions` can coexist — both flags are appended independently. If both are set, `--dangerously-skip-permissions` takes precedence (it is a superset).
+
+### pre_check
+
+Set `pre_check` to a shell command that gates task execution. If the command exits non-zero, the task is skipped silently for that tick — no log entry, no agent invocation. Useful for recurring tasks that should only run when there's actually work to do:
+
+```markdown
+---
+id: "550e8400-e29b-41d4-a716-446655440000"
+schedule: "*/15 * * * *"
+pre_check: "gh issue list --state open --label untriaged | grep -q ."
+---
+Check GitHub for new untriaged issues and apply labels.
+```
+
+The `pre_check` command runs in the project directory with a 15-minute timeout (inherited from the task timeout). A zero exit means "proceed"; non-zero means "nothing to do, skip quietly".
 
 ## Daemon Directory
 
