@@ -289,6 +289,7 @@ runners:
 | `anvil task edit <name> [-s schedule] [-p priority]` | Edit task schedule/priority |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
+| `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
 
 **Task status:**
 

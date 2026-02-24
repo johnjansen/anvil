@@ -431,6 +431,7 @@ anvil task unlock <name>             # remove stale lock file to allow retry
 anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
+anvil task timeout [name]            # show task timeout progress (--all for all tasks)
 ```
 
 ## Project Subcommands

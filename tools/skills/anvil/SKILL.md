@@ -238,17 +238,6 @@ anvil task resume <name>  # sets disabled: false
 
 These are shortcuts for setting `disabled: true/false` in the frontmatter — equivalent to editing the file directly but more convenient.
 
-## pause / resume
-
-Use CLI commands to pause and resume tasks without editing the file manually:
-
-```bash
-anvil task pause <name>   # sets disabled: true
-anvil task resume <name>  # sets disabled: false
-```
-
-These are shortcuts for setting `disabled: true/false` in the frontmatter — equivalent to editing the file directly but more convenient.
-
 ## timeout
 
 Set `timeout` to override the global timeout for a specific task. The global timeout is configured in `~/.anvil/config.yaml` (default: 5 minutes):
@@ -442,6 +431,7 @@ anvil task unlock <name>             # remove stale lock file to allow retry
 anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
+anvil task timeout [name]            # show task timeout progress (--all for all tasks)
 ```
 
 ## Project Subcommands
