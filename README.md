@@ -322,13 +322,13 @@ Or run cleanup manually:
 
 ```bash
 # Preview what would be deleted
-anvil cleanup --older-than 3d --dry-run
+anvil cleanup --older-than=3d --dry-run
 
 # Actually delete logs older than 3 days
-anvil cleanup --older-than 3d
+anvil cleanup --older-than=3d
 
 # Use shorter duration syntax
-anvil cleanup -o 24h
+anvil cleanup -o=24h
 ```
 
 ## CLI Reference
@@ -346,7 +346,7 @@ anvil cleanup -o 24h
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
-| `anvil cleanup [--older-than=<duration>] [--dry-run]` | Prune old logs and session data |
+| `anvil cleanup [--older-than=<duration>] [--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
 | `anvil doctor` | Run diagnostics to check for common issues |
 | `anvil version` | Show version |

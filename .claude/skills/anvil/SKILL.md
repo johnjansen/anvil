@@ -571,9 +571,9 @@ View the daemon's log output. Useful for debugging daemon issues or monitoring d
 
 ```bash
 anvil cleanup                         # show retention policy config
-anvil cleanup --older-than 3d         # delete logs older than 3 days
-anvil cleanup --older-than 3d --dry-run  # preview what would be deleted
-anvil cleanup -o 24h                  # short form
+anvil cleanup --older-than=3d         # delete logs older than 3 days
+anvil cleanup --older-than=3d --dry-run  # preview what would be deleted
+anvil cleanup -o=24h                  # short form
 ```
 
 Prune old logs and session data. Use `--dry-run` to preview deletions without actually deleting. Without a retention policy configured, it shows how to configure one.
