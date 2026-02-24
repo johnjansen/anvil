@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg" width="120">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo.svg" width="120">
+    <img alt="Anvil" src="assets/logo.svg" width="120">
+  </picture>
+</p>
+
 # Anvil
 
 Scheduled LLM tasks for your projects. Write a task in plain English, give it a cron schedule, and anvil runs it automatically through Claude.
@@ -6,7 +14,7 @@ Scheduled LLM tasks for your projects. Write a task in plain English, give it a 
 
 Anvil includes a [Claude skill](https://github.com/johnjansen/anvil/blob/main/tools/skills/anvil/SKILL.md) that can automatically create scheduled jobs for you. Just describe what you want automated, and the skill will generate the task file with the proper schedule and content.
 
-**Note:** Tasks only run when `anvil watch` is running somewhere. If you're not running the daemon, your tasks won't execute—but you never need to fear missed runs, as tasks persist in their markdown files and will execute once the daemon starts.
+**Note:** Tasks only run when `anvil watch` is running. Task files persist on disk, so one-shot tasks will execute when the daemon next starts. Scheduled tasks only run at their cron times — missed windows are not replayed.
 
 ## Install
 
