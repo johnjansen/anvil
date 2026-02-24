@@ -333,7 +333,7 @@ anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
 ```
 
-Output columns: priority, schedule, status (running/idle/locked), name, content preview. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
+Output columns: priority, schedule, status (running/idle/disabled/locked), name, content preview. A `disabled` status means the task is paused (set `disabled: true` in frontmatter) — use `anvil task resume <name>` to re-enable. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
 
 ## Getting Task Details
 

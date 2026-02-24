@@ -297,6 +297,7 @@ runners:
 |--------|---------|
 | `idle` | Task is queued but not running |
 | `running` | Task is currently executing |
+| `disabled` | Task is paused (set `disabled: true` in frontmatter); use `anvil task resume <name>` to re-enable |
 | `locked` | Stale lock file found (daemon crashed mid-execution); use `unlock` to allow retry |
 
 **Project management:**
