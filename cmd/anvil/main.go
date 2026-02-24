@@ -119,7 +119,7 @@ Commands:
 
 Add options:
   -p, --priority int          Task priority 0-9 (default 1)
-  -s, --schedule string        Cron schedule (default "* * * * *"), "" for one-shot
+  -s, --schedule string        Cron schedule (e.g., "*/15 * * * *"), "" for one-shot
       --pre-check string       Shell command to skip task if non-zero exit
       --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read")
       --max-concurrent int    Max parallel instances (default 1)

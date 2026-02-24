@@ -41,7 +41,7 @@ Options:
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
 - `--skip-permissions` — Bypass all tool permission prompts.
 
-**Important:** The default schedule is `* * * * *` (every minute). Always pass `-s` with an appropriate schedule unless you intentionally want every-minute execution.
+**Important:** The default is a one-shot task (empty schedule — runs once on next tick, then gets deleted). Always pass `-s` with an appropriate schedule unless you intentionally want one-shot execution.
 
 Examples:
 ```bash
