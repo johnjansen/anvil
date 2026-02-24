@@ -307,6 +307,12 @@ func (d *Daemon) reloadConfig() {
 		}
 	}
 
+	// hooks: apply to new task completions
+	if newConfig.Hooks.OnSuccess != d.config.Hooks.OnSuccess || newConfig.Hooks.OnFailure != d.config.Hooks.OnFailure {
+		d.config.Hooks = newConfig.Hooks
+		changes = append(changes, "hooks updated")
+	}
+
 	// tick_interval: will be picked up on next tick
 	if newConfig.TickInterval != d.config.TickInterval {
 		oldVal := d.config.TickInterval
@@ -615,7 +621,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.runnerCooldownsMu.Unlock()
 			dlog.Info("runner[%d] failed — marking as cooldown for 5 minutes", usedRunnerIdx)
 		}
-		// Run on_failure hook if defined
+		// Run global on_failure hook if defined and not skipped
+		if d.config.Hooks.OnFailure != "" && !t.SkipGlobalHooks {
+			d.runHook("on_failure (global)", d.config.Hooks.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+		}
+		// Run per-task on_failure hook if defined
 		if t.OnFailure != "" {
 			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
 		}
@@ -641,7 +651,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	} else {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
-		// Run on_success hook if defined
+		// Run global on_success hook if defined and not skipped
+		if d.config.Hooks.OnSuccess != "" && !t.SkipGlobalHooks {
+			d.runHook("on_success (global)", d.config.Hooks.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+		}
+		// Run per-task on_success hook if defined
 		if t.OnSuccess != "" {
 			d.runHook("on_success", t.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
 		}
