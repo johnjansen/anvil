@@ -94,14 +94,20 @@ bd create "Write integration tests for search" --deps "blocks:bd-51,blocks:bd-52
 
 Dependencies are modeled, so `bd ready` shows what's actually unblocked. Close issues as you go: `bd close bd-51 -r "Implemented in src/services/search.go"`.
 
-Meanwhile, anvil keeps the recurring stuff from falling through the cracks:
+Meanwhile, anvil keeps the recurring stuff from falling through the cracks. If you haven't already, start the daemon — it's a global process, one per machine, not per project:
+
+```bash
+anvil watch    # Only needed once — it watches all your projects
+```
+
+Then add tasks for this feature:
 
 ```bash
 anvil add -s "0 */4 * * *" "Check if search index tests are passing and report failures"
 anvil add -s "0 9 * * 1-5" "Review any open PRs related to the search feature"
 ```
 
-Those run on schedule — an LLM reads your codebase and acts on what it finds. No manual checking, no forgotten follow-ups.
+The daemon picks those up automatically. It already knows about your project from `anvil init`, and it monitors every registered project from that single process. The tasks run on schedule — an LLM reads your codebase and acts on what it finds. No manual checking, no forgotten follow-ups.
 
 The whole workflow stays in the terminal. Every artifact — specs, plans, tasks, issues, automation — lives in the repo, versioned alongside the code.
 
