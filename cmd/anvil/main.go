@@ -59,8 +59,7 @@ func main() {
 	case "status":
 		statusCmd()
 	case "ps":
-		fmt.Fprintln(os.Stderr, "'anvil ps' has been removed. Did you mean 'anvil task ls'?")
-		os.Exit(1)
+		psCmd()
 	case "init":
 		initCmd(os.Args[2:])
 	case "add":
@@ -110,6 +109,7 @@ Commands:
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
+  ps                       Show running tasks
   status                   Show watched projects
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
