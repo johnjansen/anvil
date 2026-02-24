@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -85,6 +86,7 @@ type Daemon struct {
 	stop        chan struct{}
 	stopOnce    sync.Once
 	done        chan struct{}
+	reload      chan struct{} // SIGHUP trigger for config reload
 	lastTick    time.Time // last minute we processed (truncated to minute)
 	socketPath  string
 	tasks       map[string]*RunningTask
@@ -101,6 +103,10 @@ type Daemon struct {
 	// Map value is the time when the cooldown expires.
 	persistentCooldowns map[string]time.Time
 	persistentCooldownsMu sync.Mutex
+	// starvationTrackers tracks when persistent tasks started waiting for a worker slot.
+	// Used to implement starvation prevention - after N minutes, persistent tasks yield to higher priority work.
+	starvationTrackers map[string]time.Time
+	starvationTrackersMu sync.Mutex
 	// runnerCooldowns tracks runner indices that are temporarily skipped due to failures.
 	// Map value is the time when the cooldown expires.
 	runnerCooldowns map[int]time.Time
@@ -163,11 +169,13 @@ func New(cfg *config.Config) *Daemon {
 		inFlight:     make(map[string]int),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
+		reload:       make(chan struct{}, 1),
 		socketPath:   filepath.Join(config.Dir(), "daemon.sock"),
 		tasks:        make(map[string]*RunningTask),
 		drainedTasks: make(map[string]bool),
 		persistentFailures: make(map[string]int),
 		persistentCooldowns: make(map[string]time.Time),
+	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
 	}
@@ -188,6 +196,19 @@ func (d *Daemon) Run() {
 	// Clean up PID file on shutdown
 	defer removePIDFile()
 
+	// Set up SIGHUP handler for config reload
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	go func() {
+		for range sigChan {
+			select {
+			case d.reload <- struct{}{}:
+			default:
+				// reload channel already has a pending signal
+			}
+		}
+	}()
+
 	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
 		poolSize = 1
@@ -200,6 +221,11 @@ func (d *Daemon) Run() {
 
 	// Start socket server
 	go d.startSocketServer()
+
+	// Start SIGHUP handler for config reload
+	sighupChan := make(chan os.Signal, 1)
+	signal.Notify(sighupChan, syscall.SIGHUP)
+	defer signal.Stop(sighupChan)
 
 	// Start worker pool
 	var workerWg sync.WaitGroup
@@ -222,6 +248,10 @@ func (d *Daemon) Run() {
 			workerWg.Wait()
 			os.Remove(d.socketPath)
 			return
+		case <-sighupChan:
+			d.reloadConfig()
+		case <-d.reload:
+			d.reloadConfig()
 		case now := <-ticker.C:
 			d.tick(now)
 		}
@@ -238,6 +268,56 @@ func (d *Daemon) Stop() {
 // Done returns a channel that is closed when the daemon has fully stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
+}
+
+// reloadConfig reads the config file and updates the daemon's configuration.
+// It logs what changed and applies updates to max_workers, timeout, runners, and tick_interval.
+// Running tasks are not affected - only new task dispatches use the updated config.
+func (d *Daemon) reloadConfig() {
+	newConfig, err := config.Load()
+	if err != nil {
+		dlog.Warn("failed to reload config: %v", err)
+		return
+	}
+
+	var changes []string
+
+	// max_workers: can grow or shrink
+	if newConfig.MaxWorkers != d.config.MaxWorkers {
+		oldVal := d.config.MaxWorkers
+		d.config.MaxWorkers = newConfig.MaxWorkers
+		changes = append(changes, fmt.Sprintf("max_workers %d->%d", oldVal, newConfig.MaxWorkers))
+	}
+
+	// timeout: apply to new tasks
+	if newConfig.Timeout != d.config.Timeout {
+		oldVal := d.config.Timeout
+		d.config.Timeout = newConfig.Timeout
+		changes = append(changes, fmt.Sprintf("timeout %v->%v", oldVal, newConfig.Timeout))
+	}
+
+	// runners: apply to new tasks
+	if len(newConfig.Runners) > 0 {
+		oldRunners := strings.Join(d.config.Runners, ", ")
+		newRunners := strings.Join(newConfig.Runners, ", ")
+		if oldRunners != newRunners {
+			d.config.Runners = newConfig.Runners
+			changes = append(changes, fmt.Sprintf("runners %s->%s", oldRunners, newRunners))
+		}
+	}
+
+	// tick_interval: will be picked up on next tick
+	if newConfig.TickInterval != d.config.TickInterval {
+		oldVal := d.config.TickInterval
+		d.config.TickInterval = newConfig.TickInterval
+		changes = append(changes, fmt.Sprintf("tick_interval %v->%v", oldVal, newConfig.TickInterval))
+	}
+
+	if len(changes) > 0 {
+		dlog.Info("config reloaded: %s", strings.Join(changes, ", "))
+	} else {
+		dlog.Info("config reloaded: no changes")
+	}
 }
 
 // worker pulls work items from the queue and executes them one at a time.
@@ -563,6 +643,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		d.persistentCooldownsMu.Lock()
 		d.persistentCooldowns[taskKey] = time.Now().Add(t.PersistentCooldown)
 		d.persistentCooldownsMu.Unlock()
+		// Clear starvation tracker - task completed successfully
+		d.starvationTrackersMu.Lock()
+		delete(d.starvationTrackers, taskKey)
+		d.starvationTrackersMu.Unlock()
 		dlog.Info("persistent task %s completed — next run in %v", t.Name, t.PersistentCooldown)
 	}
 
@@ -644,6 +728,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/status", d.handleStatus)
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
+	mux.HandleFunc("/reload", d.handleReload)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -791,6 +876,22 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Trigger reload via the channel
+	select {
+	case d.reload <- struct{}{}:
+		fmt.Fprintf(w, "config reload triggered")
+	default:
+		// Channel already has a pending signal
+		fmt.Fprintf(w, "config reload already in progress")
+	}
 }
 
 func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
@@ -1210,12 +1311,75 @@ func (d *Daemon) tick(now time.Time) {
 			d.persistentCooldownsMu.Unlock()
 		}
 
+		// Starvation prevention: if a persistent task has been waiting too long,
+		// skip it to let higher-priority work through. This prevents low-priority
+		// persistent tasks from blocking high-priority cron jobs indefinitely.
+		if pt.todo.IsPersistent() {
+			d.starvationTrackersMu.Lock()
+			waitStart, exists := d.starvationTrackers[taskKey]
+			if !exists {
+				// First time seeing this task as pending - start tracking
+				d.starvationTrackers[taskKey] = now
+				waitStart = now
+			}
+			waitDuration := now.Sub(waitStart)
+			d.starvationTrackersMu.Unlock()
+
+			// After 5 minutes of waiting, yield to let higher priority work through
+			if waitDuration > 5*time.Minute {
+				// Check if there are higher-priority tasks waiting
+				// If yes, skip this persistent task to let them through
+				d.pendingTasksMu.RLock()
+				hasHigherPriorityWaiting := false
+				for key, reason := range d.pendingTasks {
+					if key != taskKey && reason != "persistent task in cooldown" {
+						// Check if this is a higher priority task
+						for _, otherPt := range dueTodos {
+							otherKey := fmt.Sprintf("%s/%s", otherPt.proj.Path, otherPt.todo.Name)
+							if otherKey == key && otherPt.todo.Priority < pt.todo.Priority {
+								hasHigherPriorityWaiting = true
+								break
+							}
+						}
+						if hasHigherPriorityWaiting {
+							break
+						}
+					}
+				}
+				d.pendingTasksMu.RUnlock()
+
+				if hasHigherPriorityWaiting {
+					dlog.Info("skip %s/%s — starvation prevention: yielding after %v of waiting", projName, pt.todo.Name, waitDuration.Round(time.Second))
+					d.pendingTasksMu.Lock()
+					d.pendingTasks[taskKey] = "starvation prevention: yielding"
+					d.pendingTasksMu.Unlock()
+					d.inFlightMu.Lock()
+					d.inFlight[taskKey]--
+					if d.inFlight[taskKey] <= 0 {
+						delete(d.inFlight, taskKey)
+					}
+					d.inFlightMu.Unlock()
+					// Clear starvation tracker - we're letting it wait longer
+					d.starvationTrackersMu.Lock()
+					delete(d.starvationTrackers, taskKey)
+					d.starvationTrackersMu.Unlock()
+					continue
+				}
+			}
+		}
+
 		dlog.Dispatch(projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
 
 		// Non-blocking send; if queue is full, clear in-flight and warn
 		select {
 		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo}:
 			dispatched++
+			// Clear starvation tracker for persistent tasks when dispatched
+			if pt.todo.IsPersistent() {
+				d.starvationTrackersMu.Lock()
+				delete(d.starvationTrackers, taskKey)
+				d.starvationTrackersMu.Unlock()
+			}
 		default:
 			dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
 			d.pendingTasksMu.Lock()
@@ -1503,6 +1667,22 @@ func SendKillRequest(id string) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("daemon kill failed: %s", string(body))
+	}
+
+	return nil
+}
+
+// SendReloadRequest sends a reload request to the daemon to reload its config.
+func SendReloadRequest() error {
+	resp, err := socketClient().Post("http://daemon/reload", "application/json", bytes.NewBufferString("{}"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon reload failed: %s", string(body))
 	}
 
 	return nil

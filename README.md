@@ -243,7 +243,12 @@ runners:
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 5s  # how often to check for work
+hooks:
+  on_success: "echo 'Task completed' >> ~/.anvil/history.log"
+  on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
 ```
+
+Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
 
 Multiple runners with fallback:
 
@@ -252,6 +257,22 @@ runners:
   - claude -p "you are a helpful task runner"
   - claude --model haiku -p "you are a helpful task runner"
 ```
+
+### Hot Reload
+
+Reload the daemon configuration without restarting:
+
+```bash
+anvil reload
+```
+
+Or send SIGHUP manually:
+
+```bash
+kill -HUP $(cat ~/.anvil/daemon.pid)
+```
+
+The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
 
 ## CLI Reference
 
@@ -264,6 +285,7 @@ runners:
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil status` | Show watched projects |
+| `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil update [--check]` | Update to latest release |
 
@@ -289,6 +311,7 @@ runners:
 | `anvil task edit <name> [-s schedule] [-p priority]` | Edit task schedule/priority |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
+| `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
 
 **Task status:**
 
@@ -296,6 +319,7 @@ runners:
 |--------|---------|
 | `idle` | Task is queued but not running |
 | `running` | Task is currently executing |
+| `disabled` | Task is paused (set `disabled: true` in frontmatter); use `anvil task resume <name>` to re-enable |
 | `locked` | Stale lock file found (daemon crashed mid-execution); use `unlock` to allow retry |
 
 **Project management:**
@@ -336,3 +360,7 @@ Standard 5-field: `minute hour day month weekday`
 0 */6 * * *       every 6 hours
 0 2 * * *         daily at 2am
 ```
+
+---
+
+Built by [anvil](https://github.com/johnjansen/anvil), with [anvil](https://github.com/johnjansen/anvil) and [Claude Code](https://claude.com/claude-code).

@@ -78,6 +78,8 @@ func main() {
 		os.Exit(1)
 	case "logs":
 		logsCmd(os.Args[2:])
+	case "daemon":
+		daemonCmd(os.Args[2:])
 	case "stop-on-idle":
 		stopOnIdleCmd()
 	case "task":
@@ -86,6 +88,8 @@ func main() {
 		projectCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
+	case "reload":
+		reloadCmd(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("anvil %s\n", version)
 	case "help", "-h", "--help":
@@ -111,9 +115,11 @@ Commands:
   logs [<name>]            Raw worker output (all tasks if no name given)
   ps                       Show running tasks
   status                   Show watched projects
+  reload                   Reload daemon configuration (SIGHUP)
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
+  daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
   version                  Show version
 
@@ -142,6 +148,9 @@ Project subcommands:
   ls [-a|--all]            List watched projects
   get [path]               Show project details and running tasks
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
+
+Daemon subcommands:
+  log [-f] [-n lines]    View daemon log (-f to follow, -n for last N lines)
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -488,6 +497,30 @@ func statusCmd() {
 	}
 }
 
+func reloadCmd(args []string) {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Println("Usage: anvil reload")
+		fmt.Println("")
+		fmt.Println("Reload the daemon configuration without restarting.")
+		fmt.Println("")
+		fmt.Println("Sends SIGHUP to the daemon to reload ~/.anvil/config.yaml.")
+		fmt.Println("New tasks will use the updated config; running tasks are unaffected.")
+		return
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	if err := daemon.SendReloadRequest(); err != nil {
+		fmt.Printf("failed to reload config: %v\n", err)
+		return
+	}
+
+	fmt.Println("config reload triggered")
+}
+
 func psCmd() {
 	if !daemon.IsDaemonRunning() {
 		fmt.Println("daemon not running")
@@ -545,7 +578,7 @@ func addCmd(args []string) {
 	// Handle -h/--help before creating task
 	for _, arg := range args {
 		if arg == "-h" || arg == "--help" {
-			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] <task text>
+			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
 
 Add a new task to the project.
 
@@ -556,11 +589,20 @@ Options:
   --allowed-tools tools  Comma-separated list of allowed tools
   --max-concurrent n     Max concurrent runs (default: 1)
   --skip-permissions     Skip permission checks
+  -f, --file path        Read task content from a file
+  -                      Read task content from stdin
+
+Frontmatter in file/stdin input is merged with CLI flags (CLI flags take precedence).
 
 Examples:
   anvil add "Review pull requests"
   anvil add -p 2 -s "0 9 * * *" "Daily standup notes"
   anvil add --pre-check "git diff --quiet" "Sync documentation"
+  anvil add -s "*/30 * * * *" --file triage-prompt.md
+  cat prompt.md | anvil add -s "*/30 * * * *" -
+  anvil add -s "*/30 * * * *" <<'EOF'
+  Check GitHub for new untriaged issues...
+  EOF
 `)
 			os.Exit(0)
 		}
@@ -791,6 +833,15 @@ func taskCreateCmd(args []string) {
 	allowedTools := ""
 	maxConcurrent := 1
 	skipPermissions := false
+	filePath := ""
+	readStdin := false
+
+	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter.
+	prioritySet := false
+	scheduleSet := false
+	preCheckSet := false
+	allowedToolsSet := false
+	maxConcurrentSet := false
 
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -811,24 +862,28 @@ func taskCreateCmd(args []string) {
 				log.Fatalf("priority must be 0-9, got %d", n)
 			}
 			priority = n
+			prioritySet = true
 		case "-s", "--schedule":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for -s/--schedule")
 			}
 			i++
 			schedule = args[i]
+			scheduleSet = true
 		case "--pre-check":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for --pre-check")
 			}
 			i++
 			preCheck = args[i]
+			preCheckSet = true
 		case "--allowed-tools":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for --allowed-tools")
 			}
 			i++
 			allowedTools = args[i]
+			allowedToolsSet = true
 		case "--max-concurrent":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for --max-concurrent")
@@ -842,18 +897,63 @@ func taskCreateCmd(args []string) {
 				n = n*10 + int(c-'0')
 			}
 			maxConcurrent = n
+			maxConcurrentSet = true
 		case "--skip-permissions":
 			skipPermissions = true
+		case "-f", "--file":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -f/--file")
+			}
+			i++
+			filePath = args[i]
+		case "-":
+			readStdin = true
 		default:
 			rest = append(rest, args[i])
 		}
 	}
 
-	if len(rest) == 0 {
-		log.Fatal("usage: anvil task create [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] <task text>")
+	var taskText string
+
+	switch {
+	case filePath != "":
+		// Read task content from file.
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Fatalf("reading file %s: %v", filePath, err)
+		}
+		taskText = string(data)
+	case readStdin:
+		// Read task content from stdin.
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatalf("reading stdin: %v", err)
+		}
+		taskText = string(data)
+	default:
+		if len(rest) == 0 {
+			log.Fatal("usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>")
+		}
+		taskText = strings.Join(rest, " ")
 	}
 
-	taskText := strings.Join(rest, " ")
+	// If file/stdin content has positional args too, that's an error.
+	if (filePath != "" || readStdin) && len(rest) > 0 {
+		log.Fatal("cannot combine file/stdin input with positional task text")
+	}
+
+	// Parse frontmatter from file/stdin content and merge with CLI flags.
+	// CLI flags take precedence over frontmatter values.
+	if filePath != "" || readStdin {
+		taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions = parseFrontmatterAndMerge(
+			taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions,
+			prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet,
+		)
+	}
+
+	if strings.TrimSpace(taskText) == "" {
+		log.Fatal("task content must not be empty")
+	}
 
 	abs, err := filepath.Abs(".")
 	if err != nil {
@@ -892,6 +992,67 @@ func taskCreateCmd(args []string) {
 	if schedule != "" && !daemon.IsDaemonRunning() {
 		fmt.Fprintf(os.Stderr, "⚠ Daemon is not running. Run 'anvil watch' to start executing tasks.\n")
 	}
+}
+
+// parseFrontmatterAndMerge extracts YAML frontmatter from content and merges
+// it with CLI flags. CLI flags take precedence: if a flag was explicitly set on
+// the command line, the frontmatter value for that field is ignored.
+// Returns the body (without frontmatter) and the merged configuration values.
+func parseFrontmatterAndMerge(
+	content string,
+	priority int, schedule, preCheck, allowedTools string, maxConcurrent int, skipPermissions bool,
+	prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet bool,
+) (string, int, string, string, string, int, bool) {
+	if !strings.HasPrefix(content, "---\n") {
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+	}
+
+	parts := strings.SplitN(content[4:], "\n---\n", 2)
+	if len(parts) != 2 {
+		// No closing delimiter found; treat entire content as body.
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+	}
+
+	fm := parts[0]
+	body := parts[1]
+
+	var fmData struct {
+		Priority        *int   `yaml:"priority"`
+		Schedule        string `yaml:"schedule"`
+		PreCheck        string `yaml:"pre_check"`
+		AllowedTools    string `yaml:"allowed_tools"`
+		MaxConcurrent   *int   `yaml:"max_concurrent"`
+		SkipPermissions bool   `yaml:"skip_permissions"`
+	}
+	if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
+		// If frontmatter is invalid YAML, treat the whole thing as body.
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+	}
+
+	// Merge: CLI flags take precedence over frontmatter.
+	if !prioritySet && fmData.Priority != nil {
+		p := *fmData.Priority
+		if p >= 0 && p <= 9 {
+			priority = p
+		}
+	}
+	if !scheduleSet && fmData.Schedule != "" {
+		schedule = fmData.Schedule
+	}
+	if !preCheckSet && fmData.PreCheck != "" {
+		preCheck = fmData.PreCheck
+	}
+	if !allowedToolsSet && fmData.AllowedTools != "" {
+		allowedTools = fmData.AllowedTools
+	}
+	if !maxConcurrentSet && fmData.MaxConcurrent != nil {
+		maxConcurrent = *fmData.MaxConcurrent
+	}
+	if fmData.SkipPermissions {
+		skipPermissions = true
+	}
+
+	return body, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
 }
 
 func taskLsCmd(args []string) {
@@ -1775,6 +1936,135 @@ func taskEditCmd(args []string) {
 	}
 
 	fmt.Printf("edited: %s\n", todo.Name)
+}
+
+func daemonCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: anvil daemon <subcommand>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Subcommands:")
+		fmt.Fprintln(os.Stderr, "  log [-f] [-n lines]   View daemon log (-f to follow, -n for last N lines)")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "log":
+		daemonLogCmd(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func daemonLogCmd(args []string) {
+	follow := false
+	numLines := 50
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-f", "--follow":
+			follow = true
+		case "-n":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -n")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				log.Fatalf("invalid line count: %s", args[i])
+			}
+			numLines = n
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil daemon log [-f] [-n lines]
+
+View the daemon log file (~/.anvil/daemon.log).
+
+Options:
+  -f, --follow   Follow the log (like tail -f)
+  -n lines       Show last N lines (default 50)
+`)
+			os.Exit(0)
+		}
+	}
+
+	logPath := config.DaemonLogPath()
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "no daemon log found (daemon has not run yet)")
+		os.Exit(1)
+	}
+
+	// Read and display the last N lines.
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		log.Fatalf("failed to read daemon log: %v", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	// Remove trailing empty line from Split.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	start := 0
+	if len(lines) > numLines {
+		start = len(lines) - numLines
+	}
+	for _, line := range lines[start:] {
+		fmt.Println(line)
+	}
+
+	if !follow {
+		return
+	}
+
+	// Follow mode: tail the file for new content.
+	f, err := os.Open(logPath)
+	if err != nil {
+		log.Fatalf("failed to open daemon log: %v", err)
+	}
+	defer f.Close()
+
+	// Seek to end.
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		log.Fatalf("failed to seek: %v", err)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-sigCh:
+			return
+		default:
+		}
+
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			os.Stdout.Write(buf[:n])
+			continue
+		}
+		if readErr != nil && readErr != io.EOF {
+			return
+		}
+
+		// Check if the file was rotated (new file at same path).
+		newInfo, statErr := os.Stat(logPath)
+		if statErr == nil {
+			curInfo, _ := f.Stat()
+			if curInfo != nil && !os.SameFile(curInfo, newInfo) {
+				// File was rotated — reopen.
+				f.Close()
+				f, err = os.Open(logPath)
+				if err != nil {
+					return
+				}
+			}
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func stopOnIdleCmd() {

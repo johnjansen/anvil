@@ -184,6 +184,47 @@ func (p *Parser) Next(after time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("no matching time found within 5 years")
 }
 
+// Prev returns the previous time that matches the cron expression before the given time.
+// Returns an error if no matching time is found within the last 5 years.
+func (p *Parser) Prev(before time.Time) (time.Time, error) {
+	// Start from the previous minute
+	t := before.Add(-time.Minute).Truncate(time.Minute)
+
+	// Limit search to 5 years to prevent infinite loops
+	end := before.AddDate(-5, 0, 0)
+
+	for t.After(end) {
+		if p.Matches(t) {
+			return t, nil
+		}
+
+		// Go back in time
+		t = t.Add(-time.Minute)
+	}
+
+	return time.Time{}, fmt.Errorf("no matching time found within 5 years")
+}
+
+// CountMissed returns the number of times the cron expression would have matched
+// between from (exclusive) and to (inclusive). It returns 0 if no runs were missed.
+func (p *Parser) CountMissed(from time.Time, to time.Time) (int, error) {
+	if !to.After(from) {
+		return 0, nil
+	}
+
+	count := 0
+	t := from.Truncate(time.Minute).Add(time.Minute) // Start from next minute after 'from'
+
+	for !t.After(to) {
+		if p.Matches(t) {
+			count++
+		}
+		t = t.Add(time.Minute)
+	}
+
+	return count, nil
+}
+
 // String returns a string representation of the parsed expression.
 func (p *Parser) String() string {
 	return fmt.Sprintf("minute=%v, hour=%v, dom=%v, month=%v, dow=%v",

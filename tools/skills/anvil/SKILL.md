@@ -21,6 +21,9 @@ anvil watch
 # Or run in background (daemonized)
 anvil watch [-d|--daemonize]
 anvil watch --stop             # stop the daemon
+
+# Reload config without restarting
+anvil reload
 ```
 
 `anvil init` defaults to the current directory, pass a path to target a different project. It both initializes the project structure and registers it with the daemon.
@@ -238,17 +241,6 @@ anvil task resume <name>  # sets disabled: false
 
 These are shortcuts for setting `disabled: true/false` in the frontmatter — equivalent to editing the file directly but more convenient.
 
-## pause / resume
-
-Use CLI commands to pause and resume tasks without editing the file manually:
-
-```bash
-anvil task pause <name>   # sets disabled: true
-anvil task resume <name>  # sets disabled: false
-```
-
-These are shortcuts for setting `disabled: true/false` in the frontmatter — equivalent to editing the file directly but more convenient.
-
 ## timeout
 
 Set `timeout` to override the global timeout for a specific task. The global timeout is configured in `~/.anvil/config.yaml` (default: 5 minutes):
@@ -336,6 +328,39 @@ For backwards compatibility, a single `runner` string still works:
 runner: claude -p "you are a task runner"
 ```
 
+## Configuration
+
+`~/.anvil/config.yaml`:
+
+```yaml
+runners:
+  - claude
+max_workers: 10    # parallel tasks (max_todos is deprecated)
+timeout: 15m       # max per task
+tick_interval: 5s  # how often to check for work
+hooks:
+  on_success: "echo 'Task completed' >> ~/.anvil/history.log"
+  on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
+```
+
+Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
+
+### Hot Reload
+
+Reload the daemon configuration without restarting:
+
+```bash
+anvil reload
+```
+
+Or send SIGHUP manually:
+
+```bash
+kill -HUP $(cat ~/.anvil/daemon.pid)
+```
+
+The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
+
 ## Listing Tasks
 
 ```bash
@@ -344,7 +369,7 @@ anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
 ```
 
-Output columns: priority, schedule, status (running/idle/locked), name, content preview. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
+Output columns: priority, schedule, status (running/idle/disabled/locked), name, content preview. A `disabled` status means the task is paused (set `disabled: true` in frontmatter) — use `anvil task resume <name>` to re-enable. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
 
 ## Getting Task Details
 
@@ -442,6 +467,7 @@ anvil task unlock <name>             # remove stale lock file to allow retry
 anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
+anvil task timeout [name]            # show task timeout progress (--all for all tasks)
 ```
 
 ## Project Subcommands

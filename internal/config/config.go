@@ -16,6 +16,13 @@ type Config struct {
 	Timeout      time.Duration `yaml:"timeout"`
 	MaxWorkers   int           `yaml:"max_workers"`
 	MaxTodos     int           `yaml:"max_todos"` // deprecated: use max_workers
+	Hooks        HooksConfig   `yaml:"hooks"`
+}
+
+// HooksConfig defines global lifecycle hooks that run for all tasks.
+type HooksConfig struct {
+	OnSuccess string `yaml:"on_success"`
+	OnFailure string `yaml:"on_failure"`
 }
 
 func Default() *Config {
