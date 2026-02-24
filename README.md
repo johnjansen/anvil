@@ -285,6 +285,7 @@ runners:
 | `anvil task history <name> -f` | Follow mode - watch for new runs |
 | `anvil task history <name> --failures` | Show only failed runs |
 | `anvil task history <name> --json` | Output in JSON format |
+| `anvil task queue` | Show daemon queue status and skip reasons |
 | `anvil task edit <name> [-s schedule] [-p priority]` | Edit task schedule/priority |
 
 **Task status:**

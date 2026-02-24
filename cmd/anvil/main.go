@@ -135,6 +135,7 @@ Task subcommands:
   kill <name>               Kill a running task
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
+  queue                     Show daemon queue status and skip reasons
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -1468,6 +1469,39 @@ func taskUnlockCmd(args []string) {
 	}
 
 	fmt.Printf("unlocked: %s\n", todo.Name)
+}
+
+func taskQueueCmd(args []string) {
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	tasks, err := daemon.SendQueueRequest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get queue status: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("no tasks in queue")
+		return
+	}
+
+	fmt.Printf("%-40s %-10s %-10s %s\n", "TASK", "PRIORITY", "STATUS", "SKIP REASON")
+	fmt.Printf("%s\n", strings.Repeat("-", 90))
+
+	for _, t := range tasks {
+		skipReason := t.SkipReason
+		if skipReason == "" {
+			skipReason = "-"
+		}
+		fmt.Printf("%-40s %-10d %-10s %s\n",
+			truncate(t.Name, 40),
+			t.Priority,
+			t.Status,
+			skipReason)
+	}
 }
 
 func taskEditCmd(args []string) {
