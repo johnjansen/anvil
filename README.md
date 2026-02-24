@@ -111,6 +111,37 @@ Run autonomous maintenance tasks that require tool access without prompting.
 
 The flag is appended only if the runner command doesn't already include it globally.
 
+### allowed_tools
+
+Set `allowed_tools` in the frontmatter to pre-approve a specific list of tools without bypassing all permission checks. This is the least-privilege alternative to `skip_permissions`:
+
+```markdown
+---
+id: "550e8400-e29b-41d4-a716-446655440000"
+schedule: "*/5 * * * *"
+allowed_tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+---
+Task that can read, write, and run shell commands but nothing else.
+```
+
+The Claude CLI supports shell-globbing syntax to restrict tools to specific command prefixes:
+
+```markdown
+---
+id: "550e8400-e29b-41d4-a716-446655440000"
+schedule: "*/30 * * * *"
+allowed_tools:
+  - Bash(gh:*)      # only gh subcommands
+  - Read
+---
+```
+
+`allowed_tools` and `skip_permissions` can coexist — both flags are appended independently. If both are set, `--dangerously-skip-permissions` takes precedence (it is a superset).
+
 ## Daemon Directory
 
 Lives at `~/.anvil/`. One per machine. No project-specific anything.
