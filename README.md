@@ -200,7 +200,7 @@ runners:
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil watch --stop` | Stop the running daemon |
 | `anvil init [path]` | Initialize a project |
-| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9) |
+| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil status` | Show watched projects |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
