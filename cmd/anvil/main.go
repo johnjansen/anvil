@@ -769,6 +769,8 @@ func taskCmd(args []string) {
 		taskUnlockCmd(args[1:])
 	case "edit":
 		taskEditCmd(args[1:])
+	case "queue":
+		taskQueueCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -1471,7 +1473,7 @@ func taskUnlockCmd(args []string) {
 	fmt.Printf("unlocked: %s\n", todo.Name)
 }
 
-func taskQueueCmd(args []string) {
+func taskQueueCmd(_ []string) {
 	if !daemon.IsDaemonRunning() {
 		fmt.Println("daemon not running")
 		return
