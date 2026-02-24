@@ -1469,8 +1469,13 @@ func taskEditCmd(args []string) {
 							log.Fatalf("failed to create priority directory: %v", err)
 						}
 						newPath := filepath.Join(newDir, filepath.Base(todo.Path))
-						if err := os.Rename(todo.Path, newPath); err != nil {
-							log.Fatalf("failed to move task to new priority: %v", err)
+						// Write updated content to new location before moving
+						if err := os.WriteFile(newPath, []byte(sb.String()), 0644); err != nil {
+							log.Fatalf("failed to write task file: %v", err)
+						}
+						// Remove old file
+						if err := os.Remove(todo.Path); err != nil {
+							log.Fatalf("failed to remove old task file: %v", err)
 						}
 						fmt.Printf("updated priority: p%d -> p%d\n", todo.Priority, priority)
 					} else {
