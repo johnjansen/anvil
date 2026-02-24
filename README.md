@@ -111,10 +111,6 @@ persistent_max_runtime: 10m  # max runtime before forced restart (default: 0 = n
 
 If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
 
-#### Starvation prevention
-
-If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
-
 ### Priority
 
 Lower number = higher priority. Default is `p1`:
@@ -253,6 +249,9 @@ runners:
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 5s  # how often to check for work
+retention:
+  max_age: 7d      # delete logs older than 7 days
+  max_runs: 50     # keep only last 50 runs per task
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
@@ -309,6 +308,29 @@ defaults:
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
 
+### Log Retention
+
+Configure automatic cleanup of old logs and session data in `~/.anvil/config.yaml`:
+
+```yaml
+retention:
+  max_age: 7d    # delete logs older than 7 days
+  max_runs: 50   # keep only last 50 runs per task
+```
+
+Or run cleanup manually:
+
+```bash
+# Preview what would be deleted
+anvil cleanup --older-than 3d --dry-run
+
+# Actually delete logs older than 3 days
+anvil cleanup --older-than 3d
+
+# Use shorter duration syntax
+anvil cleanup -o 24h
+```
+
 ## CLI Reference
 
 | Command | Description |
@@ -324,6 +346,7 @@ Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/c
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
+| `anvil cleanup [--older-than=<duration>] [--dry-run]` | Prune old logs and session data |
 | `anvil update [--check]` | Update to latest release |
 | `anvil doctor` | Run diagnostics to check for common issues |
 | `anvil version` | Show version |
