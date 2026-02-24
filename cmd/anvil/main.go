@@ -23,6 +23,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
 	"github.com/johnjansen/anvil/internal/project"
+	"github.com/johnjansen/anvil/internal/service"
 	"github.com/johnjansen/anvil/tools"
 
 	"gopkg.in/yaml.v3"
@@ -112,6 +113,9 @@ Usage:
 Commands:
   init [path]              Initialize a project and register it for watching
   watch [-d|--daemonize]   Start the daemon (once per machine)
+  watch --install          Install as system service (auto-start on boot)
+  watch --uninstall        Remove the system service
+  watch --status           Show system service status
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
@@ -269,6 +273,9 @@ func watchCmd2(args []string) {
 	daemonize := false
 	stop := false
 	child := false
+	install := false
+	uninstall := false
+	status := false
 	for _, arg := range args {
 		switch arg {
 		case "--daemonize", "-d":
@@ -277,7 +284,28 @@ func watchCmd2(args []string) {
 			stop = true
 		case "--child":
 			child = true
+		case "--install":
+			install = true
+		case "--uninstall":
+			uninstall = true
+		case "--status":
+			status = true
 		}
+	}
+
+	if install {
+		watchInstall()
+		return
+	}
+
+	if uninstall {
+		watchUninstall()
+		return
+	}
+
+	if status {
+		watchStatus()
+		return
 	}
 
 	if stop {
@@ -297,6 +325,57 @@ func watchCmd2(args []string) {
 
 	// Default: run in foreground (existing behavior)
 	serveCmd()
+}
+
+func watchInstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("cannot determine binary path: %v", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		log.Fatalf("cannot resolve binary path: %v", err)
+	}
+
+	if err := svc.Install(binaryPath); err != nil {
+		log.Fatalf("failed to install service: %v", err)
+	}
+
+	fmt.Printf("service installed and started\n")
+	fmt.Printf("  binary: %s\n", binaryPath)
+	fmt.Printf("  anvil watch will now auto-start on boot and restart on crash\n")
+}
+
+func watchUninstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	if err := svc.Uninstall(); err != nil {
+		log.Fatalf("failed to uninstall service: %v", err)
+	}
+
+	fmt.Println("service uninstalled")
+}
+
+func watchStatus() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	st, err := svc.Status()
+	if err != nil {
+		log.Fatalf("failed to get service status: %v", err)
+	}
+
+	fmt.Printf("service: %s\n", st.Message)
 }
 
 // readDaemonPID reads the PID from the daemon PID file.
