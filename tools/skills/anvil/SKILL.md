@@ -118,6 +118,21 @@ allowed_tools:
 
 `allowed_tools` and `skip_permissions` can coexist — both flags are appended independently. If both are set, `--dangerously-skip-permissions` takes precedence (it is a superset).
 
+## max_concurrent
+
+Set `max_concurrent` to limit how many simultaneous instances of a task the daemon will run. Useful for tasks triggered at short intervals that may take longer than the interval to complete.
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/5 * * * *"
+max_concurrent: 2
+---
+Run analysis but allow at most 2 parallel instances of this task.
+```
+
+Default is 1 (no parallel runs of the same task). Omit or set to 0 to use the default.
+
 ## pre_check
 
 Set `pre_check` to a shell command that gates task execution. If the command exits non-zero, the task is skipped silently — no log entry, no agent invocation. Use this to avoid expensive LLM calls when there's nothing to do:
@@ -158,7 +173,7 @@ anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
 ```
 
-Output columns: priority, schedule, status (running/idle), name, content preview.
+Output columns: priority, schedule, status (running/idle/locked), name, content preview. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Remove the `.lock` file in `.anvil/todos/p<N>/` to reset.
 
 ## Getting Task Details
 

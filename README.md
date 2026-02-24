@@ -75,6 +75,20 @@ anvil add -p 0 -s "*/5 * * * *" "Critical: alert if production error rate exceed
 anvil add -p 5 -s "0 9 * * 1"   "Low priority: weekly dependency audit"
 ```
 
+### Limit concurrent runs
+
+Prevent a task from running more than N instances simultaneously:
+
+```yaml
+---
+schedule: "*/5 * * * *"
+max_concurrent: 2
+---
+Run analysis jobs but cap at 2 parallel instances.
+```
+
+Default is 1 (no parallel runs of the same task). Omit or set to 0 to use the default.
+
 ### Gate execution with a pre-check
 
 Skip the LLM call entirely when there's nothing to do:
