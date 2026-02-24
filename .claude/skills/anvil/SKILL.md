@@ -9,19 +9,17 @@ Anvil is a task dispatcher for LLM projects. It manages recurring and one-shot t
 
 ## Project Setup
 
-Before adding tasks, the project needs to be initialized and watched:
+Before adding tasks, the project needs to be initialized:
 
 ```bash
-# Initialize — creates .anvil/todos/, .claude/skills/, and ~/.anvil/config.yaml
+# Initialize and register with the daemon — creates .anvil/todos/ and .claude/skills/
 anvil init
 
-# Register with the daemon so it picks up your todos
+# Start the daemon (once per machine)
 anvil watch
 ```
 
-Both commands default to the current directory. Pass a path to target a different project.
-
-Alternatively, use `anvil project create` to initialize and register in one step.
+`anvil init` defaults to the current directory, pass a path to target a different project. It both initializes the project structure and registers it with the daemon.
 
 ## Adding Tasks
 

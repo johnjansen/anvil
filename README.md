@@ -185,10 +185,10 @@ For backwards compatibility, a single `runner:` string is still accepted and tre
 Single binary. One subcommand starts the daemon, everything else talks to it.
 
 ```
-anvil init [path]                    Initialize a project (.anvil/, .claude/skills/, and ~/.anvil/config.yaml)
-anvil serve                          Start the daemon (run once per machine)
-anvil watch [path]                   Register a project directory with the daemon
+anvil init [path]                    Initialize a project and register it for watching
+anvil watch                          Start the daemon (run once per machine)
 anvil unwatch [path]                 Stop watching a project directory
+anvil update [--check]               Update anvil to the latest release
 anvil add [options] <task>           Add a todo to the current project
 anvil list                           List all todos in the current project
 anvil get <name>                     Show details of a todo by name
@@ -251,10 +251,10 @@ anvil project rm [path] [--clean]    Unwatch a project (--clean removes .anvil/ 
 
 ```bash
 # On the machine, once:
-anvil serve
+anvil watch
 
 # In any project directory:
-anvil watch
+anvil init
 anvil add -p 0 -s "*/30 * * * *" "Check GitHub for new issues and triage them"
 anvil add -p 1 -s "0 9 * * 1-5" "Review stale PRs and nudge authors"
 
