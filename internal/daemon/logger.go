@@ -3,7 +3,11 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"sync"
 	"time"
+
+	"github.com/johnjansen/anvil/internal/config"
 )
 
 // ANSI escape sequences
@@ -26,8 +30,18 @@ var workerColors = []string{ansiCyan, ansiYellow, ansiGreen, ansiMagenta, ansiBl
 // priorityColors maps priority level to ANSI code; p3+ uses empty (default)
 var priorityColors = []string{ansiRed, ansiYellow, ansiCyan, ""}
 
+// ansiPattern matches ANSI escape sequences for stripping from log file output.
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// maxLogSize is the size threshold at which the daemon log is rotated.
+const maxLogSize = 1 << 20 // 1 MB
+
 type daemonLogger struct {
 	isTTY bool
+
+	mu      sync.Mutex
+	logFile *os.File
+	logSize int64
 }
 
 // dlog is the package-level structured logger for the daemon.
@@ -36,7 +50,55 @@ var dlog = newDaemonLogger()
 func newDaemonLogger() *daemonLogger {
 	fi, err := os.Stdout.Stat()
 	tty := err == nil && (fi.Mode()&os.ModeCharDevice) != 0
-	return &daemonLogger{isTTY: tty}
+	l := &daemonLogger{isTTY: tty}
+	l.openLogFile()
+	return l
+}
+
+// openLogFile opens (or re-opens) the daemon log file for appending.
+// It skips opening if stdout is already pointing at daemon.log (daemonized mode),
+// since the content would be duplicated.
+func (l *daemonLogger) openLogFile() {
+	if err := config.EnsureDir(); err != nil {
+		return
+	}
+	path := config.DaemonLogPath()
+
+	// When daemonized, stdout is redirected to daemon.log by the parent process.
+	// Detect this to avoid writing each line twice.
+	if stdoutInfo, err := os.Stdout.Stat(); err == nil {
+		if logInfo, err := os.Stat(path); err == nil {
+			if os.SameFile(stdoutInfo, logInfo) {
+				return
+			}
+		}
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return
+	}
+	l.logFile = f
+	l.logSize = info.Size()
+}
+
+// rotateIfNeeded rotates the log file when it exceeds maxLogSize.
+// Caller must hold l.mu.
+func (l *daemonLogger) rotateIfNeeded() {
+	if l.logFile == nil || l.logSize < maxLogSize {
+		return
+	}
+	l.logFile.Close()
+	path := config.DaemonLogPath()
+	_ = os.Rename(path, path+".1")
+	l.logFile = nil
+	l.logSize = 0
+	l.openLogFile()
 }
 
 // c wraps text in an ANSI color code, stripping it when not a TTY.
@@ -71,6 +133,16 @@ func (l *daemonLogger) ts() string {
 
 func (l *daemonLogger) println(line string) {
 	fmt.Fprintln(os.Stdout, line)
+
+	// Write a plain (no ANSI) copy to the log file.
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.logFile != nil {
+		plain := ansiPattern.ReplaceAllString(line, "") + "\n"
+		n, _ := l.logFile.WriteString(plain)
+		l.logSize += int64(n)
+		l.rotateIfNeeded()
+	}
 }
 
 // --- Daemon lifecycle ---
