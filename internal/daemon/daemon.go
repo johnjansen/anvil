@@ -26,6 +26,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
+	"github.com/johnjansen/anvil/internal/updater"
 
 	"gopkg.in/yaml.v3"
 )
@@ -115,6 +116,9 @@ type Daemon struct {
 	// Used by CLI to show queue status.
 	pendingTasks  map[string]string // taskKey -> skip reason
 	pendingTasksMu sync.RWMutex
+	// version is set by the caller to enable auto-update checks.
+	version         string
+	lastUpdateCheck time.Time
 }
 
 type RunningTask struct {
@@ -220,6 +224,9 @@ func (d *Daemon) Run() {
 
 	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
 
+	// Check for auto-update on startup
+	go d.checkAutoUpdate()
+
 	// Start socket server
 	go d.startSocketServer()
 
@@ -255,6 +262,10 @@ func (d *Daemon) Run() {
 			d.reloadConfig()
 		case now := <-ticker.C:
 			d.tick(now)
+			// Periodic auto-update check (once per day)
+			if d.config.AutoUpdate && time.Since(d.lastUpdateCheck) >= updater.CheckInterval {
+				go d.checkAutoUpdate()
+			}
 		}
 	}
 }
@@ -269,6 +280,48 @@ func (d *Daemon) Stop() {
 // Done returns a channel that is closed when the daemon has fully stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
+}
+
+// SetVersion sets the current version for auto-update checks.
+func (d *Daemon) SetVersion(v string) {
+	d.version = v
+}
+
+// checkAutoUpdate checks for a newer release and applies it if auto_update is enabled.
+// On successful update, it logs the result and exits so the service manager can restart with the new binary.
+func (d *Daemon) checkAutoUpdate() {
+	if !d.config.AutoUpdate || d.version == "" || d.version == "dev" {
+		return
+	}
+
+	latest, err := updater.CheckLatest()
+	if err != nil {
+		dlog.Warn("auto-update check failed: %v", err)
+		d.lastUpdateCheck = time.Now()
+		return
+	}
+
+	d.lastUpdateCheck = time.Now()
+
+	if !updater.NeedsUpdate(d.version, latest) {
+		dlog.Info("auto-update: already up to date (%s)", d.version)
+		return
+	}
+
+	dlog.Info("auto-update: new version available %s → %s, applying...", d.version, latest)
+
+	res := updater.Apply(d.version, latest)
+	if res.Error != nil {
+		dlog.Warn("auto-update failed: %v", res.Error)
+		return
+	}
+
+	dlog.Info("auto-update: updated to %s (backup at %s), restarting...", res.LatestVersion, res.BackupPath)
+
+	// Exit cleanly so the service manager (launchd/systemd) can restart us with the new binary.
+	d.stopOnce.Do(func() {
+		close(d.stop)
+	})
 }
 
 // reloadConfig reads the config file and updates the daemon's configuration.
