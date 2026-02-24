@@ -46,9 +46,10 @@ func main() {
 
 	switch os.Args[1] {
 	case "serve":
+		fmt.Fprintln(os.Stderr, "'anvil serve' has been renamed. Did you mean 'anvil watch'?")
 		serveCmd()
 	case "watch":
-		watchCmd(os.Args[2:])
+		serveCmd()
 	case "unwatch":
 		unwatchCmd(os.Args[2:])
 	case "status":
@@ -95,10 +96,8 @@ Usage:
   anvil <command> [options]
 
 Commands:
-  init [path]              Initialize a project (.anvil/ and .claude/skills/)
-  serve                    Start the daemon (once per machine)
-  watch [path]             Register a project directory
-  unwatch [path]           Stop watching a project directory
+  init [path]              Initialize a project and register it for watching
+  watch                    Start the daemon (once per machine)
   add [options] <task>     Add a todo task to the current project
   list                     List all todos in the current project
   get <name>               Show details of a todo by name
@@ -164,6 +163,52 @@ func initCmd(args []string) {
 	}
 
 	fmt.Printf("initialized %s\n", abs)
+
+	// Register project for watching (fold in old 'anvil watch' behavior)
+	registerProject(abs)
+}
+
+// registerProject registers a project directory with the daemon watcher.
+// Extracted so both initCmd and watchCmd (legacy) can share this logic.
+func registerProject(abs string) {
+	if err := config.EnsureDir(); err != nil {
+		log.Fatalf("failed to create ~/.anvil: %v", err)
+	}
+
+	hash := projectHash(abs)
+	watchDir := filepath.Join(config.WatchedDir(), hash)
+
+	if entries, err := os.ReadDir(watchDir); err == nil && len(entries) > 0 {
+		fmt.Printf("already watching %s\n", abs)
+		return
+	}
+
+	if err := os.MkdirAll(watchDir, 0755); err != nil {
+		log.Fatalf("failed to create watch dir: %v", err)
+	}
+
+	now := time.Now()
+	filename := now.Format("2006-01-02T15-04-05") + ".md"
+
+	frontmatter := watchFrontmatter{
+		Path:      abs,
+		WatchedAt: now,
+	}
+	data, err := yaml.Marshal(frontmatter)
+	if err != nil {
+		log.Fatalf("failed to marshal: %v", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.Write(data)
+	sb.WriteString("---\n")
+
+	if err := os.WriteFile(filepath.Join(watchDir, filename), []byte(sb.String()), 0644); err != nil {
+		log.Fatalf("failed to write watch file: %v", err)
+	}
+
+	fmt.Printf("watching %s\n", abs)
 }
 
 func serveCmd() {
@@ -192,6 +237,8 @@ func serveCmd() {
 	}
 }
 
+// watchCmd is the legacy "register a project" command, now superseded by
+// 'anvil init' which combines init + register. Kept for backward compatibility.
 func watchCmd(args []string) {
 	path := "."
 	if len(args) > 0 {
@@ -211,46 +258,7 @@ func watchCmd(args []string) {
 		fmt.Printf("initialized %s/.anvil/\n", abs)
 	}
 
-	if err := config.EnsureDir(); err != nil {
-		log.Fatalf("failed to create ~/.anvil: %v", err)
-	}
-
-	// Check if already watched
-	hash := projectHash(abs)
-	watchDir := filepath.Join(config.WatchedDir(), hash)
-
-	if entries, err := os.ReadDir(watchDir); err == nil && len(entries) > 0 {
-		fmt.Printf("already watching %s\n", abs)
-		return
-	}
-
-	// Create watched/{hash}/timestamp.md
-	if err := os.MkdirAll(watchDir, 0755); err != nil {
-		log.Fatalf("failed to create watch dir: %v", err)
-	}
-
-	now := time.Now()
-	filename := now.Format("2006-01-02T15-04-05") + ".md"
-
-	frontmatter := watchFrontmatter{
-		Path:      abs,
-		WatchedAt: now,
-	}
-	data, err := yaml.Marshal(frontmatter)
-	if err != nil {
-		log.Fatalf("failed to marshal: %v", err)
-	}
-
-	var sb strings.Builder
-	sb.WriteString("---\n")
-	sb.Write(data)
-	sb.WriteString("---\n")
-
-	if err := os.WriteFile(filepath.Join(watchDir, filename), []byte(sb.String()), 0644); err != nil {
-		log.Fatalf("failed to write watch file: %v", err)
-	}
-
-	fmt.Printf("watching %s\n", abs)
+	registerProject(abs)
 }
 
 func unwatchCmd(args []string) {
@@ -1002,45 +1010,10 @@ func projectCreateCmd(args []string) {
 		log.Fatalf("failed to init project: %v", err)
 	}
 
+	fmt.Printf("created %s\n", abs)
+
 	// Register with daemon (watch)
-	if err := config.EnsureDir(); err != nil {
-		log.Fatalf("failed to create ~/.anvil: %v", err)
-	}
-
-	hash := projectHash(abs)
-	watchDir := filepath.Join(config.WatchedDir(), hash)
-
-	if entries, err := os.ReadDir(watchDir); err == nil && len(entries) > 0 {
-		fmt.Printf("created %s (already watched)\n", abs)
-		return
-	}
-
-	if err := os.MkdirAll(watchDir, 0755); err != nil {
-		log.Fatalf("failed to create watch dir: %v", err)
-	}
-
-	now := time.Now()
-	filename := now.Format("2006-01-02T15-04-05") + ".md"
-
-	frontmatter := watchFrontmatter{
-		Path:      abs,
-		WatchedAt: now,
-	}
-	data, err := yaml.Marshal(frontmatter)
-	if err != nil {
-		log.Fatalf("failed to marshal: %v", err)
-	}
-
-	var sb strings.Builder
-	sb.WriteString("---\n")
-	sb.Write(data)
-	sb.WriteString("---\n")
-
-	if err := os.WriteFile(filepath.Join(watchDir, filename), []byte(sb.String()), 0644); err != nil {
-		log.Fatalf("failed to write watch file: %v", err)
-	}
-
-	fmt.Printf("created and watching %s\n", abs)
+	registerProject(abs)
 }
 
 func projectRmCmd(args []string) {
