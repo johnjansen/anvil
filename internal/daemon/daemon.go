@@ -374,6 +374,13 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		runRecord.Error = err.Error()
 	}
 
+	// Capture output summary from the runner log file
+	if logPath != "" {
+		if summary, sumErr := captureOutputSummary(logPath); sumErr == nil {
+			runRecord.OutputSummary = summary
+		}
+	}
+
 	elapsed := time.Since(startTime)
 	if err != nil {
 		dlog.WorkerFail(workerID, projName, t.Name, err)
@@ -430,6 +437,23 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 	} else {
 		dlog.Info("%s hook completed for %s", hookName, t.Name)
 	}
+}
+
+// captureOutputSummary reads the first and last N lines of a log file.
+// Returns a summary string like "first 3 lines...\n...\nlast 3 lines".
+func captureOutputSummary(logPath string) (string, error) {
+	const maxLines = 3
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) <= maxLines*2 {
+		return string(data), nil
+	}
+	first := strings.Join(lines[:maxLines], "\n")
+	last := strings.Join(lines[len(lines)-maxLines:], "\n")
+	return first + "\n...\n" + last, nil
 }
 
 func (d *Daemon) startSocketServer() {

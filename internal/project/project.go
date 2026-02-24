@@ -56,6 +56,8 @@ type RunRecord struct {
 	Started   time.Time `json:"started"`
 	Finished  time.Time `json:"finished,omitempty"` // when the run ended
 	Success   bool      `json:"success"`           // whether the runner returned nil error
+	ExitCode  int       `json:"exit_code,omitempty"` // exit code from the runner
+	OutputSummary string `json:"output_summary,omitempty"` // first and last N lines of output
 	Error     string    `json:"error,omitempty"`   // last runner error message if failed
 }
 

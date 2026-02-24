@@ -1205,12 +1205,13 @@ func taskHistoryCmd(args []string) {
 	limit := 10
 	showFailuresOnly := false
 	jsonOutput := false
+	followMode := false
 	i := 0
 	for i < len(args) {
 		switch args[i] {
 		case "-n", "--limit":
 			if i+1 >= len(args) {
-				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [--failures] [--json]\n")
+				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--json]\n")
 				os.Exit(1)
 			}
 			if _, err := fmt.Sscanf(args[i+1], "%d", &limit); err != nil {
@@ -1218,7 +1219,10 @@ func taskHistoryCmd(args []string) {
 				os.Exit(1)
 			}
 			i += 2
-		case "-f", "--failures", "--show-failures-only":
+		case "-f", "--follow":
+			followMode = true
+			i++
+		case "--failures", "--show-failures-only":
 			showFailuresOnly = true
 			i++
 		case "--json":
@@ -1230,7 +1234,7 @@ func taskHistoryCmd(args []string) {
 	}
 	taskName := strings.Join(args[i:], " ")
 	if taskName == "" {
-		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [--failures] [--json]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--json]\n")
 		os.Exit(1)
 	}
 
@@ -1253,6 +1257,12 @@ func taskHistoryCmd(args []string) {
 	if todo == nil {
 		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
 		os.Exit(1)
+	}
+
+	// In follow mode, wait for new runs to complete and display them
+	if followMode {
+		runFollowMode(abs, todo)
+		return
 	}
 
 	records, err := project.ReadAllRunRecords(abs, todo.ID)
@@ -1316,6 +1326,79 @@ func taskHistoryCmd(args []string) {
 		}
 
 		fmt.Printf("%-20s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, status)
+
+		// Print output summary if available
+		if rec.OutputSummary != "" {
+			summaryLines := strings.Split(rec.OutputSummary, "\n")
+			for _, line := range summaryLines {
+				fmt.Printf("  %s\n", line)
+			}
+		}
+	}
+}
+
+// runFollowMode watches for new runs and prints them as they complete.
+func runFollowMode(projectPath string, todo *project.Todo) {
+	fmt.Printf("Following runs for task %s (Ctrl+C to exit)...\n\n", todo.Name)
+
+	lastRunID := ""
+	for {
+		records, err := project.ReadAllRunRecords(projectPath, todo.ID)
+		if err != nil || len(records) == 0 {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Get the most recent run
+		latest := records[0]
+
+		// If this is a new run we haven't displayed yet
+		if latest.RunID != lastRunID {
+			lastRunID = latest.RunID
+
+			// Wait for the run to complete (Finished time is set)
+			for latest.Finished.IsZero() {
+				time.Sleep(1 * time.Second)
+				records, err = project.ReadAllRunRecords(projectPath, todo.ID)
+				if err != nil || len(records) == 0 {
+					break
+				}
+				latest = records[0]
+			}
+
+			// Display the completed run
+			duration := ""
+			if !latest.Finished.IsZero() {
+				d := latest.Finished.Sub(latest.Started)
+				if d < time.Minute {
+					duration = fmt.Sprintf("%.0fs", d.Seconds())
+				} else {
+					duration = fmt.Sprintf("%.0fm %.0fs", d.Minutes(), d.Seconds()-60*float64(d.Minutes()))
+				}
+			}
+
+			status := "ok"
+			if !latest.Success {
+				status = "failed"
+			}
+
+			fmt.Printf("RUN %s: %s %s %s\n",
+				latest.RunID[:8],
+				latest.Started.Format("2006-01-02 15:04"),
+				duration,
+				status,
+			)
+
+			if latest.OutputSummary != "" {
+				summaryLines := strings.Split(latest.OutputSummary, "\n")
+				for _, line := range summaryLines {
+					fmt.Printf("  %s\n", line)
+				}
+			}
+			fmt.Println()
+		}
+
+		time.Sleep(2 * time.Second)
 	}
 }
 
