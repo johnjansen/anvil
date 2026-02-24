@@ -122,10 +122,12 @@ Commands:
   status                   Show watched projects
   reload                   Reload daemon configuration (SIGHUP)
   stop-on-idle             Drain running tasks then exit the daemon
+  cleanup [--older-than]    Prune old logs and run history
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
+  doctor                   Run diagnostics
   version                  Show version
 
 Add options:
