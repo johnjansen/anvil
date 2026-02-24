@@ -38,6 +38,7 @@ type Todo struct {
 	SkipPermissions bool     // if true, append --dangerously-skip-permissions to runner command
 	AllowedTools    []string // if non-empty, append --allowedTools <tools> to runner command
 	PreCheck        string   // optional shell command; task is skipped silently if it exits non-zero
+	IsLocked        bool     // true if a stale lock file exists
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -85,6 +86,11 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			if err != nil {
 				continue
 			}
+
+			// Check for lock file (stale lock indicates daemon crashed mid-execution)
+			lockPath := fp + ".lock"
+			_, lockErr := os.Stat(lockPath)
+			hasLock := lockErr == nil
 
 			// Parse optional front‑matter for a schedule.
 			// Expected format:
@@ -141,6 +147,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				SkipPermissions: skipPermissions,
 				AllowedTools:    allowedTools,
 				PreCheck:        preCheck,
+				IsLocked:        hasLock,
 			})
 		}
 	}
@@ -151,6 +158,20 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 // RemoveTodo deletes a todo file from disk
 func RemoveTodo(todo Todo) error {
 	return os.Remove(todo.Path)
+}
+
+// RemoveLock removes the lock file for a todo, if it exists
+func RemoveLock(todo Todo) error {
+	lockPath := todo.Path + ".lock"
+	_, err := os.Stat(lockPath)
+	if os.IsNotExist(err) {
+		// No lock file to remove
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking lock file %s: %w", lockPath, err)
+	}
+	return os.Remove(lockPath)
 }
 
 // Init creates the .anvil/ directory structure and writes embedded tools into .claude/.

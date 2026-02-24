@@ -2,6 +2,12 @@
 
 Scheduled LLM tasks for your projects. Write a task in plain English, give it a cron schedule, and anvil runs it automatically through Claude.
 
+##Claude Skill
+
+Anvil includes a [Claude skill](https://github.com/johnjansen/anvil/blob/main/tools/skills/anvil/SKILL.md) that can automatically create scheduled jobs for you. Just describe what you want automated, and the skill will generate the task file with the proper schedule and content.
+
+**Note:** Tasks only run when `anvil watch` is running somewhere. If you're not running the daemon, your tasks won't execute—but you never need to fear missed runs, as tasks persist in their markdown files and will execute once the daemon starts.
+
 ## Install
 
 ```bash
