@@ -89,6 +89,7 @@ type Todo struct {
 	// Persistent task configuration
 	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
+	CatchUp              bool          // if true, dispatch one catch-up run on startup when scheduled runs were missed
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -173,6 +174,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			onSuccess := ""
 			onFailure := ""
 			disabled := false
+			catchUp := false
 			var timeout time.Duration
 			retry := 0
 			var retryDelay time.Duration
@@ -206,6 +208,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						RetryDelay           string   `yaml:"retry_delay"`
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
+						CatchUp              bool     `yaml:"catch_up"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -221,6 +224,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						onSuccess = fmData.OnSuccess
 						onFailure = fmData.OnFailure
 						disabled = fmData.Disabled
+						catchUp = fmData.CatchUp
 						if fmData.Timeout != "" {
 							timeout, _ = time.ParseDuration(fmData.Timeout)
 						}
@@ -264,6 +268,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				RetryDelay:           retryDelay,
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
+				CatchUp:              catchUp,
 			})
 		}
 	}
