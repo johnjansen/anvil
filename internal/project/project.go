@@ -44,6 +44,8 @@ type Todo struct {
 	IsLocked        bool     // true if a stale lock file exists
 	Disabled        bool     // if true, task is paused and skipped during tick evaluation
 	Timeout         time.Duration // task-specific timeout (0 = use global default)
+	Retry           int      // number of retries on failure (0 = no retry)
+	RetryDelay      time.Duration // delay between retries (default 1m, used with Retry)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -119,6 +121,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			onFailure := ""
 			disabled := false
 			var timeout time.Duration
+			retry := 0
+			var retryDelay time.Duration
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -139,6 +143,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnFailure       string   `yaml:"on_failure"`
 						Disabled        bool     `yaml:"disabled"`
 						Timeout         string   `yaml:"timeout"`
+						Retry           int      `yaml:"retry"`
+						RetryDelay      string   `yaml:"retry_delay"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -153,6 +159,10 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						disabled = fmData.Disabled
 						if fmData.Timeout != "" {
 							timeout, _ = time.ParseDuration(fmData.Timeout)
+						}
+						retry = fmData.Retry
+						if fmData.RetryDelay != "" {
+							retryDelay, _ = time.ParseDuration(fmData.RetryDelay)
 						}
 					}
 				}
@@ -175,6 +185,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				IsLocked:        hasLock,
 				Disabled:        disabled,
 				Timeout:         timeout,
+				Retry:           retry,
+				RetryDelay:      retryDelay,
 			})
 		}
 	}

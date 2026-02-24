@@ -314,23 +314,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
-	// For one-shot tasks, write a lock file before execution so that if the
-	// daemon crashes mid-run the task is not silently re-dispatched on restart.
-	// The lock file is removed on normal completion (success or failure).
-	// A stale lock file (left by a crash) causes tick() to skip the todo and
-	// log a warning; the user can unblock by removing the lock file manually.
-	// One-shot tasks therefore have at-least-once delivery semantics: a clean
-	// shutdown guarantees exactly-once, but a daemon crash may leave the task
-	// incomplete with a stale lock that prevents automatic retry.
-	if t.Schedule == "" {
-		lockPath := t.Path + ".lock"
-		if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
-			dlog.Warn("could not write lock file %s: %v", lockPath, err)
-		} else {
-			defer os.Remove(lockPath)
-		}
-	}
-
 	// Pre-check: if set, run a shell guard and skip silently on non-zero exit.
 	// This lets recurring tasks avoid expensive agent invocations when there
 	// is nothing to do (e.g. no open issues), eliminating idle noise.
@@ -351,7 +334,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
-	// Run the task
+	// Run the task with retry support
 	projName := filepath.Base(proj.Path)
 	taskLabel := projName + "/" + t.Name
 	var childPID int
@@ -371,22 +354,111 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	}
 	d.runnerCooldownsMu.Unlock()
 
-	usedSessionID, logPath, usedRunnerIdx, err := d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
-		childPID = pid
-		d.tasksMu.Lock()
-		if task, ok := d.tasks[taskKey]; ok {
-			task.PID = pid
-			task.LogPath = lp
-			task.SessionID = sid
+	// Determine default retry delay if not set
+	retryDelay := t.RetryDelay
+	if retryDelay <= 0 {
+		retryDelay = 1 * time.Minute // default 1 minute
+	}
+
+	// For one-shot tasks:
+	// - With retry: Write lock file only after all retries are exhausted (final failure)
+	//   This allows retries to happen without the lock blocking re-dispatch
+	// - Without retry: Write lock file before execution for crash protection
+	var finalFailureLockPath string
+	if t.Schedule == "" {
+		if t.Retry > 0 {
+			// With retry: will be written on final failure (after loop)
+			finalFailureLockPath = t.Path + ".lock"
+		} else {
+			// No retry: write lock file before execution for crash protection
+			lockPath := t.Path + ".lock"
+			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+				dlog.Warn("could not write lock file %s: %v", lockPath, err)
+			} else {
+				defer os.Remove(lockPath)
+			}
 		}
-		d.tasksMu.Unlock()
-	}, func(status string) {
-		d.tasksMu.Lock()
-		if task, ok := d.tasks[taskKey]; ok {
-			task.Status = status
+	}
+
+	// Retry loop with exponential backoff
+	var usedSessionID string
+	var logPath string
+	var usedRunnerIdx int
+	var err error
+
+	for attempt := 0; ; attempt++ {
+		// Check if context is already cancelled before attempting
+		if ctx.Err() != nil {
+			err = ctx.Err()
+			break
 		}
-		d.tasksMu.Unlock()
-	})
+
+		usedSessionID, logPath, usedRunnerIdx, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
+			childPID = pid
+			d.tasksMu.Lock()
+			if task, ok := d.tasks[taskKey]; ok {
+				task.PID = pid
+				task.LogPath = lp
+				task.SessionID = sid
+			}
+			d.tasksMu.Unlock()
+		}, func(status string) {
+			d.tasksMu.Lock()
+			if task, ok := d.tasks[taskKey]; ok {
+				task.Status = status
+			}
+			d.tasksMu.Unlock()
+		})
+
+		// Success - exit retry loop
+		if err == nil {
+			break
+		}
+
+		// Failure - check if we should retry
+		retriesRemaining := t.Retry - attempt
+		if retriesRemaining <= 0 {
+			// No more retries, exit loop with error
+			break
+		}
+
+		// Calculate exponential backoff: base * 2^attempt
+		backoffDuration := retryDelay
+		for i := 0; i < attempt; i++ {
+			backoffDuration *= 2
+		}
+
+		dlog.Info("retry %d/%d for %s after %v (backoff %v)", attempt+1, t.Retry, taskLabel, err, backoffDuration)
+
+		// Wait for backoff duration, but respect context cancellation
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			break
+		case <-time.After(backoffDuration):
+			// Continue to next retry attempt
+		}
+	}
+
+	// For one-shot tasks with retry: write lock file on final failure
+	// (after all retries exhausted)
+	if t.Schedule == "" && t.Retry > 0 && err != nil && finalFailureLockPath != "" {
+		if err := os.WriteFile(finalFailureLockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+			dlog.Warn("could not write lock file %s: %v", finalFailureLockPath, err)
+		} else {
+			defer os.Remove(finalFailureLockPath)
+		}
+	}
+
+	// For one-shot tasks with retry: write lock file on final failure
+	// (after all retries exhausted)
+	if t.Schedule == "" && t.Retry > 0 && err != nil && finalFailureLockPath != "" {
+		if err := os.WriteFile(finalFailureLockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+			dlog.Warn("could not write lock file %s: %v", finalFailureLockPath, err)
+		} else {
+			defer os.Remove(finalFailureLockPath)
+		}
+	}
 
 	// Write run record after completion with outcome data
 	runRecord := project.RunRecord{
