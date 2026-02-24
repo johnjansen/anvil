@@ -88,6 +88,8 @@ func main() {
 		projectCmd(os.Args[2:])
 	case "usage":
 		usageCmd(os.Args[2:])
+	case "cleanup":
+		cleanupCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
 	case "reload":
@@ -119,6 +121,7 @@ Commands:
   status                   Show watched projects
   reload                   Reload daemon configuration (SIGHUP)
   usage [options]           Show LLM token usage and estimated costs
+  cleanup [options]         Prune old log and run files
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
@@ -3007,6 +3010,131 @@ func updateCmd(args []string) {
 	}
 
 	fmt.Printf("updated to %s\n", latest)
+}
+
+func cleanupCmd(args []string) {
+	olderThan := ""
+	dryRun := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--older-than":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --older-than")
+			}
+			i++
+			olderThan = args[i]
+		case "--dry-run":
+			dryRun = true
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil cleanup [--older-than duration] [--dry-run]
+
+Prune old log and run files based on the retention policy.
+
+Options:
+  --older-than duration   Override max_age (e.g., "3d", "24h", "7d")
+  --dry-run               Show what would be deleted without deleting
+
+When no --older-than is specified, uses the retention policy from
+~/.anvil/config.yaml. If no policy is configured and no --older-than
+is given, nothing is pruned.
+
+Examples:
+  anvil cleanup                    # prune per retention policy
+  anvil cleanup --older-than 3d    # override: prune anything older than 3 days
+  anvil cleanup --dry-run          # show what would be deleted
+`)
+			os.Exit(0)
+		default:
+			log.Fatalf("unknown flag: %s", args[i])
+		}
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	var maxAge time.Duration
+	maxRuns := cfg.Retention.MaxRuns
+
+	if olderThan != "" {
+		maxAge, err = config.ParseRetentionAge(olderThan)
+		if err != nil {
+			log.Fatalf("invalid --older-than value: %v", err)
+		}
+	} else if cfg.Retention.MaxAge != "" {
+		maxAge, err = config.ParseRetentionAge(cfg.Retention.MaxAge)
+		if err != nil {
+			log.Fatalf("invalid retention max_age in config: %v", err)
+		}
+	}
+
+	if maxAge == 0 && maxRuns == 0 {
+		fmt.Println("no retention policy configured and no --older-than specified; nothing to do")
+		fmt.Println("configure retention in ~/.anvil/config.yaml:")
+		fmt.Println("  retention:")
+		fmt.Println("    max_age: 30d")
+		fmt.Println("    max_runs: 100")
+		return
+	}
+
+	opts := project.PruneOptions{
+		MaxAge:  maxAge,
+		MaxRuns: maxRuns,
+		DryRun:  dryRun,
+		Now:     time.Now(),
+	}
+
+	paths := daemon.WatchedPaths()
+	// Also include current directory if it's an anvil project
+	abs, absErr := filepath.Abs(".")
+	if absErr == nil {
+		if _, serr := os.Stat(filepath.Join(abs, ".anvil")); serr == nil {
+			found := false
+			for _, p := range paths {
+				if p == abs {
+					found = true
+					break
+				}
+			}
+			if !found {
+				paths = append(paths, abs)
+			}
+		}
+	}
+
+	if len(paths) == 0 {
+		fmt.Println("no watched projects found")
+		return
+	}
+
+	totalLogs := 0
+	totalRuns := 0
+
+	for _, p := range paths {
+		result := project.PruneProject(p, opts)
+		if result.LogsDeleted > 0 || result.RunsDeleted > 0 {
+			action := "deleted"
+			if dryRun {
+				action = "would delete"
+			}
+			fmt.Printf("%s: %s %d logs, %d runs\n", filepath.Base(p), action, result.LogsDeleted, result.RunsDeleted)
+		}
+		for _, e := range result.Errors {
+			fmt.Fprintf(os.Stderr, "  error: %v\n", e)
+		}
+		totalLogs += result.LogsDeleted
+		totalRuns += result.RunsDeleted
+	}
+
+	if totalLogs == 0 && totalRuns == 0 {
+		fmt.Println("nothing to prune")
+	} else if dryRun {
+		fmt.Printf("\ntotal: would delete %d logs, %d runs (dry run)\n", totalLogs, totalRuns)
+	} else {
+		fmt.Printf("\ntotal: deleted %d logs, %d runs\n", totalLogs, totalRuns)
+	}
 }
 
 func usageCmd(args []string) {
