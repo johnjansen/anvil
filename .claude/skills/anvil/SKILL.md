@@ -345,6 +345,31 @@ hooks:
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
 
+### Project-level Configuration
+
+Each project can have its own `.anvil/config.yaml` to set defaults for all tasks in that project:
+
+```yaml
+# .anvil/config.yaml (project-level)
+defaults:
+  timeout: 10m
+  retry: 2
+  retry_delay: 1m
+  max_concurrent: 2
+  allowed_tools:
+    - Bash
+    - Read
+    - Write
+  pre_check: "test -f /tmp/running"
+  on_success: "echo 'done'"
+  on_failure: "echo 'failed'"
+  skip_permissions: false
+  persistent_cooldown: 5s
+  persistent_max_runtime: 30m
+```
+
+Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
 ### Hot Reload
 
 Reload the daemon configuration without restarting:
@@ -490,6 +515,16 @@ anvil update --check     # check if an update is available without installing
 
 `anvil update` fetches the latest GitHub release, downloads the platform binary, and replaces the current executable. Use `--check` to see if a newer version exists without actually updating.
 
+## Daemon Log
+
+```bash
+anvil daemon log           # view last 50 lines of daemon log
+anvil daemon log -f       # follow daemon log in real-time
+anvil daemon log -n 100   # view last 100 lines
+```
+
+View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
+
 ## Checking Status
 
 ```bash
@@ -497,6 +532,16 @@ anvil status
 ```
 
 Shows watched projects and todo counts.
+
+## Viewing Daemon Logs
+
+```bash
+anvil daemon log              # view last 50 lines
+anvil daemon log -f           # follow mode (tail -f style)
+anvil daemon log -n 100       # view last 100 lines
+```
+
+View the daemon's own log file for debugging or monitoring daemon activity.
 
 ## Unwatching
 

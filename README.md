@@ -274,6 +274,31 @@ kill -HUP $(cat ~/.anvil/daemon.pid)
 
 The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
 
+### Project-level Configuration
+
+Each project can have its own `.anvil/config.yaml` to set defaults for all tasks in that project:
+
+```yaml
+# .anvil/config.yaml (project-level)
+defaults:
+  timeout: 10m
+  retry: 2
+  retry_delay: 1m
+  max_concurrent: 2
+  allowed_tools:
+    - Bash
+    - Read
+    - Write
+  pre_check: "test -f /tmp/running"
+  on_success: "echo 'done'"
+  on_failure: "echo 'failed'"
+  skip_permissions: false
+  persistent_cooldown: 5s
+  persistent_max_runtime: 30m
+```
+
+Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
 ## CLI Reference
 
 | Command | Description |
@@ -284,6 +309,7 @@ The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`
 | `anvil init [path]` | Initialize a project |
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
+| `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
