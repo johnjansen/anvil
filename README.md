@@ -147,7 +147,9 @@ runners:
 | `anvil watch` | Start the daemon |
 | `anvil init [path]` | Initialize a project |
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority) |
+| `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil status` | Show watched projects |
+| `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil update` | Update to latest release |
 
 **Task management:**
@@ -161,6 +163,8 @@ runners:
 | `anvil task log -f <name>` | Follow live log output |
 | `anvil task rm <name>` | Remove a task |
 | `anvil task kill <name>` | Kill a running task |
+| `anvil task stop-on-idle <name>` | Finish current run then stop rescheduling |
+| `anvil task unlock <name>` | Remove stale lock file to allow retry |
 
 **Project management:**
 

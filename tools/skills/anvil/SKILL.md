@@ -173,7 +173,7 @@ anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
 ```
 
-Output columns: priority, schedule, status (running/idle/locked), name, content preview. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Remove the `.lock` file in `.anvil/todos/p<N>/` to reset.
+Output columns: priority, schedule, status (running/idle/locked), name, content preview. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
 
 ## Getting Task Details
 
@@ -248,6 +248,7 @@ anvil task log [-f] <name>           # show execution log (-f to follow)
 anvil task rm <name>                 # remove task (kills if running)
 anvil task kill <name>               # kill a running task
 anvil task stop-on-idle <name>       # finish current run then stop rescheduling
+anvil task unlock <name>             # remove stale lock file to allow retry
 ```
 
 ## Project Subcommands
