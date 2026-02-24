@@ -201,6 +201,25 @@ Run with a 15-minute timeout instead of the default.
 
 Valid units: `s` (seconds), `m` (minutes), `h` (hours). Set to `0` or omit to use the global default.
 
+## retry
+
+Set `retry` to automatically retry failed tasks:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+retry: 3
+retry_delay: 2m
+---
+Run with up to 3 retries, waiting 2 minutes between attempts.
+```
+
+- `retry`: Number of retries on failure (0 = no retry, default: 0)
+- `retry_delay`: Delay between retries (default: 1m)
+
+The retry delay applies to all retry attempts. On each retry, the daemon waits for the configured delay before attempting the task again.
+
 ## on_success / on_failure
 
 Run shell commands after a task completes. Useful for notifications, cleanup, or chaining workflows:
