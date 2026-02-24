@@ -39,6 +39,8 @@ anvil task create [options] <task text>
 Options:
 - `-p, --priority <0-9>` — Priority level (default: 1). Lower = higher priority.
 - `-s, --schedule <cron>` — Cron expression for when to run.
+- `-f, --file <path>` — Read task content from a file.
+- `-` — Read task content from stdin.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
 - `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
@@ -71,6 +73,12 @@ anvil add -s "*/15 * * * *" --skip-permissions "Run automated checks"
 
 # Task with max concurrent instances
 anvil add -s "*/5 * * * *" --max-concurrent 2 "Process in parallel"
+
+# Read task content from a file
+anvil add -s "*/30 * * * *" -f task.md
+
+# Read task content from stdin
+echo "Process items from queue" | anvil add -s "*/30 * * * *" -
 ```
 
 Task files are stored in `.anvil/todos/p<N>/<slugified-name>.md` with YAML frontmatter containing the schedule and a UUID.

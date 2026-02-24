@@ -339,7 +339,7 @@ anvil cleanup -o=24h
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil watch --stop` | Stop the running daemon |
 | `anvil init [path]` | Initialize a project |
-| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
+| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `-f` file, `-` stdin, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
 | `anvil ps` | Show running tasks |
