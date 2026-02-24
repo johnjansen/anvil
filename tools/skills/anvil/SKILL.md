@@ -88,6 +88,8 @@ schedule: "persistent"
 
 Persistent tasks exit after each unit of work and are immediately re-dispatched on the next scheduler tick. This is useful for event-driven workflows.
 
+**Each cycle starts fresh** — the daemon generates a new session ID for each execution. There's no session persistence between cycles; each run begins as if it were the first time.
+
 ### persistent_cooldown
 
 For persistent tasks, set `persistent_cooldown` to wait between restart cycles:
@@ -115,6 +117,10 @@ persistent_max_runtime: 10m
 ```
 
 Useful for preventing runaway tasks. Default is 0 (no limit).
+
+### Starvation prevention
+
+If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
 
 ## Session Continuity
 
@@ -433,8 +439,11 @@ The `logs` command shows raw stdout/stderr output from worker processes. Without
 ## Running Tasks
 
 ```bash
+anvil ps
 anvil task ls
 ```
+
+Use `anvil ps` to show currently running tasks. Use `anvil task ls` to see tasks across all watched projects.
 
 Shows tasks with their running/idle status. Use `anvil task ls --all` to see tasks across all watched projects.
 
@@ -515,23 +524,57 @@ anvil update --check     # check if an update is available without installing
 
 `anvil update` fetches the latest GitHub release, downloads the platform binary, and replaces the current executable. Use `--check` to see if a newer version exists without actually updating.
 
+## Doctor
+
+```bash
+anvil doctor    # run diagnostics and check for issues
+```
+
+Runs a series of health checks on your anvil installation:
+
+- **daemon_pid** — Checks if the PID file exists
+- **daemon_process** — Verifies the daemon process is running
+- **daemon_socket** — Checks if the daemon socket is responsive
+- **config_exists** — Verifies config file exists
+- **config_parse** — Validates config file syntax
+- **config_runners** — Checks if runners are configured
+- **config_max_workers** — Verifies max_workers is set
+- **watched_projects** — Checks if watched projects exist and are accessible
+- **task_locks** — Checks for stale lock files
+- **task_ids** — Verifies all tasks have valid IDs
+- **task_cron** — Validates cron expressions in task schedules
+- **recent_runs** — Warns about tasks with 3+ consecutive failures in 24 hours
+
+Returns exit code 1 if any checks fail. Useful for troubleshooting issues with your anvil setup.
+
+## Version
+
+```bash
+anvil version    # show current version
+anvil -v         # shorthand
+anvil --version  # also valid
+```
+
+Shows the currently installed anvil version.
+
+## Daemon Log
+
+```bash
+anvil daemon log           # view last 50 lines of daemon log
+anvil daemon log -f       # follow daemon log in real-time
+anvil daemon log -n 100   # view last 100 lines
+```
+
+View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
+
 ## Checking Status
 
 ```bash
 anvil status
+anvil ps
 ```
 
-Shows watched projects and todo counts.
-
-## Viewing Daemon Logs
-
-```bash
-anvil daemon log              # view last 50 lines
-anvil daemon log -f           # follow mode (tail -f style)
-anvil daemon log -n 100       # view last 100 lines
-```
-
-View the daemon's own log file for debugging or monitoring daemon activity.
+`anvil status` shows watched projects and todo counts. `anvil ps` shows currently running tasks.
 
 ## Unwatching
 

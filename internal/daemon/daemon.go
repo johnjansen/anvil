@@ -88,6 +88,7 @@ type Daemon struct {
 	done        chan struct{}
 	reload      chan struct{} // SIGHUP trigger for config reload
 	lastTick    time.Time // last minute we processed (truncated to minute)
+	lastTickMu  sync.Mutex
 	socketPath  string
 	tasks       map[string]*RunningTask
 	tasksMu     sync.RWMutex
@@ -1127,6 +1128,11 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) tick(now time.Time) {
+	// Run retention pruning if configured (once per minute)
+	if d.config.Retention.MaxAge > 0 || d.config.Retention.MaxRuns > 0 {
+		d.pruneOldData(now)
+	}
+
 	thisMinute := now.Truncate(time.Minute)
 
 	// Only evaluate cron schedules once per minute
@@ -1457,6 +1463,112 @@ func newRunID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// pruneOldData removes old log and run files based on retention policy.
+// It runs once per tick to keep disk usage bounded.
+func (d *Daemon) pruneOldData(now time.Time) {
+	paths := loadWatchedPaths()
+	if len(paths) == 0 {
+		return
+	}
+
+	// Only prune on cron ticks (once per minute) to avoid overhead
+	thisMinute := now.Truncate(time.Minute)
+	if !thisMinute.Equal(d.lastTick) {
+		return
+	}
+
+	for _, projPath := range paths {
+		d.pruneProject(projPath)
+	}
+}
+
+func (d *Daemon) pruneProject(projPath string) {
+	anvilDir := filepath.Join(projPath, ".anvil")
+
+	// Prune logs
+	logsDir := filepath.Join(anvilDir, "logs")
+	if _, err := os.Stat(logsDir); err == nil {
+		d.pruneDir(logsDir, "log")
+	}
+
+	// Prune runs
+	runsDir := filepath.Join(anvilDir, "runs")
+	if _, err := os.Stat(runsDir); err == nil {
+		d.pruneDir(runsDir, "run")
+	}
+}
+
+func (d *Daemon) pruneDir(dir, kind string) {
+	taskDirs, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, taskDir := range taskDirs {
+		if !taskDir.IsDir() {
+			continue
+		}
+		taskPath := filepath.Join(dir, taskDir.Name())
+		d.pruneTaskDir(taskPath, kind)
+	}
+}
+
+func (d *Daemon) pruneTaskDir(taskPath, kind string) {
+	entries, err := os.ReadDir(taskPath)
+	if err != nil {
+		return
+	}
+
+	// Collect files with their modification times
+	type fileInfo struct {
+		path    string
+		modTime time.Time
+	}
+	var files []fileInfo
+
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{entry.Name(), info.ModTime()})
+	}
+
+	// Sort by modification time (oldest first)
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.Before(files[j].modTime)
+	})
+
+	var toDelete []string
+	cutoff := time.Now().Add(-d.config.Retention.MaxAge)
+
+	// Delete by age
+	if d.config.Retention.MaxAge > 0 {
+		for _, f := range files {
+			if f.modTime.Before(cutoff) {
+				toDelete = append(toDelete, f.path)
+			}
+		}
+	}
+
+	// Delete by count (keep MaxRuns most recent)
+	if d.config.Retention.MaxRuns > 0 && len(files) > d.config.Retention.MaxRuns {
+		keep := len(files) - d.config.Retention.MaxRuns
+		// files are sorted oldest first, so delete first 'keep' entries
+		for i := 0; i < keep; i++ {
+			toDelete = append(toDelete, files[i].path)
+		}
+	}
+
+	// Actually delete the files
+	for _, name := range toDelete {
+		path := filepath.Join(taskPath, name)
+		if err := os.Remove(path); err != nil {
+			dlog.Warn("failed to prune %s: %v", path, err)
+		}
+	}
 }
 
 func loadWatchedPaths() []string {
