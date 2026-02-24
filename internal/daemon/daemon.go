@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,9 +14,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
@@ -25,6 +28,47 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrDaemonAlreadyRunning is returned when a daemon is already running
+var ErrDaemonAlreadyRunning = errors.New("daemon already running")
+
+// checkAndWritePID checks for an existing daemon PID file and writes our PID.
+// Returns ErrDaemonAlreadyRunning if another daemon is running.
+func checkAndWritePID() error {
+	pidPath := config.PidFile()
+
+	// Check if PID file exists
+	if _, err := os.Stat(pidPath); err == nil {
+		// PID file exists, check if the process is still running
+		data, readErr := os.ReadFile(pidPath)
+		if readErr == nil {
+			pidStr := strings.TrimSpace(string(data))
+			pid, parseErr := strconv.Atoi(pidStr)
+			if parseErr == nil {
+				// Try to send signal 0 (check if process exists)
+				proc, err := os.FindProcess(pid)
+				if err == nil {
+					// Signal 0 checks if process exists without sending a signal
+					if err := proc.Signal(syscall.Signal(0)); err == nil {
+						// Process is running
+						return fmt.Errorf("%w (PID %d)", ErrDaemonAlreadyRunning, pid)
+					}
+					// Process not found or dead, continue to cleanup
+				}
+			}
+		}
+		// Stale PID file, remove it
+		os.Remove(pidPath)
+	}
+
+	// Write our PID file
+	return os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
+}
+
+// removePIDFile removes the daemon PID file
+func removePIDFile() {
+	os.Remove(config.PidFile())
+}
 
 // workItem is a single unit of work dispatched to the worker pool.
 type workItem struct {
@@ -66,12 +110,15 @@ type KillRequest struct {
 }
 
 type TaskInfo struct {
-	Project string `json:"project"`
-	Name    string `json:"name"`
-	PID     int    `json:"pid"`
-	Started string `json:"started"`
-	Elapsed string `json:"elapsed"`
-	LogPath string `json:"log_path,omitempty"`
+	Project     string `json:"project"`
+	Name        string `json:"name"`
+	PID         int    `json:"pid"`
+	Started     string `json:"started"`
+	Elapsed     string `json:"elapsed"`
+	Timeout     string `json:"timeout,omitempty"`
+	TimeRemaining string `json:"time_remaining,omitempty"`
+	PercentUsed float64 `json:"percent_used,omitempty"`
+	LogPath     string `json:"log_path,omitempty"`
 }
 
 func New(cfg *config.Config) *Daemon {
@@ -94,6 +141,18 @@ func New(cfg *config.Config) *Daemon {
 
 func (d *Daemon) Run() {
 	defer close(d.done)
+
+	// Write PID file on startup
+	if err := checkAndWritePID(); err != nil {
+		if errors.Is(err, ErrDaemonAlreadyRunning) {
+			dlog.Fatal("%s", err.Error())
+		} else {
+			dlog.Fatal("failed to write PID file: %v", err)
+		}
+		return
+	}
+	// Clean up PID file on shutdown
+	defer removePIDFile()
 
 	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
@@ -304,14 +363,54 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	elapsed := time.Since(startTime)
 	if err != nil {
 		dlog.WorkerFail(workerID, projName, t.Name, err)
+		// Run on_failure hook if defined
+		if t.OnFailure != "" {
+			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+		}
 	} else {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
+		// Run on_success hook if defined
+		if t.OnSuccess != "" {
+			d.runHook("on_success", t.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+		}
 		// Remove the todo file after successful execution (one-shot only)
 		if t.Schedule == "" {
 			if removeErr := os.Remove(t.Path); removeErr != nil {
 				dlog.Warn("could not remove %s: %v", t.Path, removeErr)
 			}
 		}
+	}
+}
+
+// runHook executes a lifecycle hook (on_success or on_failure) as a shell command.
+// Hook errors are logged as warnings but do not affect the task outcome.
+func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, logPath, sessionID string, startTime time.Time, elapsed time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	hookCmd := exec.CommandContext(ctx, "sh", "-c", command)
+	hookCmd.Dir = projectPath
+
+	exitCode := "0"
+	if hookName == "on_failure" {
+		exitCode = "1"
+	}
+
+	hookCmd.Env = append(os.Environ(),
+		"ANVIL_TASK_NAME="+t.Name,
+		"ANVIL_EXIT_CODE="+exitCode,
+		"ANVIL_LOG_PATH="+logPath,
+		"ANVIL_PROJECT="+projectPath,
+		"ANVIL_SESSION_ID="+sessionID,
+		"ANVIL_START_TIME="+startTime.Format(time.RFC3339),
+		"ANVIL_END_TIME="+time.Now().Format(time.RFC3339),
+		fmt.Sprintf("ANVIL_ELAPSED_MS=%d", elapsed.Milliseconds()),
+	)
+
+	if hookErr := hookCmd.Run(); hookErr != nil {
+		dlog.Warn("%s hook failed for %s: %v", hookName, t.Name, hookErr)
+	} else {
+		dlog.Info("%s hook completed for %s", hookName, t.Name)
 	}
 }
 
@@ -336,6 +435,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/drain", d.handleDrain)
 	mux.HandleFunc("/drain/task", d.handleDrainTask)
 	mux.HandleFunc("/status", d.handleStatus)
+	mux.HandleFunc("/timeout", d.handleTimeout)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -365,12 +465,54 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
 		result = append(result, TaskInfo{
-			Project: task.Project,
-			Name:    task.Name,
-			PID:     task.PID,
-			Started: task.Started.Format(time.RFC3339),
-			Elapsed: elapsed.Round(time.Second).String(),
-			LogPath: task.LogPath,
+			Project:       task.Project,
+			Name:          task.Name,
+			PID:           task.PID,
+			Started:       task.Started.Format(time.RFC3339),
+			Elapsed:       elapsed.Round(time.Second).String(),
+			Timeout:       d.config.Timeout.String(),
+			TimeRemaining: (d.config.Timeout - elapsed).String(),
+			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
+			LogPath:       task.LogPath,
+		})
+	}
+
+	// Sort by started time (oldest first)
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Started < result[j].Started
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	d.tasksMu.RLock()
+	tasks := make([]*RunningTask, 0, len(d.tasks))
+	for _, task := range d.tasks {
+		tasks = append(tasks, task)
+	}
+	d.tasksMu.RUnlock()
+
+	var result []TaskInfo
+	now := time.Now()
+	for _, task := range tasks {
+		elapsed := now.Sub(task.Started)
+		result = append(result, TaskInfo{
+			Project:       task.Project,
+			Name:          task.Name,
+			PID:           task.PID,
+			Started:       task.Started.Format(time.RFC3339),
+			Elapsed:       elapsed.Round(time.Second).String(),
+			Timeout:       d.config.Timeout.String(),
+			TimeRemaining: (d.config.Timeout - elapsed).String(),
+			PercentUsed:   elapsed.Round(time.Second).Seconds() / d.config.Timeout.Seconds() * 100,
+			LogPath:       task.LogPath,
 		})
 	}
 
@@ -810,6 +952,26 @@ func SendStatusRequest() (*DaemonStatus, error) {
 		return nil, err
 	}
 	return &status, nil
+}
+
+// SendTimeoutRequest queries the daemon's /timeout endpoint and returns task timeout info.
+func SendTimeoutRequest() ([]TaskInfo, error) {
+	resp, err := socketClient().Get("http://daemon/timeout")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon request failed: %s", resp.Status)
+	}
+
+	var tasks []TaskInfo
+	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
 }
 
 // SendDrainRequest tells the daemon to stop-on-idle (daemon-wide).

@@ -38,6 +38,8 @@ type Todo struct {
 	SkipPermissions bool     // if true, append --dangerously-skip-permissions to runner command
 	AllowedTools    []string // if non-empty, append --allowedTools <tools> to runner command
 	PreCheck        string   // optional shell command; task is skipped silently if it exits non-zero
+	OnSuccess       string   // optional shell command to run after successful completion
+	OnFailure       string   // optional shell command to run after failed completion
 	IsLocked        bool     // true if a stale lock file exists
 }
 
@@ -106,6 +108,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			skipPermissions := false
 			var allowedTools []string
 			preCheck := ""
+			onSuccess := ""
+			onFailure := ""
 			body := contentStr
 
 			if strings.HasPrefix(contentStr, "---\n") {
@@ -122,6 +126,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						SkipPermissions bool     `yaml:"skip_permissions"`
 						AllowedTools    []string `yaml:"allowed_tools"`
 						PreCheck        string   `yaml:"pre_check"`
+						OnSuccess       string   `yaml:"on_success"`
+						OnFailure       string   `yaml:"on_failure"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						schedule = fmData.Schedule
@@ -131,6 +137,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						skipPermissions = fmData.SkipPermissions
 						allowedTools = fmData.AllowedTools
 						preCheck = fmData.PreCheck
+						onSuccess = fmData.OnSuccess
+						onFailure = fmData.OnFailure
 					}
 				}
 			}
@@ -147,6 +155,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				SkipPermissions: skipPermissions,
 				AllowedTools:    allowedTools,
 				PreCheck:        preCheck,
+				OnSuccess:       onSuccess,
+				OnFailure:       onFailure,
 				IsLocked:        hasLock,
 			})
 		}
