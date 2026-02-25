@@ -250,7 +250,7 @@ runners:
   - claude
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
-tick_interval: 10s  # how often to check for work
+tick_interval: 5s  # how often to check for work
 retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
