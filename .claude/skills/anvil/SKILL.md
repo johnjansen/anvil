@@ -575,12 +575,14 @@ anvil task log [-f] <name>           # show execution log (-f to follow)
 anvil task rm <name>                 # remove task (kills if running)
 anvil task run <name>                # trigger immediate execution (bypass cron)
 anvil task kill <name>               # kill a running task
-anvil task stop-on-idle <name>       # finish current run then stop rescheduling
+anvil task stop-on-idle <name>      # finish current run then stop rescheduling
 anvil task unlock <name>             # remove stale lock file to allow retry
 anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
+anvil task start <name>              # start a stopped task (re-enable rescheduling)
+anvil task stop <name>               # stop a running task (disable rescheduling)
 ```
 
 ## Project Subcommands
@@ -625,6 +627,17 @@ Runs a series of health checks on your anvil installation:
 - **recent_runs** — Warns about tasks with 3+ consecutive failures in 24 hours
 
 Returns exit code 1 if any checks fail. Useful for troubleshooting issues with your anvil setup.
+
+## Usage
+
+```bash
+anvil usage                      # show usage for last 7 days across all projects
+anvil usage --project <path>    # filter to a specific project
+anvil usage --task <name>      # filter to a specific task
+anvil usage --since 2024-01-01 # show usage since a specific date
+```
+
+Shows LLM token usage and estimated costs across tasks and projects. Uses the `input_token_rate` and `output_token_rate` from config to calculate costs.
 
 ## Version
 
@@ -675,3 +688,14 @@ anvil project rm [path] --clean   # also removes .anvil/ directory
 ```
 
 Stops the daemon from monitoring this project. Does not delete any task files unless `--clean` is passed.
+
+## Usage
+
+```bash
+anvil usage                     # show usage for last 7 days
+anvil usage --project <path>    # filter to a specific project
+anvil usage --task <name>      # filter to a specific task
+anvil usage --since 2026-01-01 # show usage since a specific date
+```
+
+Shows LLM token usage and estimated costs across tasks and projects. Tracks input/output tokens and calculates estimated USD costs based on the `input_token_rate` and `output_token_rate` configured in `~/.anvil/config.yaml`.

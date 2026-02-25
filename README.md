@@ -385,6 +385,7 @@ anvil cleanup -o=24h
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
 | `anvil doctor` | Run diagnostics to check for common issues |
+| `anvil usage [--project=<path>] [--task=<name>] [--since=<date>]` | Show LLM token usage and estimated costs |
 | `anvil version` | Show version |
 
 **Task management:**
@@ -410,6 +411,8 @@ anvil cleanup -o=24h
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
+| `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
+| `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 
 **Task status:**
 
