@@ -132,11 +132,13 @@ Commands:
 
 Add options:
   -p, --priority int          Task priority 0-9 (default 1)
-  -s, --schedule string        Cron schedule (e.g., "*/15 * * * *"), "" for one-shot
-      --pre-check string       Shell command to skip task if non-zero exit
+  -s, --schedule string      Cron schedule (e.g., "*/15 * * * *"), "" for one-shot
+  -f, --file path            Read task content from a file
+  -                          Read task content from stdin
+      --pre-check string    Shell command to skip task if non-zero exit
       --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read")
       --max-concurrent int    Max parallel instances (default 1)
-      --skip-permissions       Bypass all tool permission prompts
+      --skip-permissions     Bypass all tool permission prompts
 
 Task subcommands:
   create [options] <task>   Create a new task
