@@ -374,6 +374,9 @@ anvil cleanup -o=24h
 | `anvil watch` | Start the daemon |
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil watch --stop` | Stop the running daemon |
+| `anvil watch --install` | Install as system service (auto-start on boot) |
+| `anvil watch --uninstall` | Remove the system service |
+| `anvil watch --status` | Show system service status |
 | `anvil init [path]` | Initialize a project |
 | `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `-f` file, `-` stdin, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |

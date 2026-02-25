@@ -21,6 +21,9 @@ anvil watch
 # Or run in background (daemonized)
 anvil watch [-d|--daemonize]
 anvil watch --stop             # stop the daemon
+anvil watch --install          # install as system service (auto-start on boot)
+anvil watch --uninstall        # remove the system service
+anvil watch --status           # show system service status
 
 # Reload config without restarting
 anvil reload
