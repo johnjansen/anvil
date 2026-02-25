@@ -143,6 +143,7 @@ Task subcommands:
   ls [-a|--all]             List tasks (--all for all watched projects)
   get <name>                Show task details including run status
   log [-f] <name>           Show execution log (-f to follow)
+  history <name>            Show run history
   rm <name>                 Remove a task (kills if running)
   run <name>                Trigger immediate execution (bypass cron)
   kill <name>               Kill a running task
