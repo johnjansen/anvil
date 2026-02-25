@@ -607,6 +607,23 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.persistentFailures[taskKey]++
 			failCount := d.persistentFailures[taskKey]
 			d.persistentFailuresMu.Unlock()
+
+			// Get max failures config (default 5)
+			maxFailures := t.PersistentMaxFailures
+			if maxFailures == 0 {
+				maxFailures = 5
+			}
+
+			// Stop retrying if we've hit max failures
+			if failCount > maxFailures {
+				dlog.Warn("persistent task %s failed %d times — stopping retry, manual restart required", t.Name, failCount)
+				// Mark task as disabled so it won't be retried automatically
+				d.persistentCooldownsMu.Lock()
+				d.persistentCooldowns[taskKey] = time.Now().Add(24 * time.Hour) // effectively disable for 24h
+				d.persistentCooldownsMu.Unlock()
+				return
+			}
+
 			// Calculate exponential backoff: base * 2^(failCount-1), default base is 1 minute
 			baseBackoff := t.RetryDelay
 			if baseBackoff <= 0 {
@@ -616,10 +633,14 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			for i := 1; i < failCount; i++ {
 				backoffDuration *= 2
 			}
+			// Cap backoff at 30 minutes
+			if backoffDuration > 30*time.Minute {
+				backoffDuration = 30 * time.Minute
+			}
 			d.persistentCooldownsMu.Lock()
 			d.persistentCooldowns[taskKey] = time.Now().Add(backoffDuration)
 			d.persistentCooldownsMu.Unlock()
-			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v", t.Name, failCount, backoffDuration)
+			dlog.Info("persistent task %s failed (attempt %d of %d) — backing off for %v", t.Name, failCount, maxFailures, backoffDuration)
 		}
 	} else {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)

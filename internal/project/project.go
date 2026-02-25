@@ -36,6 +36,7 @@ type TaskDefaults struct {
 	MaxConcurrent        int      `yaml:"max_concurrent"`
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
+	PersistentMaxFailures int     `yaml:"persistent_max_failures"`
 }
 
 // ConfigPath returns the path to the project config file.
@@ -87,8 +88,9 @@ type Todo struct {
 	Retry           int           // number of retries on failure (0 = no retry)
 	RetryDelay      time.Duration // delay between retries (default 1m, used with Retry)
 	// Persistent task configuration
-	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
+	PersistentCooldown    time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
+	PersistentMaxFailures int          // max consecutive failures before stopping (default 5)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -175,6 +177,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var retryDelay time.Duration
 			var persistentCooldown time.Duration
 			var persistentMaxRuntime time.Duration
+			persistentMaxFailures := 0
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -203,6 +206,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						RetryDelay           string   `yaml:"retry_delay"`
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
+						PersistentMaxFailures int      `yaml:"persistent_max_failures"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -231,6 +235,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.PersistentMaxRuntime != "" {
 							persistentMaxRuntime, _ = time.ParseDuration(fmData.PersistentMaxRuntime)
 						}
+						persistentMaxFailures = fmData.PersistentMaxFailures
 					}
 				}
 			}
@@ -238,7 +243,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Apply project defaults for fields not explicitly set in frontmatter.
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
-				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime)
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentMaxFailures)
 
 			todos = append(todos, Todo{
 				Path:                 fp,
@@ -261,6 +266,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				RetryDelay:           retryDelay,
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
+				PersistentMaxFailures: persistentMaxFailures,
 			})
 		}
 	}
@@ -275,7 +281,8 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	skipPermissions *bool, allowedTools *[]string, preCheck *string,
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
-	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration) {
+	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
+	persistentMaxFailures *int) {
 
 	has := func(key string) bool {
 		if fmKeys == nil {
@@ -325,6 +332,9 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 		if d, err := time.ParseDuration(defaults.PersistentMaxRuntime); err == nil {
 			*persistentMaxRuntime = d
 		}
+	}
+	if !has("persistent_max_failures") && defaults.PersistentMaxFailures != 0 {
+		*persistentMaxFailures = defaults.PersistentMaxFailures
 	}
 }
 
