@@ -101,13 +101,13 @@ Persistent tasks are designed for event-driven workflows. Here's how they work:
 schedule: "persistent"
 persistent_cooldown: 5s      # wait between restart cycles (default: 0 = immediate)
 persistent_max_runtime: 10m  # max runtime before forced restart (default: 0 = no limit)
-persistent_max_failures: 10  # stop after N consecutive failures (default: 0 = never stop)
+persistent_max_failures: 10  # stop after N consecutive failures (default: 5)
 ---
 ```
 
 - `persistent_cooldown` — wait time after a persistent task completes before re-dispatching. Default is 0 (immediate restart).
 - `persistent_max_runtime` — maximum runtime before the task is forcibly restarted. Useful for preventing runaway tasks. Default is 0 (no limit).
-- `persistent_max_failures` — maximum consecutive failures before the task stops. Default is 0 (never stop).
+- `persistent_max_failures` — maximum consecutive failures before the task stops. Default is 5.
 
 #### Starvation prevention
 

@@ -138,7 +138,7 @@ persistent_max_failures: 10
 ---
 ```
 
-When failures exceed this limit, the task stops and requires manual restart. Default is 0 (never stop).
+When failures exceed this limit, the task stops and requires manual restart. Default is 5.
 
 ### Starvation prevention
 
