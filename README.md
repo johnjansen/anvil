@@ -167,18 +167,6 @@ Or skip all permission prompts:
 skip_permissions: true
 ```
 
-### Per-task runner override
-
-Override the global runner chain for a specific task:
-
-```yaml
----
-schedule: "*/30 * * * *"
-runner: "claude -p 'You are a specialized assistant'"
----
-Use a custom runner command for this task instead of the global runners.
-```
-
 ### Lifecycle hooks
 
 Run shell commands after a task succeeds or fails:
