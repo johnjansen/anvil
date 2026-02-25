@@ -124,7 +124,7 @@ Commands:
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
-  ps                       Show running tasks
+  ps [--json]              Show running tasks
   status                   Show watched projects
   reload                   Reload daemon configuration (SIGHUP)
   usage [options]           Show LLM token usage and estimated costs
@@ -148,10 +148,10 @@ Add options:
 
 Task subcommands:
   create [options] <task>   Create a new task
-  ls [-a|--all]             List tasks (--all for all watched projects)
-  get <name>                Show task details including run status
+  ls [-a|--all] [--json]    List tasks (--all for all watched projects)
+  get <name> [--json]       Show task details including run status
   log [-f] <name>           Show execution log (-f to follow)
-  history <name>            Show run history
+  history <name> [--json]   Show run history
   rm <name>                 Remove a task (kills if running)
   run <name>                Trigger immediate execution (bypass cron)
   kill <name>               Kill a running task (persistent tasks auto-restart)
@@ -167,7 +167,7 @@ Task subcommands:
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
-  ls [-a|--all]            List watched projects
+  ls [-a|--all] [--json]   List watched projects
   get [path]               Show project details and running tasks
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
 
@@ -817,24 +817,54 @@ func pruneDir(dir string, maxAge time.Duration, maxRuns int, dryRun bool) (int, 
 }
 
 func psCmd() {
+	jsonOutput := false
+	for _, a := range os.Args[2:] {
+		if a == "--json" {
+			jsonOutput = true
+		}
+	}
+
 	if !daemon.IsDaemonRunning() {
-		fmt.Println("daemon not running")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("daemon not running")
+		}
 		return
 	}
 
-	// Show drain status header if applicable
-	if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
-		fmt.Println("(draining — no new tasks will be dispatched)")
+	// Show drain status header if applicable (text mode only)
+	if !jsonOutput {
+		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
+			fmt.Println("(draining — no new tasks will be dispatched)")
+		}
 	}
 
 	tasks, err := daemon.SendPsRequest()
 	if err != nil {
-		fmt.Printf("failed to get tasks: %v\n", err)
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Printf("failed to get tasks: %v\n", err)
+		}
 		return
 	}
 
 	if len(tasks) == 0 {
-		fmt.Println("no running tasks")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("no running tasks")
+		}
+		return
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(tasks, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
 		return
 	}
 
@@ -1356,9 +1386,13 @@ func parseFrontmatterAndMerge(
 
 func taskLsCmd(args []string) {
 	allProjects := false
+	jsonOutput := false
 	for _, a := range args {
 		if a == "--all" || a == "-a" {
 			allProjects = true
+		}
+		if a == "--json" {
+			jsonOutput = true
 		}
 	}
 
@@ -1413,7 +1447,58 @@ func taskLsCmd(args []string) {
 		total += len(p.todos)
 	}
 	if total == 0 {
-		fmt.Println("no tasks")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("no tasks")
+		}
+		return
+	}
+
+	if jsonOutput {
+		type taskJSON struct {
+			Project  string `json:"project"`
+			Name     string `json:"name"`
+			Priority int    `json:"priority"`
+			Schedule string `json:"schedule"`
+			Status   string `json:"status"`
+			Disabled bool   `json:"disabled"`
+			Content  string `json:"content"`
+			ID       string `json:"id,omitempty"`
+		}
+		var items []taskJSON
+		for _, p := range projects {
+			for _, t := range p.todos {
+				taskKey := fmt.Sprintf("%s/%s", p.path, t.Name)
+				status := "idle"
+				if t.Disabled {
+					status = "disabled"
+				} else if t.IsLocked {
+					status = "locked"
+				} else if rt, ok := runningByID[taskKey]; ok {
+					if rt.Status != "" {
+						status = rt.Status
+					} else {
+						status = "running"
+					}
+				}
+				items = append(items, taskJSON{
+					Project:  p.path,
+					Name:     t.Name,
+					Priority: t.Priority,
+					Schedule: t.Schedule,
+					Status:   status,
+					Disabled: t.Disabled,
+					Content:  strings.TrimSpace(t.Content),
+					ID:       t.ID,
+				})
+			}
+		}
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
 		return
 	}
 
@@ -1445,8 +1530,18 @@ func taskLsCmd(args []string) {
 }
 
 func taskGetCmd(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task get <name>\n")
+	jsonOutput := false
+	var rest []string
+	for _, a := range args {
+		if a == "--json" {
+			jsonOutput = true
+		} else {
+			rest = append(rest, a)
+		}
+	}
+
+	if len(rest) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task get <name> [--json]\n")
 		os.Exit(1)
 	}
 
@@ -1465,25 +1560,76 @@ func taskGetCmd(args []string) {
 		log.Fatalf("failed to load todos: %v", err)
 	}
 
-	todo := findTodo(todos, args[0])
+	todo := findTodo(todos, rest[0])
 	if todo == nil {
-		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", rest[0])
 		os.Exit(1)
 	}
 
 	// Check if task is running
 	runStatus := "idle"
+	var runPID int
+	var runElapsed string
 	if daemon.IsDaemonRunning() {
 		runningTasks, err := daemon.SendPsRequest()
 		if err == nil {
 			taskName := fmt.Sprintf("%s/%s", abs, todo.Name)
 			for _, t := range runningTasks {
 				if t.Name == taskName {
-					runStatus = fmt.Sprintf("running (PID %d, elapsed %s)", t.PID, t.Elapsed)
+					runStatus = "running"
+					runPID = t.PID
+					runElapsed = t.Elapsed
 					break
 				}
 			}
 		}
+	}
+
+	if jsonOutput {
+		type taskDetailJSON struct {
+			File            string   `json:"file"`
+			ID              string   `json:"id"`
+			Name            string   `json:"name"`
+			Schedule        string   `json:"schedule"`
+			Priority        int      `json:"priority"`
+			Disabled        bool     `json:"disabled"`
+			Status          string   `json:"status"`
+			PID             int      `json:"pid,omitempty"`
+			Elapsed         string   `json:"elapsed,omitempty"`
+			Content         string   `json:"content"`
+			PreCheck        string   `json:"pre_check,omitempty"`
+			OnSuccess       string   `json:"on_success,omitempty"`
+			OnFailure       string   `json:"on_failure,omitempty"`
+			AllowedTools    []string `json:"allowed_tools,omitempty"`
+			MaxConcurrent   int      `json:"max_concurrent,omitempty"`
+			SkipPermissions bool     `json:"skip_permissions,omitempty"`
+			Runner          string   `json:"runner,omitempty"`
+		}
+		detail := taskDetailJSON{
+			File:            todo.Path,
+			ID:              todo.ID,
+			Name:            todo.Name,
+			Schedule:        todo.Schedule,
+			Priority:        todo.Priority,
+			Disabled:        todo.Disabled,
+			Status:          runStatus,
+			PID:             runPID,
+			Elapsed:         runElapsed,
+			Content:         strings.TrimSpace(todo.Content),
+			PreCheck:        todo.PreCheck,
+			OnSuccess:       todo.OnSuccess,
+			OnFailure:       todo.OnFailure,
+			AllowedTools:    todo.AllowedTools,
+			MaxConcurrent:   todo.MaxConcurrent,
+			SkipPermissions: todo.SkipPermissions,
+			Runner:          todo.Runner,
+		}
+		data, err := json.MarshalIndent(detail, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
 	}
 
 	fmt.Printf("File:     %s\n", todo.Path)
@@ -1500,7 +1646,11 @@ func taskGetCmd(args []string) {
 			fmt.Printf("Session:  %s\n", sessionPath)
 		}
 	}
-	fmt.Printf("Status:   %s\n", runStatus)
+	if runPID > 0 {
+		fmt.Printf("Status:   running (PID %d, elapsed %s)\n", runPID, runElapsed)
+	} else {
+		fmt.Printf("Status:   %s\n", runStatus)
+	}
 	fmt.Printf("\n%s", todo.Content)
 }
 
@@ -2803,9 +2953,13 @@ func projectRmCmd(args []string) {
 
 func projectLsCmd(args []string) {
 	allProjects := false
+	jsonOutput := false
 	for _, a := range args {
 		if a == "--all" || a == "-a" {
 			allProjects = true
+		}
+		if a == "--json" {
+			jsonOutput = true
 		}
 	}
 
@@ -2830,7 +2984,11 @@ func projectLsCmd(args []string) {
 	}
 
 	if len(watched) == 0 {
-		fmt.Println("no watched projects")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("no watched projects")
+		}
 		return
 	}
 
@@ -2844,6 +3002,54 @@ func projectLsCmd(args []string) {
 	runningByProject := make(map[string]int)
 	for _, t := range runningTasks {
 		runningByProject[t.Project]++
+	}
+
+	if jsonOutput {
+		type projectJSON struct {
+			Path       string `json:"path"`
+			Tasks      int    `json:"tasks"`
+			Running    int    `json:"running"`
+			Status     string `json:"status"`
+			WatchedAt  string `json:"watched_at,omitempty"`
+		}
+		var items []projectJSON
+		for _, w := range watched {
+			todoCount := 0
+			status := "idle"
+
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				items = append(items, projectJSON{
+					Path:      w.Path,
+					Tasks:     0,
+					Status:    fmt.Sprintf("error: %v", err),
+					WatchedAt: w.WatchedAt.Format(time.RFC3339),
+				})
+				continue
+			}
+
+			todos, _ := proj.LoadTodos()
+			todoCount = len(todos)
+
+			running := runningByProject[w.Path]
+			if running > 0 {
+				status = "busy"
+			}
+
+			items = append(items, projectJSON{
+				Path:      w.Path,
+				Tasks:     todoCount,
+				Running:   running,
+				Status:    status,
+				WatchedAt: w.WatchedAt.Format(time.RFC3339),
+			})
+		}
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
 	}
 
 	// Print header
