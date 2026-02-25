@@ -100,7 +100,7 @@ fi
 Then initialize speckit in the project directory. This downloads templates, installs Claude slash commands, and sets up the `.specify/` scaffolding:
 
 ```bash
-specify init . --ai claude --force
+specify init --here --ai claude --script sh --force
 ```
 
 > [!NOTE]
@@ -192,7 +192,7 @@ if [ -d .specify ] && ls .claude/commands/speckit.* &>/dev/null; then
     echo "Constitution: not yet created (run /speckit.constitution)"
   fi
 else
-  echo "Not installed (run: specify init . --ai claude)"
+  echo "Not installed (run: specify init --here --ai claude --script sh --force)"
 fi
 
 echo ""
