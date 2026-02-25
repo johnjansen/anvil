@@ -384,7 +384,6 @@ anvil cleanup -o=24h
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
-| `anvil doctor` | Run diagnostics to check for common issues |
 | `anvil usage [--project=<path>] [--task=<name>] [--since=<date>]` | Show LLM token usage and estimated costs |
 | `anvil version` | Show version |
 
