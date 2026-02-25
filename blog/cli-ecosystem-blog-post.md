@@ -229,7 +229,9 @@ The skill handles platform detection, checks for prerequisites, skips anything a
 
 ## From Zero to Running App
 
-Here's a concrete walkthrough. Once the software factory has bootstrapped your project, you can go from an empty directory to a deployed app in five commands — each one feeding the next.
+Here's a concrete walkthrough. We'll use the ecosystem to build a homepage for this very blog post — a small act of self-reference that also happens to be a real, runnable project. Once the software factory has bootstrapped your project, six commands take you from an empty directory to a running app with an autonomous agent working through the backlog.
+
+Each step produces artifacts that the next step reads. Nothing is wired together with glue code — each tool just reads the files the previous one wrote.
 
 **1. Establish your project's constitution.**
 
@@ -238,7 +240,7 @@ Here's a concrete walkthrough. Once the software factory has bootstrapped your p
 testing standards, user experience consistency, and performance requirements
 ```
 
-This is interactive — speckit will ask about your project's priorities, coding standards, and workflow preferences. The answers become a constitution file that guides every spec, plan, and task breakdown going forward. It takes a couple of minutes, and it only happens once.
+This is the one interactive step. Speckit asks about your project's priorities, coding standards, and workflow preferences — things like "do you prefer integration tests or unit tests?", "what's your error handling philosophy?", "how important is accessibility?" The answers become a constitution file (`.specify/memory/constitution.md`) that shapes every spec, plan, and task breakdown going forward. It takes a couple of minutes, and it only happens once per project.
 
 **2. Specify the feature.**
 
@@ -247,7 +249,9 @@ This is interactive — speckit will ask about your project's priorities, coding
 https://github.com/johnjansen/anvil/blob/main/blog/cli-ecosystem-blog-post.md
 ```
 
-Speckit reads the blog post, generates a spec with user stories, acceptance criteria, and requirements, and writes it to `specs/001-blog-homepage/spec.md`. You get a structured description of what you're building before any code exists.
+Speckit fetches the blog post, analyzes what a homepage for it would need, and generates a structured specification in `specs/001-blog-homepage/spec.md`. This includes user stories ("As a reader, I want to see a summary of each tool"), acceptance criteria, non-functional requirements, and scope boundaries. It's guided by the constitution you just created — so if you said you care about accessibility, the spec will include WCAG criteria.
+
+You now have a written description of *what* you're building before any code exists. Review it, tweak it, or accept it and move on.
 
 **3. Plan the implementation.**
 
@@ -256,7 +260,7 @@ Speckit reads the blog post, generates a spec with user stories, acceptance crit
 use fastapi with jinja templates and put it on a free port
 ```
 
-This reads the spec and produces `plan.md` — architecture decisions, file structure, technology choices. Plain HTML with Tailwind from the CDN. FastAPI serving Jinja templates. No build step, no bundler, no framework overhead.
+This reads `spec.md` and produces `plan.md` — the *how*. Architecture decisions, file structure, technology choices, and the rationale for each. In this case: plain HTML with Tailwind from the CDN (no build step), FastAPI serving Jinja2 templates (lightweight Python server), bound to a free port (no conflicts with other services). The plan also identifies risks, open questions, and things explicitly out of scope.
 
 **4. Break it into tasks.**
 
@@ -264,7 +268,7 @@ This reads the spec and produces `plan.md` — architecture decisions, file stru
 /speckit.tasks
 ```
 
-Reads both the spec and plan, generates an ordered task breakdown in `tasks.md` — phased, dependency-aware, with parallelization markers. Each task is scoped to a single unit of work.
+Reads both `spec.md` and `plan.md`, then generates an ordered task breakdown in `tasks.md`. Tasks are grouped into phases (foundational setup, core implementation, polish), tagged with dependency markers, and annotated with parallelization hints — which tasks can run concurrently and which must wait. Each task is scoped to a single, reviewable unit of work.
 
 **5. Push tasks into the issue tracker.**
 
@@ -272,21 +276,25 @@ Reads both the spec and plan, generates an ordered task breakdown in `tasks.md` 
 /speckit.taskstobeads
 ```
 
-Converts every task into a beads issue with priorities, labels, and dependency chains already wired. `bd ready` now shows exactly what's unblocked. The beads-ui dashboard at `localhost:3000` lights up with a board view of the full feature.
+This is where speckit and beads meet. The `/speckit.taskstobeads` command reads `tasks.md`, creates a beads issue for each task, maps phases to priorities (Phase 1 = P0, Phase 2 = P1, etc.), applies labels, and wires up the dependency chains so that `bd ready` only surfaces work whose prerequisites are already done.
 
-At this point you have a spec, a plan, an ordered backlog, and a visual board — all generated from a one-line description. From here, you can implement manually, run `/speckit.implement` to let the AI execute the task list, or put an autonomous agent on it.
+After this runs, `bd list` shows the full backlog. `bd ready` shows just the unblocked starting points — typically the foundational tasks like "set up project structure" and "create base template." The beads-ui dashboard at `localhost:3000` lights up with a board view of the whole feature, dependencies and all.
+
+At this point you have a spec, a plan, an ordered backlog, and a visual board — all generated from a one-line description. You could implement manually, or run `/speckit.implement` to let the AI execute the task list directly. But there's a third option.
 
 **6. Put a backend engineer on it.**
 
 ```
-add a task that runs every 5 minutes to check beads for unblocked work
-and implement the next highest-priority issue. use a pre-check so it
-skips when there's nothing ready.
+add a persistent task to watch beads for unblocked work and implement
+the next highest-priority issue. use a pre-check so it skips when
+there's nothing ready.
 ```
 
-Anvil creates a scheduled task that checks beads every five minutes. If there's unblocked work, it spins up an agent that claims the top issue, implements it, and closes it — then exits. Next tick, it checks again. Leave it running and the backlog drains itself.
+This tells anvil (via its skill) to create a *persistent* task — one that runs continuously rather than on a cron schedule. The agent picks up the highest-priority unblocked issue from beads, claims it, implements the change, writes tests, commits, and closes the issue with a summary of what was done. Then it exits, and the daemon immediately restarts it for the next cycle. If the pre-check finds no unblocked work (everything is done, or remaining issues are still blocked), it skips quietly — no LLM cost, no wasted cycles.
 
-The whole thing takes about two minutes to set up. The result is a running FastAPI server with a styled homepage, every decision documented in markdown, every task tracked as a git-native issue — and an automated engineer that keeps working through the backlog while you do something else.
+This is the loop that drains the backlog: beads tracks what's ready, anvil keeps the agent running, and each closed issue potentially unblocks the next one. As foundational tasks complete, downstream work becomes available automatically.
+
+The whole setup takes about two minutes. The result is a running FastAPI server with a styled homepage, every decision documented in markdown, every task tracked as a git-native issue — and a persistent engineer that keeps working through the backlog while you do something else.
 
 ## Try It
 
