@@ -26,6 +26,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
+	"github.com/johnjansen/anvil/internal/updater"
 
 	"gopkg.in/yaml.v3"
 )
@@ -88,7 +89,6 @@ type Daemon struct {
 	done        chan struct{}
 	reload      chan struct{} // SIGHUP trigger for config reload
 	lastTick    time.Time // last minute we processed (truncated to minute)
-	lastTickMu  sync.Mutex
 	socketPath  string
 	tasks       map[string]*RunningTask
 	tasksMu     sync.RWMutex
@@ -116,12 +116,9 @@ type Daemon struct {
 	// Used by CLI to show queue status.
 	pendingTasks  map[string]string // taskKey -> skip reason
 	pendingTasksMu sync.RWMutex
-	// ticker and workerWg support hot-reload of tick_interval and max_workers
-	ticker    *time.Ticker
-	tickerMu  sync.Mutex
-	workerWg  *sync.WaitGroup
-	workerCount int
-	workerMu  sync.Mutex
+	// version is set by the caller to enable auto-update checks.
+	version         string
+	lastUpdateCheck time.Time
 }
 
 type RunningTask struct {
@@ -204,15 +201,31 @@ func (d *Daemon) Run() {
 	// Clean up PID file on shutdown
 	defer removePIDFile()
 
+	// Set up SIGHUP handler for config reload
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	go func() {
+		for range sigChan {
+			select {
+			case d.reload <- struct{}{}:
+			default:
+				// reload channel already has a pending signal
+			}
+		}
+	}()
+
 	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
 		poolSize = 1
 	}
 
-	d.ticker = time.NewTicker(d.config.TickInterval)
-	defer d.ticker.Stop()
+	ticker := time.NewTicker(d.config.TickInterval)
+	defer ticker.Stop()
 
 	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
+
+	// Check for auto-update on startup
+	go d.checkAutoUpdate()
 
 	// Start socket server
 	go d.startSocketServer()
@@ -223,18 +236,14 @@ func (d *Daemon) Run() {
 	defer signal.Stop(sighupChan)
 
 	// Start worker pool
-	d.workerWg = &sync.WaitGroup{}
-	d.workerCount = poolSize
+	var workerWg sync.WaitGroup
 	for i := 0; i < poolSize; i++ {
-		d.workerWg.Add(1)
+		workerWg.Add(1)
 		go func(id int) {
-			defer d.workerWg.Done()
+			defer workerWg.Done()
 			d.worker(id)
 		}(i)
 	}
-
-	// Detect missed scheduled runs while daemon was down
-	d.detectMissedRuns()
 
 	for {
 		select {
@@ -244,15 +253,19 @@ func (d *Daemon) Run() {
 				d.httpServer.Shutdown(context.Background())
 			}
 			close(d.workQueue) // signals workers to drain and exit
-			d.workerWg.Wait()
+			workerWg.Wait()
 			os.Remove(d.socketPath)
 			return
 		case <-sighupChan:
 			d.reloadConfig()
 		case <-d.reload:
 			d.reloadConfig()
-		case now := <-d.ticker.C:
+		case now := <-ticker.C:
 			d.tick(now)
+			// Periodic auto-update check (once per day)
+			if d.config.AutoUpdate && time.Since(d.lastUpdateCheck) >= updater.CheckInterval {
+				go d.checkAutoUpdate()
+			}
 		}
 	}
 }
@@ -269,85 +282,51 @@ func (d *Daemon) Done() <-chan struct{} {
 	return d.done
 }
 
+// SetVersion sets the current version for auto-update checks.
+func (d *Daemon) SetVersion(v string) {
+	d.version = v
+}
+
+// checkAutoUpdate checks for a newer release and applies it if auto_update is enabled.
+// On successful update, it logs the result and exits so the service manager can restart with the new binary.
+func (d *Daemon) checkAutoUpdate() {
+	if !d.config.AutoUpdate || d.version == "" || d.version == "dev" {
+		return
+	}
+
+	latest, err := updater.CheckLatest()
+	if err != nil {
+		dlog.Warn("auto-update check failed: %v", err)
+		d.lastUpdateCheck = time.Now()
+		return
+	}
+
+	d.lastUpdateCheck = time.Now()
+
+	if !updater.NeedsUpdate(d.version, latest) {
+		dlog.Info("auto-update: already up to date (%s)", d.version)
+		return
+	}
+
+	dlog.Info("auto-update: new version available %s → %s, applying...", d.version, latest)
+
+	res := updater.Apply(d.version, latest)
+	if res.Error != nil {
+		dlog.Warn("auto-update failed: %v", res.Error)
+		return
+	}
+
+	dlog.Info("auto-update: updated to %s (backup at %s), restarting...", res.LatestVersion, res.BackupPath)
+
+	// Exit cleanly so the service manager (launchd/systemd) can restart us with the new binary.
+	d.stopOnce.Do(func() {
+		close(d.stop)
+	})
+}
+
 // reloadConfig reads the config file and updates the daemon's configuration.
 // It logs what changed and applies updates to max_workers, timeout, runners, and tick_interval.
 // Running tasks are not affected - only new task dispatches use the updated config.
-// detectMissedRuns checks all recurring tasks for missed scheduled runs while
-// the daemon was down. It logs a summary for each task with missed runs and
-// dispatches a single catch-up run for tasks with catch_up: true.
-func (d *Daemon) detectMissedRuns() {
-	now := time.Now()
-	paths := loadWatchedPaths()
-
-	for _, p := range paths {
-		proj, err := project.Load(p)
-		if err != nil {
-			continue
-		}
-		projName := filepath.Base(proj.Path)
-
-		todos, err := proj.LoadTodos()
-		if err != nil {
-			continue
-		}
-
-		for _, t := range todos {
-			// Only check recurring tasks with a cron schedule
-			if t.Schedule == "" || t.IsPersistent() || t.Disabled {
-				continue
-			}
-
-			// Need an ID to look up run records
-			if t.ID == "" {
-				continue
-			}
-
-			// Read last run record
-			rec, err := project.ReadCurrentRunRecord(proj.Path, t.ID)
-			if err != nil {
-				// No prior runs — nothing to miss
-				continue
-			}
-
-			lastRun := rec.Finished
-			if lastRun.IsZero() {
-				lastRun = rec.Started
-			}
-			if lastRun.IsZero() {
-				continue
-			}
-
-			// Count missed windows
-			parsed, err := cron.Parse(t.Schedule)
-			if err != nil {
-				continue
-			}
-
-			missed, err := parsed.CountMissed(lastRun, now)
-			if err != nil || missed == 0 {
-				continue
-			}
-
-			elapsed := now.Sub(lastRun).Round(time.Second)
-			dlog.Info("missed %d scheduled runs for %s/%s (last run: %v ago, schedule: %s)", missed, projName, t.Name, elapsed, t.Schedule)
-
-			// Dispatch one catch-up run if configured
-			if t.CatchUp {
-				dlog.Info("dispatching catch-up run for %s/%s", projName, t.Name)
-				select {
-				case d.workQueue <- workItem{project: proj, todo: t}:
-					d.inFlightMu.Lock()
-					taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
-					d.inFlight[taskKey]++
-					d.inFlightMu.Unlock()
-				default:
-					dlog.Warn("work queue full, cannot dispatch catch-up for %s/%s", projName, t.Name)
-				}
-			}
-		}
-	}
-}
-
 func (d *Daemon) reloadConfig() {
 	newConfig, err := config.Load()
 	if err != nil {
@@ -357,24 +336,11 @@ func (d *Daemon) reloadConfig() {
 
 	var changes []string
 
-	// max_workers: grow the pool if increased (excess workers drain naturally when pool shrinks)
+	// max_workers: can grow or shrink
 	if newConfig.MaxWorkers != d.config.MaxWorkers {
 		oldVal := d.config.MaxWorkers
 		d.config.MaxWorkers = newConfig.MaxWorkers
 		changes = append(changes, fmt.Sprintf("max_workers %d->%d", oldVal, newConfig.MaxWorkers))
-		// Spawn additional workers if pool grew
-		if newConfig.MaxWorkers > oldVal {
-			d.workerMu.Lock()
-			for i := d.workerCount; i < newConfig.MaxWorkers; i++ {
-				d.workerWg.Add(1)
-				go func(id int) {
-					defer d.workerWg.Done()
-					d.worker(id)
-				}(i)
-			}
-			d.workerCount = newConfig.MaxWorkers
-			d.workerMu.Unlock()
-		}
 	}
 
 	// timeout: apply to new tasks
@@ -384,35 +350,21 @@ func (d *Daemon) reloadConfig() {
 		changes = append(changes, fmt.Sprintf("timeout %v->%v", oldVal, newConfig.Timeout))
 	}
 
-	// runners: rebuild runner instance for new tasks
+	// runners: apply to new tasks
 	if len(newConfig.Runners) > 0 {
 		oldRunners := strings.Join(d.config.Runners, ", ")
 		newRunners := strings.Join(newConfig.Runners, ", ")
 		if oldRunners != newRunners {
 			d.config.Runners = newConfig.Runners
-			d.runner = runner.New(newConfig.Runners, d.config.Timeout)
 			changes = append(changes, fmt.Sprintf("runners %s->%s", oldRunners, newRunners))
 		}
 	}
 
-	// tick_interval: reset the ticker to the new interval
+	// tick_interval: will be picked up on next tick
 	if newConfig.TickInterval != d.config.TickInterval {
 		oldVal := d.config.TickInterval
 		d.config.TickInterval = newConfig.TickInterval
-		d.tickerMu.Lock()
-		d.ticker.Reset(newConfig.TickInterval)
-		d.tickerMu.Unlock()
 		changes = append(changes, fmt.Sprintf("tick_interval %v->%v", oldVal, newConfig.TickInterval))
-	}
-
-	// token rates: apply to new runs
-	if newConfig.InputTokenRate != d.config.InputTokenRate {
-		d.config.InputTokenRate = newConfig.InputTokenRate
-		changes = append(changes, "input_token_rate updated")
-	}
-	if newConfig.OutputTokenRate != d.config.OutputTokenRate {
-		d.config.OutputTokenRate = newConfig.OutputTokenRate
-		changes = append(changes, "output_token_rate updated")
 	}
 
 	if len(changes) > 0 {
@@ -1228,11 +1180,6 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) tick(now time.Time) {
-	// Run retention pruning if configured (once per minute)
-	if d.config.Retention.MaxAge > 0 || d.config.Retention.MaxRuns > 0 {
-		d.pruneOldData(now)
-	}
-
 	thisMinute := now.Truncate(time.Minute)
 
 	// Only evaluate cron schedules once per minute
@@ -1563,112 +1510,6 @@ func newRunID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-// pruneOldData removes old log and run files based on retention policy.
-// It runs once per tick to keep disk usage bounded.
-func (d *Daemon) pruneOldData(now time.Time) {
-	paths := loadWatchedPaths()
-	if len(paths) == 0 {
-		return
-	}
-
-	// Only prune on cron ticks (once per minute) to avoid overhead
-	thisMinute := now.Truncate(time.Minute)
-	if !thisMinute.Equal(d.lastTick) {
-		return
-	}
-
-	for _, projPath := range paths {
-		d.pruneProject(projPath)
-	}
-}
-
-func (d *Daemon) pruneProject(projPath string) {
-	anvilDir := filepath.Join(projPath, ".anvil")
-
-	// Prune logs
-	logsDir := filepath.Join(anvilDir, "logs")
-	if _, err := os.Stat(logsDir); err == nil {
-		d.pruneDir(logsDir, "log")
-	}
-
-	// Prune runs
-	runsDir := filepath.Join(anvilDir, "runs")
-	if _, err := os.Stat(runsDir); err == nil {
-		d.pruneDir(runsDir, "run")
-	}
-}
-
-func (d *Daemon) pruneDir(dir, kind string) {
-	taskDirs, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-
-	for _, taskDir := range taskDirs {
-		if !taskDir.IsDir() {
-			continue
-		}
-		taskPath := filepath.Join(dir, taskDir.Name())
-		d.pruneTaskDir(taskPath, kind)
-	}
-}
-
-func (d *Daemon) pruneTaskDir(taskPath, kind string) {
-	entries, err := os.ReadDir(taskPath)
-	if err != nil {
-		return
-	}
-
-	// Collect files with their modification times
-	type fileInfo struct {
-		path    string
-		modTime time.Time
-	}
-	var files []fileInfo
-
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		files = append(files, fileInfo{entry.Name(), info.ModTime()})
-	}
-
-	// Sort by modification time (oldest first)
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].modTime.Before(files[j].modTime)
-	})
-
-	var toDelete []string
-	cutoff := time.Now().Add(-d.config.Retention.MaxAge)
-
-	// Delete by age
-	if d.config.Retention.MaxAge > 0 {
-		for _, f := range files {
-			if f.modTime.Before(cutoff) {
-				toDelete = append(toDelete, f.path)
-			}
-		}
-	}
-
-	// Delete by count (keep MaxRuns most recent)
-	if d.config.Retention.MaxRuns > 0 && len(files) > d.config.Retention.MaxRuns {
-		keep := len(files) - d.config.Retention.MaxRuns
-		// files are sorted oldest first, so delete first 'keep' entries
-		for i := 0; i < keep; i++ {
-			toDelete = append(toDelete, files[i].path)
-		}
-	}
-
-	// Actually delete the files
-	for _, name := range toDelete {
-		path := filepath.Join(taskPath, name)
-		if err := os.Remove(path); err != nil {
-			dlog.Warn("failed to prune %s: %v", path, err)
-		}
-	}
 }
 
 func loadWatchedPaths() []string {

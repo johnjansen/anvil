@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -22,8 +20,8 @@ import (
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
-	"github.com/johnjansen/anvil/internal/diagnostic"
 	"github.com/johnjansen/anvil/internal/project"
+	"github.com/johnjansen/anvil/internal/updater"
 	"github.com/johnjansen/anvil/tools"
 
 	"gopkg.in/yaml.v3"
@@ -91,8 +89,6 @@ func main() {
 		usageCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
-	case "doctor":
-		doctorCmd()
 	case "reload":
 		reloadCmd(os.Args[2:])
 	case "version", "-v", "--version":
@@ -252,6 +248,7 @@ func serveCmd() {
 	}
 
 	d := daemon.New(cfg)
+	d.SetVersion(version)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -379,6 +376,7 @@ func runDaemonChild() {
 	}
 
 	d := daemon.New(cfg)
+	d.SetVersion(version)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -472,49 +470,6 @@ func unwatchCmd(args []string) {
 	}
 
 	fmt.Printf("unwatched %s\n", abs)
-}
-
-func doctorCmd() {
-	results := diagnostic.All()
-
-	if len(results) == 0 {
-		fmt.Println("All checks passed!")
-		return
-	}
-
-	fmt.Println("Anvil Diagnostics")
-	fmt.Println(strings.Repeat("=", 60))
-
-	var passes, warnings, failures int
-
-	for _, r := range results {
-		switch r.Status {
-		case "pass":
-			fmt.Printf("[PASS] %s\n", r.Name)
-			passes++
-		case "warn":
-			fmt.Printf("[WARN] %s\n", r.Name)
-			fmt.Printf("       %s\n", r.Message)
-			if r.Fix != "" {
-				fmt.Printf("       Fix: %s\n", r.Fix)
-			}
-			warnings++
-		case "fail":
-			fmt.Printf("[FAIL] %s\n", r.Name)
-			fmt.Printf("       %s\n", r.Message)
-			if r.Fix != "" {
-				fmt.Printf("       Fix: %s\n", r.Fix)
-			}
-			failures++
-		}
-	}
-
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Printf("Summary: %d pass, %d warn, %d fail\n", passes, warnings, failures)
-
-	if failures > 0 {
-		os.Exit(1)
-	}
 }
 
 func statusCmd() {
@@ -1239,15 +1194,6 @@ func taskGetCmd(args []string) {
 	fmt.Printf("File:     %s\n", todo.Path)
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
-	// Show next run time for scheduled tasks
-	if todo.Schedule != "" {
-		if p, err := cron.Parse(todo.Schedule); err == nil {
-			if next, err := p.Next(time.Now()); err == nil {
-				until := time.Until(next).Round(time.Minute)
-				fmt.Printf("Next:     %s (%s from now)\n", next.Format("Mon 15:04"), until)
-			}
-		}
-	}
 	fmt.Printf("Priority: %d\n", todo.Priority)
 	if todo.Disabled {
 		fmt.Printf("Disabled: true\n")
@@ -2956,38 +2902,13 @@ func updateCmd(args []string) {
 		}
 	}
 
-	// Fetch latest release from GitHub
-	resp, err := http.Get("https://api.github.com/repos/johnjansen/anvil/releases/latest")
+	latest, err := updater.CheckLatest()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "update check failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "update check failed: HTTP %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to parse release info: %v\n", err)
-		os.Exit(1)
-	}
-
-	latest := release.TagName
-	if latest == "" {
-		fmt.Fprintf(os.Stderr, "no releases found\n")
-		os.Exit(1)
-	}
-
-	// Compare versions (strip leading 'v' for comparison)
-	normalizedCurrent := strings.TrimPrefix(version, "v")
-	normalizedLatest := strings.TrimPrefix(latest, "v")
-
-	if normalizedCurrent == normalizedLatest {
+	if !updater.NeedsUpdate(version, latest) {
 		fmt.Printf("already up to date (%s)\n", version)
 		return
 	}
@@ -2999,89 +2920,16 @@ func updateCmd(args []string) {
 
 	fmt.Printf("updating: %s → %s\n", version, latest)
 
-	// Build download URL matching install.sh conventions
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-	binaryURL := fmt.Sprintf("https://github.com/johnjansen/anvil/releases/download/%s/anvil-%s-%s", latest, goos, goarch)
-
-	// Find the path to the running binary
-	execPath, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to determine executable path: %v\n", err)
-		os.Exit(1)
-	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve executable path: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Download new binary to a temp file in the same directory for atomic rename
-	fmt.Printf("downloading %s...\n", binaryURL)
-	dlResp, err := http.Get(binaryURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "download failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer dlResp.Body.Close()
-
-	if dlResp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "download failed: HTTP %d from %s\n", dlResp.StatusCode, binaryURL)
-		os.Exit(1)
-	}
-
-	execDir := filepath.Dir(execPath)
-	tmpFile, err := os.CreateTemp(execDir, ".anvil-update-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create temp file (permission denied?): %v\n", err)
-		fmt.Fprintf(os.Stderr, "try: sudo anvil update\n")
-		os.Exit(1)
-	}
-	tmpPath := tmpFile.Name()
-
-	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "download failed: %v\n", err)
-		os.Exit(1)
-	}
-	tmpFile.Close()
-
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "failed to set permissions: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Atomically replace the binary
-	if err := os.Rename(tmpPath, execPath); err != nil {
-		os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "failed to replace binary: %v\n", err)
-		fmt.Fprintf(os.Stderr, "try: sudo anvil update\n")
-		os.Exit(1)
-	}
-
-	fmt.Printf("updated to %s\n", latest)
-
-	// Refresh skills in all watched directories
-	watched, err := loadAllWatched()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to load watched directories: %v\n", err)
-	} else if len(watched) > 0 {
-		fmt.Printf("refreshing skills in %d watched director%s...\n", len(watched), map[bool]string{true: "ies", false: "y"}[len(watched) > 1])
-		for _, w := range watched {
-			// Check if the directory still exists
-			if _, err := os.Stat(w.Path); os.IsNotExist(err) {
-				fmt.Printf("  skipping %s: directory no longer exists\n", w.Path)
-				continue
-			}
-			if err := project.Init(w.Path, tools.FS); err != nil {
-				fmt.Printf("  failed to refresh %s: %v\n", w.Path, err)
-				continue
-			}
-			fmt.Printf("  refreshed %s\n", w.Path)
+	res := updater.Apply(version, latest)
+	if res.Error != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", res.Error)
+		if strings.Contains(res.Error.Error(), "temp file") || strings.Contains(res.Error.Error(), "replace binary") {
+			fmt.Fprintf(os.Stderr, "try: sudo anvil update\n")
 		}
+		os.Exit(1)
 	}
+
+	fmt.Printf("updated to %s (backup at %s)\n", res.LatestVersion, res.BackupPath)
 }
 
 func usageCmd(args []string) {

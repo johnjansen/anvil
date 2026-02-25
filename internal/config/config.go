@@ -10,22 +10,16 @@ import (
 )
 
 type Config struct {
-	TickInterval time.Duration   `yaml:"tick_interval"`
-	Runner       string         `yaml:"runner"`
-	Runners      []string       `yaml:"runners"`
-	Timeout      time.Duration  `yaml:"timeout"`
-	MaxWorkers   int            `yaml:"max_workers"`
-	MaxTodos     int            `yaml:"max_todos"` // deprecated: use max_workers
-	Hooks           HooksConfig     `yaml:"hooks"`
-	Retention       RetentionConfig `yaml:"retention"`
-	InputTokenRate  float64         `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
-	OutputTokenRate float64         `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
-}
-
-// RetentionConfig defines data retention policies for logs and runs.
-type RetentionConfig struct {
-	MaxAge  time.Duration `yaml:"max_age"`  // delete logs/runs older than this
-	MaxRuns int           `yaml:"max_runs"` // keep at most this many runs per task
+	TickInterval    time.Duration `yaml:"tick_interval"`
+	Runner          string        `yaml:"runner"`
+	Runners         []string      `yaml:"runners"`
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxWorkers      int           `yaml:"max_workers"`
+	MaxTodos        int           `yaml:"max_todos"` // deprecated: use max_workers
+	Hooks           HooksConfig   `yaml:"hooks"`
+	InputTokenRate  float64       `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
+	OutputTokenRate float64       `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
+	AutoUpdate      bool          `yaml:"auto_update"`       // opt-in: auto-update binary on daemon startup
 }
 
 // HooksConfig defines global lifecycle hooks that run for all tasks.
