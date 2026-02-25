@@ -227,6 +227,48 @@ Claude: I'll set up the full development ecosystem for my-new-project.
 
 The skill handles platform detection, checks for prerequisites, skips anything already installed, and gives you a working setup in about thirty seconds. It's the fastest path from an empty directory to a fully-wired spec-to-automation pipeline.
 
+## From Zero to Running App
+
+Here's a concrete walkthrough. Once the software factory has bootstrapped your project, you can go from an empty directory to a deployed app in four commands — each one feeding the next.
+
+**1. Specify the feature.**
+
+```
+/speckit.specify a simple html homepage for our blog post at
+https://github.com/johnjansen/anvil/blob/main/blog/cli-ecosystem-blog-post.md
+```
+
+Speckit reads the blog post, generates a spec with user stories, acceptance criteria, and requirements, and writes it to `specs/001-blog-homepage/spec.md`. You get a structured description of what you're building before any code exists.
+
+**2. Plan the implementation.**
+
+```
+/speckit.plan use plain html and tailwind css from the cdn,
+use fastapi with jinja templates and put it on a free port
+```
+
+This reads the spec and produces `plan.md` — architecture decisions, file structure, technology choices. Plain HTML with Tailwind from the CDN. FastAPI serving Jinja templates. No build step, no bundler, no framework overhead.
+
+**3. Break it into tasks.**
+
+```
+/speckit.tasks
+```
+
+Reads both the spec and plan, generates an ordered task breakdown in `tasks.md` — phased, dependency-aware, with parallelization markers. Each task is scoped to a single unit of work.
+
+**4. Push tasks into the issue tracker.**
+
+```
+/speckit.taskstobeads
+```
+
+Converts every task into a beads issue with priorities, labels, and dependency chains already wired. `bd ready` now shows exactly what's unblocked. The beads-ui dashboard at `localhost:3000` lights up with a board view of the full feature.
+
+At this point you have a spec, a plan, an ordered backlog, and a visual board — all generated from a one-line description. From here, you can implement manually, run `/speckit.implement` to let the AI execute the task list, or use the `/backend-engineer` skill to have an agent pull issues off the board one at a time.
+
+The whole thing takes about two minutes. The result is a running FastAPI server with a styled homepage, every decision documented in markdown, every task tracked as a git-native issue.
+
 ## Try It
 
 All three are open source:
