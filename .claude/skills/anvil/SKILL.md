@@ -607,6 +607,7 @@ View the daemon's log output. Useful for debugging daemon issues or monitoring d
 anvil cleanup                         # show retention policy config
 anvil cleanup --older-than=3d         # delete logs older than 3 days
 anvil cleanup --older-than=3d --dry-run  # preview what would be deleted
+anvil cleanup --older-than=3d -n      # shorthand for --dry-run
 anvil cleanup -o=24h                  # short form
 ```
 
