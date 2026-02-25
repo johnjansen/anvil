@@ -186,6 +186,37 @@ If recurring chores keep slipping — PR reviews, triage, doc checks — anvil p
 
 Once one tool clicks, the others plug in naturally. Speckit's output feeds beads issues. Beads surfaces work anvil can automate. But none of that's required. Use what solves your problem today.
 
+## Or Start With Everything
+
+If you'd rather skip the incremental approach and bootstrap the full ecosystem at once, there's a skill for that.
+
+The [anvil-software-factory](anvil-software-factory.md) skill installs all three tools, initializes a project directory, starts the anvil daemon, and walks you through onboarding — all from inside Claude. Drop the skill file into your project's `.claude/skills/` directory (or anywhere Claude can find it) and invoke it:
+
+```
+You:    /anvil-software-factory my-new-project
+
+Claude: I'll set up the full development ecosystem for my-new-project.
+
+        Installing beads... ✓ (bd version 0.55.4)
+        Installing anvil... ✓ (anvil v0.24.1)
+        Installing speckit commands... ✓ (9 slash commands)
+
+        Initializing project...
+        > git init
+        > bd init
+        > anvil init
+        > anvil watch -d
+
+        Setup complete. You now have:
+        - /speckit.specify to start planning features
+        - bd create to track issues
+        - anvil add to schedule automated tasks
+
+        Run /speckit.specify "describe your first feature" to get started.
+```
+
+The skill handles platform detection, checks for prerequisites, skips anything already installed, and gives you a working setup in about thirty seconds. It's the fastest path from an empty directory to a fully-wired spec-to-automation pipeline.
+
 ## Try It
 
 All three are open source:
