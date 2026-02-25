@@ -298,3 +298,85 @@ func TestLoadTodos_ExplicitZeroOverridesDefault(t *testing.T) {
 		t.Errorf("expected retry=0 (explicit override of default), got %d", todo.Retry)
 	}
 }
+
+<<<<<<< HEAD
+func TestLoadTodos_SkipGlobalHooksFromFrontmatter(t *testing.T) {
+=======
+func TestLoadTodos_CatchUpFromFrontmatter(t *testing.T) {
+>>>>>>> origin/main
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+<<<<<<< HEAD
+	// Task with skip_global_hooks: true
+	taskContent := "---\nid: \"test-skip-hooks\"\nschedule: \"*/5 * * * *\"\nskip_global_hooks: true\n---\nSilent task\n"
+	os.WriteFile(filepath.Join(todosDir, "silent.md"), []byte(taskContent), 0644)
+=======
+	taskContent := "---\nid: \"test-catchup\"\nschedule: \"*/30 * * * *\"\ncatch_up: true\n---\nImportant triage task\n"
+	os.WriteFile(filepath.Join(todosDir, "triage.md"), []byte(taskContent), 0644)
+>>>>>>> origin/main
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+<<<<<<< HEAD
+	if !todos[0].SkipGlobalHooks {
+		t.Error("expected skip_global_hooks=true")
+	}
+}
+
+func TestLoadTodos_SkipGlobalHooksDefaultsFalse(t *testing.T) {
+=======
+	if !todos[0].CatchUp {
+		t.Error("expected catch_up=true")
+	}
+}
+
+func TestLoadTodos_CatchUpDefaultsFalse(t *testing.T) {
+>>>>>>> origin/main
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+<<<<<<< HEAD
+	taskContent := "---\nid: \"test-hooks-default\"\nschedule: \"*/5 * * * *\"\n---\nNormal task\n"
+=======
+	taskContent := "---\nid: \"test-no-catchup\"\nschedule: \"*/30 * * * *\"\n---\nNormal task\n"
+>>>>>>> origin/main
+	os.WriteFile(filepath.Join(todosDir, "normal.md"), []byte(taskContent), 0644)
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+<<<<<<< HEAD
+	if todos[0].SkipGlobalHooks {
+		t.Error("expected skip_global_hooks=false by default")
+=======
+	if todos[0].CatchUp {
+		t.Error("expected catch_up=false by default")
+>>>>>>> origin/main
+	}
+}
