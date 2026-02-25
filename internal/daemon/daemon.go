@@ -120,6 +120,10 @@ type Daemon struct {
 	// Stopped tasks are not re-dispatched until started again via /start.
 	stoppedTasks map[string]bool // taskID -> true
 	stoppedMu    sync.Mutex
+	// persistentBudgetUsed tracks cumulative runtime per persistent task for budget enforcement.
+	// Resets on daemon restart. Key is taskKey (project/taskName).
+	persistentBudgetUsed   map[string]time.Duration
+	persistentBudgetUsedMu sync.Mutex
 }
 
 type RunningTask struct {
@@ -184,7 +188,8 @@ func New(cfg *config.Config) *Daemon {
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
-		stoppedTasks:  make(map[string]bool),
+		stoppedTasks:         make(map[string]bool),
+		persistentBudgetUsed: make(map[string]time.Duration),
 	}
 }
 
@@ -662,6 +667,20 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.persistentFailuresMu.Lock()
 			delete(d.persistentFailures, taskKey)
 			d.persistentFailuresMu.Unlock()
+		}
+	}
+
+	// For persistent tasks with a budget, accumulate runtime
+	if t.IsPersistent() && t.PersistentBudget > 0 {
+		d.persistentBudgetUsedMu.Lock()
+		d.persistentBudgetUsed[taskKey] += elapsed
+		used := d.persistentBudgetUsed[taskKey]
+		d.persistentBudgetUsedMu.Unlock()
+		if used >= t.PersistentBudget {
+			dlog.Warn("persistent task %s budget exhausted (%v of %v) — task will be paused", t.Name, used.Round(time.Second), t.PersistentBudget)
+		} else {
+			remaining := t.PersistentBudget - used
+			dlog.Info("persistent task %s budget: %v used, %v remaining", t.Name, used.Round(time.Second), remaining.Round(time.Second))
 		}
 	}
 
@@ -1483,6 +1502,26 @@ func (d *Daemon) tick(now time.Time) {
 				continue
 			}
 			d.persistentCooldownsMu.Unlock()
+		}
+
+		// Skip dispatch if persistent task has exceeded its budget
+		if pt.todo.IsPersistent() && pt.todo.PersistentBudget > 0 {
+			d.persistentBudgetUsedMu.Lock()
+			used := d.persistentBudgetUsed[taskKey]
+			d.persistentBudgetUsedMu.Unlock()
+			if used >= pt.todo.PersistentBudget {
+				dlog.Warn("persistent task %s/%s budget exceeded (%v used of %v) — paused", projName, pt.todo.Name, used.Round(time.Second), pt.todo.PersistentBudget)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "budget exceeded"
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
 		}
 
 		// Starvation prevention: if a persistent task has been waiting too long,
