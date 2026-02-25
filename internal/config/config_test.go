@@ -1,40 +1,8 @@
 package config
 
 import (
-<<<<<<< HEAD
-	"testing"
-	"time"
-)
-
-func TestParseRetentionAge(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected time.Duration
-		wantErr  bool
-	}{
-		{"", 0, false},
-		{"7d", 7 * 24 * time.Hour, false},
-		{"30d", 30 * 24 * time.Hour, false},
-		{"1d", 24 * time.Hour, false},
-		{"24h", 24 * time.Hour, false},
-		{"2h30m", 2*time.Hour + 30*time.Minute, false},
-		{"bad", 0, true},
-		{"xd", 0, true},
-	}
-
-	for _, tt := range tests {
-		d, err := ParseRetentionAge(tt.input)
-		if tt.wantErr && err == nil {
-			t.Errorf("ParseRetentionAge(%q) expected error, got nil", tt.input)
-		}
-		if !tt.wantErr && err != nil {
-			t.Errorf("ParseRetentionAge(%q) unexpected error: %v", tt.input, err)
-		}
-		if d != tt.expected {
-			t.Errorf("ParseRetentionAge(%q) = %v, want %v", tt.input, d, tt.expected)
-		}
-=======
-<<<<<<< HEAD
+	"os"
+	"path/filepath"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -74,11 +42,8 @@ func TestHooksConfig_Empty(t *testing.T) {
 	}
 	if cfg.Hooks.OnFailure != "" {
 		t.Errorf("expected empty on_failure, got %q", cfg.Hooks.OnFailure)
-=======
-	"os"
-	"path/filepath"
-	"testing"
-)
+	}
+}
 
 func TestLoadAutoUpdate(t *testing.T) {
 	dir := t.TempDir()
@@ -122,7 +87,5 @@ func TestLoadAutoUpdateDefaultFalse(t *testing.T) {
 
 	if cfg.AutoUpdate {
 		t.Error("expected AutoUpdate to default to false")
->>>>>>> origin/main
->>>>>>> origin/main
 	}
 }

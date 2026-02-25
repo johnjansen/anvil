@@ -1059,7 +1059,7 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to load project: %v", err)
 	}
 
-	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions)
+	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "")
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}

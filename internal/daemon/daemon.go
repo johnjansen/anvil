@@ -373,14 +373,30 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 
 	// Use task-specific timeout if set, otherwise fall back to global config
 	// For persistent tasks, use PersistentMaxRuntime if set (forces cycle after max runtime)
+	// Default persistent max runtime is 4 hours to prevent unbounded context growth
 	timeout := d.config.Timeout
-	if t.IsPersistent() && t.PersistentMaxRuntime > 0 {
-		timeout = t.PersistentMaxRuntime
+	if t.IsPersistent() {
+		if t.PersistentMaxRuntime > 0 {
+			timeout = t.PersistentMaxRuntime
+		} else {
+			timeout = 4 * time.Hour // default: force-cycle every 4 hours
+		}
 	} else if t.Timeout > 0 {
 		timeout = t.Timeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	// For persistent tasks, log a warning at 80% of max runtime to signal upcoming cycle
+	if t.IsPersistent() {
+		warningAt := time.Duration(float64(timeout) * 0.8)
+		taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+		warningTimer := time.AfterFunc(warningAt, func() {
+			remaining := timeout - warningAt
+			dlog.Warn("persistent task %s approaching max runtime — cycling in %v", taskLabel, remaining.Round(time.Second))
+		})
+		defer warningTimer.Stop()
+	}
 
 	runID := newRunID()
 	startTime := time.Now()
@@ -612,7 +628,20 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	}
 
 	elapsed := time.Since(startTime)
-	if err != nil {
+	// Detect force-cycle: persistent task hit its max runtime (context deadline exceeded)
+	forceCycled := t.IsPersistent() && err != nil && ctx.Err() == context.DeadlineExceeded
+	if forceCycled {
+		// Force-cycle is a normal lifecycle event, not a failure.
+		// Log it clearly and skip failure backoff/runner cooldown.
+		dlog.Info("persistent task %s force-cycled after %v — will restart on next tick", t.Name, elapsed.Round(time.Second))
+		// Clear failure count since force-cycle is not a real failure
+		d.persistentFailuresMu.Lock()
+		delete(d.persistentFailures, taskKey)
+		d.persistentFailuresMu.Unlock()
+		// Mark success in run record since this is expected behavior
+		runRecord.Success = true
+		runRecord.Error = ""
+	} else if err != nil {
 		dlog.WorkerFail(workerID, projName, t.Name, err)
 		// If the runner failed, set a 5-minute cooldown to avoid retrying it immediately
 		if usedRunnerIdx >= 0 {
