@@ -124,11 +124,11 @@ specify init --here --ai claude --script sh --force
 Install the **taskstobeads** bridge skill (converts speckit task breakdowns into beads issues) and the **backend-engineer** skill (an autonomous agent that pulls the next highest-priority issue from beads and implements it):
 
 ```bash
-# taskstobeads — bridges speckit tasks into beads issues
-mkdir -p .claude/skills/taskstobeads
+# taskstobeads — bridges speckit tasks into beads issues (installed as a command so it's available as /speckit.taskstobeads)
+mkdir -p .claude/commands
 curl -fsSL \
   https://raw.githubusercontent.com/johnjansen/anvil/main/blog/speckit-taskstobeads-skill.md \
-  -o .claude/skills/taskstobeads/SKILL.md
+  -o .claude/commands/speckit.taskstobeads.md
 
 # backend-engineer — picks up and implements the next unblocked issue
 mkdir -p .claude/skills/backend-engineer
@@ -199,17 +199,6 @@ bdui start --open
 
 This starts the UI server and opens `http://127.0.0.1:3000` in the default browser. The server runs in the background — use `bdui stop` to shut it down.
 
-### Initialize Speckit Constitution
-
-Once speckit is scaffolded and all tools are initialized, establish the project's development principles by running the constitution skill. This creates a constitution file that guides how speckit generates specs, plans, and tasks for this project.
-
-> [!IMPORTANT]
-> After all installations and initializations are complete, tell the user you are about to bootstrap their project constitution and then run:
->
-> `/speckit.constitution Create principles focused on code quality, testing standards, user experience consistency, and performance requirements`
->
-> This step is interactive — speckit will ask the user about their project's priorities, coding standards, and workflow preferences. Do not skip this step.
-
 ## Step 5: Verify the Setup
 
 Run a quick health check on everything:
@@ -227,11 +216,7 @@ echo "=== Speckit ==="
 if [ -d .specify ] && ls .claude/commands/speckit.* &>/dev/null; then
   echo "OK — speckit commands installed"
   ls .claude/commands/speckit.* | sed 's|.*/||; s|\.md$||'
-  if [ -f .specify/memory/constitution.md ]; then
-    echo "Constitution: created"
-  else
-    echo "Constitution: not yet created (run /speckit.constitution)"
-  fi
+  echo "Run /speckit.constitution to establish project principles before your first feature"
 else
   echo "Not installed (run: specify init --here --ai claude --script sh --force)"
 fi
@@ -241,8 +226,16 @@ echo "=== Beads UI ==="
 command -v bdui &>/dev/null && echo "OK — $(bdui --version 2>&1)" || echo "Not installed (run: npm install -g beads-ui)"
 
 echo ""
+echo "=== Additional Commands ==="
+if [ -f ".claude/commands/speckit.taskstobeads.md" ]; then
+  echo "OK — /speckit.taskstobeads"
+else
+  echo "MISSING — speckit.taskstobeads (bridge from speckit tasks to beads issues)"
+fi
+
+echo ""
 echo "=== Skills ==="
-for skill in taskstobeads backend-engineer software-factory; do
+for skill in backend-engineer software-factory; do
   if [ -f ".claude/skills/$skill/SKILL.md" ]; then
     echo "OK — $skill"
   else
@@ -261,6 +254,9 @@ Show the user what they can do now:
 
 ```
 Setup complete. Here's what you have:
+
+FIRST STEP
+  /speckit.constitution                      → establish project principles (do this first!)
 
 PLANNING (speckit)
   /speckit.specify "describe your feature"  → generates spec.md

@@ -229,9 +229,18 @@ The skill handles platform detection, checks for prerequisites, skips anything a
 
 ## From Zero to Running App
 
-Here's a concrete walkthrough. Once the software factory has bootstrapped your project, you can go from an empty directory to a deployed app in four commands — each one feeding the next.
+Here's a concrete walkthrough. Once the software factory has bootstrapped your project, you can go from an empty directory to a deployed app in five commands — each one feeding the next.
 
-**1. Specify the feature.**
+**1. Establish your project's constitution.**
+
+```
+/speckit.constitution Create principles focused on code quality,
+testing standards, user experience consistency, and performance requirements
+```
+
+This is interactive — speckit will ask about your project's priorities, coding standards, and workflow preferences. The answers become a constitution file that guides every spec, plan, and task breakdown going forward. It takes a couple of minutes, and it only happens once.
+
+**2. Specify the feature.**
 
 ```
 /speckit.specify a simple html homepage for our blog post at
@@ -240,7 +249,7 @@ https://github.com/johnjansen/anvil/blob/main/blog/cli-ecosystem-blog-post.md
 
 Speckit reads the blog post, generates a spec with user stories, acceptance criteria, and requirements, and writes it to `specs/001-blog-homepage/spec.md`. You get a structured description of what you're building before any code exists.
 
-**2. Plan the implementation.**
+**3. Plan the implementation.**
 
 ```
 /speckit.plan use plain html and tailwind css from the cdn,
@@ -249,7 +258,7 @@ use fastapi with jinja templates and put it on a free port
 
 This reads the spec and produces `plan.md` — architecture decisions, file structure, technology choices. Plain HTML with Tailwind from the CDN. FastAPI serving Jinja templates. No build step, no bundler, no framework overhead.
 
-**3. Break it into tasks.**
+**4. Break it into tasks.**
 
 ```
 /speckit.tasks
@@ -257,7 +266,7 @@ This reads the spec and produces `plan.md` — architecture decisions, file stru
 
 Reads both the spec and plan, generates an ordered task breakdown in `tasks.md` — phased, dependency-aware, with parallelization markers. Each task is scoped to a single unit of work.
 
-**4. Push tasks into the issue tracker.**
+**5. Push tasks into the issue tracker.**
 
 ```
 /speckit.taskstobeads
