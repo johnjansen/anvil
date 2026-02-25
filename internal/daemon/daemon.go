@@ -1493,6 +1493,25 @@ func (d *Daemon) tick(now time.Time) {
 	}
 
 	dlog.TickSummary(now, len(projects), totalTodos, totalMatched, dispatched)
+
+	// Run retention pruning once per minute when a policy is configured.
+	if cronTick && (d.config.Retention.MaxAge != "" || d.config.Retention.MaxRuns > 0) {
+		maxAge, _ := config.ParseRetentionAge(d.config.Retention.MaxAge)
+		opts := project.PruneOptions{
+			MaxAge:  maxAge,
+			MaxRuns: d.config.Retention.MaxRuns,
+			Now:     now,
+		}
+		for _, proj := range projects {
+			result := project.PruneProject(proj.Path, opts)
+			if result.LogsDeleted > 0 || result.RunsDeleted > 0 {
+				dlog.Info("retention: pruned %d logs, %d runs in %s", result.LogsDeleted, result.RunsDeleted, filepath.Base(proj.Path))
+			}
+			for _, err := range result.Errors {
+				dlog.Warn("retention: %v", err)
+			}
+		}
+	}
 }
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink pointing to url.
@@ -1524,6 +1543,11 @@ func newRunID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// WatchedPaths returns the list of project paths currently being watched.
+func WatchedPaths() []string {
+	return loadWatchedPaths()
 }
 
 func loadWatchedPaths() []string {
