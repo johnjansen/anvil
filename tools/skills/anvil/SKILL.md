@@ -329,6 +329,29 @@ Hooks run in the project directory with a 60-second timeout. Environment variabl
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
+## Per-task runner override
+
+Override the global runner chain for a specific task:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+runner: "claude -p 'You are a specialized assistant'"
+---
+Run this task with a different runner command than the global default.
+```
+
+The task-level runner is used instead of the global `runners` list for this task only.
+
+You can also set a default runner at the project level:
+
+```yaml
+# .anvil/config.yaml (project-level)
+defaults:
+  runner: "claude -p 'You are a task runner'"
+```
+
 ## Runtime Status Reporting
 
 Tasks can report their current status to the daemon by printing a special line to stdout:
@@ -366,9 +389,15 @@ runners:
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 10s  # how often to check for work
+input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
+output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
+auto_update: false       # opt-in: auto-update binary on daemon startup
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
+retention:
+  max_age: 7d      # delete logs older than 7 days
+  max_runs: 50     # keep only last 50 runs per task
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
