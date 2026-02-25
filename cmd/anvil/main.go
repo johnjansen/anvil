@@ -149,6 +149,10 @@ Task subcommands:
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
   queue                     Show daemon queue status and skip reasons
+  pause <name>              Pause a task (sets disabled: true)
+  resume <name>             Resume a paused task (sets disabled: false)
+  edit <name>                Edit task schedule or priority
+  timeout [name]            Show task timeout progress (--all for all tasks)
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -613,7 +617,7 @@ func cleanupCmd(args []string) {
 		fmt.Println("    max_runs: 50")
 		fmt.Println("")
 		fmt.Println("Or use --older-than to prune manually:")
-		fmt.Println("  anvil cleanup --older-than 3d")
+		fmt.Println("  anvil cleanup --older-than=3d")
 		return
 	}
 
