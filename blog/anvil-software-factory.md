@@ -28,10 +28,11 @@ Before running, verify the basics are in place:
 which git || echo "MISSING: git"
 which brew || echo "MISSING: homebrew (https://brew.sh)"
 which claude || echo "MISSING: claude CLI (npm install -g @anthropic-ai/claude-code)"
+which uv || echo "MISSING: uv (curl -LsSf https://astral.sh/uv/install.sh | sh)"
 ```
 
 > [!CAUTION]
-> If `git`, `brew`, or `claude` are missing, stop and help the user install them first. Claude CLI is required for anvil's task execution. Homebrew is needed for beads installation.
+> If `git`, `brew`, `claude`, or `uv` are missing, stop and help the user install them first. Claude CLI is required for anvil's task execution. Homebrew is needed for beads installation. uv is needed for speckit's `specify` CLI.
 
 ## Step 1: Install Beads
 
@@ -85,35 +86,25 @@ fi
 
 ## Step 3: Install Speckit
 
-Speckit is a set of Claude skills and support files that drive spec-driven development. It installs as project files rather than a global binary.
+Speckit uses the `specify` CLI to scaffold spec-driven development into a project. It installs commands, templates, and scripts directly into the working directory.
 
 ```bash
-# Check if speckit repo is available
-if gh repo view johnjansen/speckit &>/dev/null; then
-  echo "Cloning speckit scaffolding..."
-  TMPDIR=$(mktemp -d)
-  gh repo clone johnjansen/speckit "$TMPDIR/speckit" -- --depth 1
-
-  # Copy the Claude commands (slash commands for the AI assistant)
-  if [ -d "$TMPDIR/speckit/.claude/commands" ]; then
-    mkdir -p .claude/commands
-    cp "$TMPDIR/speckit/.claude/commands"/speckit.* .claude/commands/
-    echo "Installed speckit commands to .claude/commands/"
-  fi
-
-  # Copy the support scaffolding (templates, scripts, memory)
-  if [ -d "$TMPDIR/speckit/.specify" ]; then
-    cp -r "$TMPDIR/speckit/.specify" .specify
-    echo "Installed speckit scaffolding to .specify/"
-  fi
-
-  rm -rf "$TMPDIR"
+# Install the specify CLI if not present
+if command -v specify &>/dev/null; then
+  echo "specify already installed: $(specify version 2>&1 | grep 'CLI Version' | awk '{print $NF}')"
 else
-  echo "speckit repo not yet public — skipping automated install."
-  echo "Once available, clone from https://github.com/johnjansen/speckit"
-  echo "and copy .claude/commands/speckit.* and .specify/ into your project."
+  uv tool install specify-cli
 fi
 ```
+
+Then initialize speckit in the project directory. This downloads templates, installs Claude slash commands, and sets up the `.specify/` scaffolding:
+
+```bash
+specify init . --ai claude --force
+```
+
+> [!NOTE]
+> The `--force` flag skips the confirmation prompt when the directory is not empty. If the project is brand new, you can omit it.
 
 ## Step 4: Initialize the Project
 
@@ -167,6 +158,13 @@ else
 fi
 ```
 
+### Initialize Speckit Constitution
+
+Once speckit is scaffolded and all tools are initialized, run the `/speckit.constitution` skill to establish the project's development principles. This creates a constitution file that guides how speckit generates specs, plans, and tasks for this project.
+
+> [!IMPORTANT]
+> This step is interactive — it will ask the user about their project's priorities, coding standards, and workflow preferences. Run the `/speckit.constitution` skill now. Do not skip this step.
+
 ## Step 5: Verify the Setup
 
 Run a quick health check on everything:
@@ -184,8 +182,13 @@ echo "=== Speckit ==="
 if [ -d .specify ] && ls .claude/commands/speckit.* &>/dev/null; then
   echo "OK — speckit commands installed"
   ls .claude/commands/speckit.* | sed 's|.*/||; s|\.md$||'
+  if [ -f .specify/memory/constitution.md ]; then
+    echo "Constitution: created"
+  else
+    echo "Constitution: not yet created (run /speckit.constitution)"
+  fi
 else
-  echo "Not installed (see Step 3)"
+  echo "Not installed (run: specify init . --ai claude)"
 fi
 
 echo ""
