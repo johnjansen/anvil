@@ -126,6 +126,20 @@ persistent_max_runtime: 10m
 
 Useful for preventing runaway tasks. Default is 0 (no limit).
 
+### persistent_max_failures
+
+Set `persistent_max_failures` to stop a persistent task after too many consecutive failures:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "persistent"
+persistent_max_failures: 10
+---
+```
+
+When failures exceed this limit, the task stops and requires manual restart. Default is 0 (never stop).
+
 ### Starvation prevention
 
 If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
@@ -380,6 +394,7 @@ defaults:
   skip_permissions: false
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
+  persistent_max_failures: 10
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
