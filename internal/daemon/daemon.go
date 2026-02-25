@@ -116,6 +116,14 @@ type Daemon struct {
 	// Used by CLI to show queue status.
 	pendingTasks  map[string]string // taskKey -> skip reason
 	pendingTasksMu sync.RWMutex
+	// stoppedTasks tracks persistent tasks that have been explicitly stopped.
+	// Stopped tasks are not re-dispatched until started again via /start.
+	stoppedTasks map[string]bool // taskID -> true
+	stoppedMu    sync.Mutex
+	// persistentBudgetUsed tracks cumulative runtime per persistent task for budget enforcement.
+	// Resets on daemon restart. Key is taskKey (project/taskName).
+	persistentBudgetUsed   map[string]time.Duration
+	persistentBudgetUsedMu sync.Mutex
 }
 
 type RunningTask struct {
@@ -180,6 +188,8 @@ func New(cfg *config.Config) *Daemon {
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
+		stoppedTasks:         make(map[string]bool),
+		persistentBudgetUsed: make(map[string]time.Duration),
 	}
 }
 
@@ -490,6 +500,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var usedSessionID string
 	var logPath string
 	var usedRunnerIdx int
+	var stderrOutput string
 	var err error
 
 	for attempt := 0; ; attempt++ {
@@ -499,7 +510,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			break
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {
@@ -566,15 +577,33 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
+	// Parse token usage from runner stderr
+	tokenUsage := runner.ParseTokenUsage(stderrOutput)
+
+	// Calculate estimated cost using configured or default rates
+	inputRate := d.config.InputTokenRate
+	outputRate := d.config.OutputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0 // $3.00 per 1M input tokens (Sonnet default)
+	}
+	if outputRate <= 0 {
+		outputRate = 15.0 // $15.00 per 1M output tokens (Sonnet default)
+	}
+	estimatedCost := float64(tokenUsage.InputTokens)/1_000_000*inputRate +
+		float64(tokenUsage.OutputTokens)/1_000_000*outputRate
+
 	// Write run record after completion with outcome data
 	runRecord := project.RunRecord{
-		RunID:     runID,
-		TaskID:    t.ID,
-		SessionID: usedSessionID,
-		PID:       childPID,
-		Started:   startTime,
-		Finished:  time.Now(),
-		Success:   err == nil,
+		RunID:            runID,
+		TaskID:           t.ID,
+		SessionID:        usedSessionID,
+		PID:              childPID,
+		Started:          startTime,
+		Finished:         time.Now(),
+		Success:          err == nil,
+		InputTokens:      tokenUsage.InputTokens,
+		OutputTokens:     tokenUsage.OutputTokens,
+		EstimatedCostUSD: estimatedCost,
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
@@ -659,6 +688,20 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.persistentFailuresMu.Lock()
 			delete(d.persistentFailures, taskKey)
 			d.persistentFailuresMu.Unlock()
+		}
+	}
+
+	// For persistent tasks with a budget, accumulate runtime
+	if t.IsPersistent() && t.PersistentBudget > 0 {
+		d.persistentBudgetUsedMu.Lock()
+		d.persistentBudgetUsed[taskKey] += elapsed
+		used := d.persistentBudgetUsed[taskKey]
+		d.persistentBudgetUsedMu.Unlock()
+		if used >= t.PersistentBudget {
+			dlog.Warn("persistent task %s budget exhausted (%v of %v) — task will be paused", t.Name, used.Round(time.Second), t.PersistentBudget)
+		} else {
+			remaining := t.PersistentBudget - used
+			dlog.Info("persistent task %s budget: %v used, %v remaining", t.Name, used.Round(time.Second), remaining.Round(time.Second))
 		}
 	}
 
@@ -753,6 +796,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
 	mux.HandleFunc("/reload", d.handleReload)
+	mux.HandleFunc("/stop", d.handleStopTask)
+	mux.HandleFunc("/start", d.handleStartTask)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -1063,15 +1108,15 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the task is already running
-	d.tasksMu.RLock()
+	d.tasksMu.Lock()
+	var runningTask *RunningTask
 	for _, task := range d.tasks {
 		if task.TaskID == req.TaskID {
-			d.tasksMu.RUnlock()
-			http.Error(w, fmt.Sprintf("task %s is already running", req.TaskName), http.StatusConflict)
-			return
+			runningTask = task
+			break
 		}
 	}
-	d.tasksMu.RUnlock()
+	d.tasksMu.Unlock()
 
 	// Load the project and find the todo
 	proj, err := project.Load(req.ProjectPath)
@@ -1097,6 +1142,22 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
+
+	// If the task is already running, kill it first (for persistent tasks, restart; for others, reject)
+	if runningTask != nil {
+		if !found.IsPersistent() {
+			http.Error(w, fmt.Sprintf("task %s is already running", req.TaskName), http.StatusConflict)
+			return
+		}
+		// Persistent task: kill current instance, then re-dispatch
+		runningTask.Cancel()
+		dlog.Info("force-run: killed running persistent task %s for restart", req.TaskName)
+	}
+
+	// Clear stopped state so the task can be dispatched
+	d.stoppedMu.Lock()
+	delete(d.stoppedTasks, found.ID)
+	d.stoppedMu.Unlock()
 
 	// Enqueue for immediate dispatch (bypass cron, skip pre_check by clearing it)
 	todo := *found
@@ -1127,6 +1188,102 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "name": todo.Name})
+}
+
+// StopRequest is the JSON payload for /stop (stop a persistent task permanently).
+type StopRequest struct {
+	ID string `json:"id"`
+}
+
+// StartRequest is the JSON payload for /start (restart a stopped persistent task).
+type StartRequest struct {
+	ProjectPath string `json:"project_path"`
+	TaskID      string `json:"task_id"`
+	TaskName    string `json:"task_name"`
+}
+
+func (d *Daemon) handleStopTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req StopRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Mark the task as stopped so it won't be re-dispatched
+	d.stoppedMu.Lock()
+	d.stoppedTasks[req.ID] = true
+	d.stoppedMu.Unlock()
+
+	// Kill the running instance if any
+	d.tasksMu.Lock()
+	var found *RunningTask
+	for _, task := range d.tasks {
+		if task.TaskID == req.ID || task.Name == req.ID {
+			found = task
+			break
+		}
+	}
+	if found != nil {
+		found.Cancel()
+	}
+	d.tasksMu.Unlock()
+
+	name := req.ID
+	if found != nil {
+		name = found.Name
+	}
+	dlog.Info("persistent task %s stopped — will not be re-dispatched until started", name)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "id": req.ID})
+}
+
+func (d *Daemon) handleStartTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req StartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.TaskID == "" {
+		http.Error(w, "task_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Clear stopped state
+	d.stoppedMu.Lock()
+	wasStopped := d.stoppedTasks[req.TaskID]
+	delete(d.stoppedTasks, req.TaskID)
+	d.stoppedMu.Unlock()
+
+	// Also clear per-task drain state
+	d.drainedMu.Lock()
+	delete(d.drainedTasks, req.TaskID)
+	d.drainedMu.Unlock()
+
+	if !wasStopped {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "already_running", "id": req.TaskID})
+		return
+	}
+
+	dlog.Info("persistent task %s started — will be dispatched on next tick", req.TaskName)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "started", "id": req.TaskID})
 }
 
 func (d *Daemon) tick(now time.Time) {
@@ -1272,8 +1429,26 @@ func (d *Daemon) tick(now time.Time) {
 		d.inFlight[taskKey]++
 		d.inFlightMu.Unlock()
 
-		// Skip dispatch if daemon-wide drain is active
-		if atomic.LoadInt32(&d.draining) == 1 {
+		// Skip dispatch if persistent task has been explicitly stopped
+		d.stoppedMu.Lock()
+		taskStopped := d.stoppedTasks[pt.todo.ID]
+		d.stoppedMu.Unlock()
+		if taskStopped {
+			dlog.Info("skip %s/%s — stopped", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "stopped"
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
+		}
+
+		// Skip dispatch if daemon-wide drain is active (persistent tasks exempt)
+		if atomic.LoadInt32(&d.draining) == 1 && !pt.todo.IsPersistent() {
 			dlog.Info("skip %s/%s — draining", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
@@ -1348,6 +1523,26 @@ func (d *Daemon) tick(now time.Time) {
 				continue
 			}
 			d.persistentCooldownsMu.Unlock()
+		}
+
+		// Skip dispatch if persistent task has exceeded its budget
+		if pt.todo.IsPersistent() && pt.todo.PersistentBudget > 0 {
+			d.persistentBudgetUsedMu.Lock()
+			used := d.persistentBudgetUsed[taskKey]
+			d.persistentBudgetUsedMu.Unlock()
+			if used >= pt.todo.PersistentBudget {
+				dlog.Warn("persistent task %s/%s budget exceeded (%v used of %v) — paused", projName, pt.todo.Name, used.Round(time.Second), pt.todo.PersistentBudget)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "budget exceeded"
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
 		}
 
 		// Starvation prevention: if a persistent task has been waiting too long,
@@ -1793,6 +1988,46 @@ func SendRunRequest(projectPath, taskID, taskName string) error {
 		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
 	}
 
+	return nil
+}
+
+// SendStopRequest tells the daemon to permanently stop a persistent task.
+func SendStopRequest(id string) error {
+	data, err := json.Marshal(StopRequest{ID: id})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/stop", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon stop failed: %s", string(body))
+	}
+	return nil
+}
+
+// SendStartRequest tells the daemon to start a stopped persistent task.
+func SendStartRequest(projectPath, taskID, taskName string) error {
+	data, err := json.Marshal(StartRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/start", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon start failed: %s", string(body))
+	}
 	return nil
 }
 

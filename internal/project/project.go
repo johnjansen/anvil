@@ -36,7 +36,8 @@ type TaskDefaults struct {
 	MaxConcurrent        int      `yaml:"max_concurrent"`
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
-	PersistentMaxFailures int     `yaml:"persistent_max_failures"`
+	PersistentBudget     string   `yaml:"persistent_budget"`
+	Runner               string   `yaml:"runner"`
 }
 
 // ConfigPath returns the path to the project config file.
@@ -88,23 +89,27 @@ type Todo struct {
 	Retry           int           // number of retries on failure (0 = no retry)
 	RetryDelay      time.Duration // delay between retries (default 1m, used with Retry)
 	// Persistent task configuration
-	PersistentCooldown    time.Duration // cooldown between restart cycles (default 0 = immediate)
+	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
-	PersistentMaxFailures int          // max consecutive failures before stopping (default 5)
+	PersistentBudget     time.Duration // cumulative runtime budget per cycle (0 = unlimited)
+	Runner               string        // per-task runner command override (empty = use global runner chain)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
 // It links a task ID to the Claude session ID and child process PID used for that run.
 type RunRecord struct {
-	RunID         string    `json:"run_id"`
-	TaskID        string    `json:"task_id"`
-	SessionID     string    `json:"session_id"`
-	PID           int       `json:"pid"`
-	Started       time.Time `json:"started"`
-	Finished      time.Time `json:"finished,omitempty"`       // when the run ended
-	Success       bool      `json:"success"`                  // whether the runner returned nil error
-	OutputSummary string    `json:"output_summary,omitempty"` // first and last N lines of output
-	Error         string    `json:"error,omitempty"`           // last runner error message if failed
+	RunID            string    `json:"run_id"`
+	TaskID           string    `json:"task_id"`
+	SessionID        string    `json:"session_id"`
+	PID              int       `json:"pid"`
+	Started          time.Time `json:"started"`
+	Finished         time.Time `json:"finished,omitempty"`        // when the run ended
+	Success          bool      `json:"success"`                   // whether the runner returned nil error
+	OutputSummary    string    `json:"output_summary,omitempty"`  // first and last N lines of output
+	Error            string    `json:"error,omitempty"`           // last runner error message if failed
+	InputTokens      int       `json:"input_tokens,omitempty"`    // tokens sent to the model
+	OutputTokens     int       `json:"output_tokens,omitempty"`   // tokens received from the model
+	EstimatedCostUSD float64   `json:"estimated_cost_usd,omitempty"` // estimated cost in USD
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -177,7 +182,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var retryDelay time.Duration
 			var persistentCooldown time.Duration
 			var persistentMaxRuntime time.Duration
-			persistentMaxFailures := 0
+			var persistentBudget time.Duration
+			runnerOverride := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -206,7 +212,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						RetryDelay           string   `yaml:"retry_delay"`
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
-						PersistentMaxFailures int      `yaml:"persistent_max_failures"`
+						PersistentBudget     string   `yaml:"persistent_budget"`
+						Runner               string   `yaml:"runner"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -235,7 +242,10 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.PersistentMaxRuntime != "" {
 							persistentMaxRuntime, _ = time.ParseDuration(fmData.PersistentMaxRuntime)
 						}
-						persistentMaxFailures = fmData.PersistentMaxFailures
+						if fmData.PersistentBudget != "" {
+							persistentBudget, _ = time.ParseDuration(fmData.PersistentBudget)
+						}
+						runnerOverride = fmData.Runner
 					}
 				}
 			}
@@ -243,7 +253,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Apply project defaults for fields not explicitly set in frontmatter.
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
-				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentMaxFailures)
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget,
+				&runnerOverride)
 
 			todos = append(todos, Todo{
 				Path:                 fp,
@@ -266,7 +277,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				RetryDelay:           retryDelay,
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
-				PersistentMaxFailures: persistentMaxFailures,
+				PersistentBudget:     persistentBudget,
+				Runner:               runnerOverride,
 			})
 		}
 	}
@@ -282,7 +294,7 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
 	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
-	persistentMaxFailures *int) {
+	persistentBudget *time.Duration, runnerOverride *string) {
 
 	has := func(key string) bool {
 		if fmKeys == nil {
@@ -333,8 +345,13 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 			*persistentMaxRuntime = d
 		}
 	}
-	if !has("persistent_max_failures") && defaults.PersistentMaxFailures != 0 {
-		*persistentMaxFailures = defaults.PersistentMaxFailures
+	if !has("persistent_budget") && defaults.PersistentBudget != "" {
+		if d, err := time.ParseDuration(defaults.PersistentBudget); err == nil {
+			*persistentBudget = d
+		}
+	}
+	if !has("runner") && defaults.Runner != "" {
+		*runnerOverride = defaults.Runner
 	}
 }
 
@@ -409,7 +426,7 @@ func writeEmbeddedFS(destDir string, fsys fs.FS) error {
 
 // AddTodo writes a new todo file into the project's .anvil/todos/pN/ directory.
 // It returns the relative path like "p1/check-github-for-issues.md".
-func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool) (string, error) {
+func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string) (string, error) {
 	if priority < 0 || priority > 9 {
 		return "", fmt.Errorf("priority must be 0-9, got %d", priority)
 	}
@@ -465,6 +482,9 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 	}
 	if skipPermissions {
 		sb.WriteString("skip_permissions: true\n")
+	}
+	if runnerCmd != "" {
+		sb.WriteString(fmt.Sprintf("runner: %q\n", runnerCmd))
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)

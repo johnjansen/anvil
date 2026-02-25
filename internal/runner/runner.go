@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,8 +49,9 @@ func New(commands []string, timeout time.Duration) *Runner {
 //
 // Returns the actual session ID used (either the passed-in sessionID for resume,
 // or a freshly generated one), the log file path (empty if no log was written),
-// the index of the runner that was used (last attempted, -1 if none), and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, usedRunnerIndex int, err error) {
+// the index of the runner that was used (last attempted, -1 if none), the stderr
+// output from the last runner attempt (used for token usage parsing), and any error.
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, usedRunnerIndex int, stderrOutput string, err error) {
 	var lastErr error
 	var lastStderr string
 	var lastRunnerIndex int
@@ -123,15 +125,19 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 
 		var stdout, stderr bytes.Buffer
 		var sw *statusWriter
+		var stderrSw *statusWriter
 		if logFile != nil {
 			stdoutBase := io.MultiWriter(&stdout, logFile)
 			sw = newStatusWriter(stdoutBase, onStatus)
 			cmd.Stdout = sw
-			cmd.Stderr = io.MultiWriter(&stderr, logFile)
+			stderrBase := io.MultiWriter(&stderr, logFile)
+			stderrSw = newStatusWriter(stderrBase, onStatus)
+			cmd.Stderr = stderrSw
 		} else {
 			sw = newStatusWriter(&stdout, onStatus)
 			cmd.Stdout = sw
-			cmd.Stderr = &stderr
+			stderrSw = newStatusWriter(&stderr, onStatus)
+			cmd.Stderr = stderrSw
 		}
 
 		if err := cmd.Start(); err != nil {
@@ -150,9 +156,12 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		if sw != nil {
 			sw.Flush()
 		}
+		if stderrSw != nil {
+			stderrSw.Flush()
+		}
 		if waitErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				return "", logPath, i, fmt.Errorf("timed out after %s", r.Timeout)
+				return "", logPath, i, stderr.String(), fmt.Errorf("timed out after %s", r.Timeout)
 			}
 			lastErr = waitErr
 			lastStderr = stderr.String()
@@ -162,10 +171,10 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		}
 
 		log.Printf("runner[%d] [%s] succeeded: %s", i, taskLabel, command)
-		return actualSessionID, logPath, i, nil
+		return actualSessionID, logPath, i, stderr.String(), nil
 	}
 
-	return "", logPath, lastRunnerIndex, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
+	return "", logPath, lastRunnerIndex, lastStderr, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
 }
 
 // cleanEnv returns the current environment with Claude-nesting guard vars removed.
@@ -251,6 +260,58 @@ func (sw *statusWriter) Flush() {
 		}
 		sw.buf = nil
 	}
+}
+
+// TokenUsage holds parsed token counts from Claude CLI stderr output.
+type TokenUsage struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+// ParseTokenUsage extracts token usage from Claude CLI stderr output.
+// Claude CLI prints usage stats like:
+//
+//	Total input tokens: 12345
+//	Total output tokens: 6789
+//
+// or in cost format:
+//
+//	Input tokens: 12345
+//	Output tokens: 6789
+//
+// Returns zero values if parsing fails (caller should treat as "N/A").
+func ParseTokenUsage(stderr string) TokenUsage {
+	var usage TokenUsage
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if n, ok := extractTokenCount(line, "input"); ok {
+			usage.InputTokens = n
+		}
+		if n, ok := extractTokenCount(line, "output"); ok {
+			usage.OutputTokens = n
+		}
+	}
+	return usage
+}
+
+// extractTokenCount tries to extract a token count from a line containing
+// the given direction ("input" or "output"). It handles various formats
+// that Claude CLI may use to report token counts.
+func extractTokenCount(line, direction string) (int, bool) {
+	lower := strings.ToLower(line)
+	if !strings.Contains(lower, direction) || !strings.Contains(lower, "token") {
+		return 0, false
+	}
+	// Extract the last number on the line (the token count)
+	parts := strings.Fields(line)
+	for i := len(parts) - 1; i >= 0; i-- {
+		// Strip commas from numbers like "12,345"
+		cleaned := strings.ReplaceAll(parts[i], ",", "")
+		if n, err := strconv.Atoi(cleaned); err == nil && n >= 0 {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // shellEscape wraps content in single quotes with proper escaping.

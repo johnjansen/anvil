@@ -22,8 +22,8 @@ import (
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
-	"github.com/johnjansen/anvil/internal/diagnostic"
 	"github.com/johnjansen/anvil/internal/project"
+	"github.com/johnjansen/anvil/internal/service"
 	"github.com/johnjansen/anvil/tools"
 
 	"gopkg.in/yaml.v3"
@@ -89,10 +89,10 @@ func main() {
 		taskCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
+	case "usage":
+		usageCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
-	case "doctor":
-		doctorCmd()
 	case "reload":
 		reloadCmd(os.Args[2:])
 	case "version", "-v", "--version":
@@ -115,12 +115,16 @@ Usage:
 Commands:
   init [path]              Initialize a project and register it for watching
   watch [-d|--daemonize]   Start the daemon (once per machine)
+  watch --install          Install as system service (auto-start on boot)
+  watch --uninstall        Remove the system service
+  watch --status           Show system service status
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
   ps                       Show running tasks
   status                   Show watched projects
   reload                   Reload daemon configuration (SIGHUP)
+  usage [options]           Show LLM token usage and estimated costs
   stop-on-idle             Drain running tasks then exit the daemon
   cleanup [--older-than=<duration>] [--dry-run]    Prune old logs and run history
   task <subcommand>        Task management commands
@@ -148,7 +152,9 @@ Task subcommands:
   history <name>            Show run history
   rm <name>                 Remove a task (kills if running)
   run <name>                Trigger immediate execution (bypass cron)
-  kill <name>               Kill a running task
+  kill <name>               Kill a running task (persistent tasks auto-restart)
+  stop <name>               Stop a persistent task permanently (kill + prevent restart)
+  start <name>              Start a stopped persistent task (dispatches on next tick)
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
   queue                     Show daemon queue status and skip reasons
@@ -280,6 +286,9 @@ func watchCmd2(args []string) {
 	daemonize := false
 	stop := false
 	child := false
+	install := false
+	uninstall := false
+	status := false
 	for _, arg := range args {
 		switch arg {
 		case "--daemonize", "-d":
@@ -288,7 +297,28 @@ func watchCmd2(args []string) {
 			stop = true
 		case "--child":
 			child = true
+		case "--install":
+			install = true
+		case "--uninstall":
+			uninstall = true
+		case "--status":
+			status = true
 		}
+	}
+
+	if install {
+		watchInstall()
+		return
+	}
+
+	if uninstall {
+		watchUninstall()
+		return
+	}
+
+	if status {
+		watchStatus()
+		return
 	}
 
 	if stop {
@@ -308,6 +338,57 @@ func watchCmd2(args []string) {
 
 	// Default: run in foreground (existing behavior)
 	serveCmd()
+}
+
+func watchInstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("cannot determine binary path: %v", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		log.Fatalf("cannot resolve binary path: %v", err)
+	}
+
+	if err := svc.Install(binaryPath); err != nil {
+		log.Fatalf("failed to install service: %v", err)
+	}
+
+	fmt.Printf("service installed and started\n")
+	fmt.Printf("  binary: %s\n", binaryPath)
+	fmt.Printf("  anvil watch will now auto-start on boot and restart on crash\n")
+}
+
+func watchUninstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	if err := svc.Uninstall(); err != nil {
+		log.Fatalf("failed to uninstall service: %v", err)
+	}
+
+	fmt.Println("service uninstalled")
+}
+
+func watchStatus() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	st, err := svc.Status()
+	if err != nil {
+		log.Fatalf("failed to get service status: %v", err)
+	}
+
+	fmt.Printf("service: %s\n", st.Message)
 }
 
 // readDaemonPID reads the PID from the daemon PID file.
@@ -480,49 +561,6 @@ func unwatchCmd(args []string) {
 	}
 
 	fmt.Printf("unwatched %s\n", abs)
-}
-
-func doctorCmd() {
-	results := diagnostic.All()
-
-	if len(results) == 0 {
-		fmt.Println("All checks passed!")
-		return
-	}
-
-	fmt.Println("Anvil Diagnostics")
-	fmt.Println(strings.Repeat("=", 60))
-
-	var passes, warnings, failures int
-
-	for _, r := range results {
-		switch r.Status {
-		case "pass":
-			fmt.Printf("[PASS] %s\n", r.Name)
-			passes++
-		case "warn":
-			fmt.Printf("[WARN] %s\n", r.Name)
-			fmt.Printf("       %s\n", r.Message)
-			if r.Fix != "" {
-				fmt.Printf("       Fix: %s\n", r.Fix)
-			}
-			warnings++
-		case "fail":
-			fmt.Printf("[FAIL] %s\n", r.Name)
-			fmt.Printf("       %s\n", r.Message)
-			if r.Fix != "" {
-				fmt.Printf("       Fix: %s\n", r.Fix)
-			}
-			failures++
-		}
-	}
-
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Printf("Summary: %d pass, %d warn, %d fail\n", passes, warnings, failures)
-
-	if failures > 0 {
-		os.Exit(1)
-	}
 }
 
 func statusCmd() {
@@ -1056,6 +1094,10 @@ func taskCmd(args []string) {
 		taskQueueCmd(args[1:])
 	case "timeout":
 		taskTimeoutCmd(args[1:])
+	case "stop":
+		taskStopCmd(args[1:])
+	case "start":
+		taskStartCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -1208,7 +1250,7 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to load project: %v", err)
 	}
 
-	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions)
+	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "")
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}
@@ -1427,15 +1469,6 @@ func taskGetCmd(args []string) {
 	fmt.Printf("File:     %s\n", todo.Path)
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
-	// Show next run time for scheduled tasks
-	if todo.Schedule != "" {
-		if p, err := cron.Parse(todo.Schedule); err == nil {
-			if next, err := p.Next(time.Now()); err == nil {
-				until := time.Until(next).Round(time.Minute)
-				fmt.Printf("Next:     %s (%s from now)\n", next.Format("Mon 15:04"), until)
-			}
-		}
-	}
 	fmt.Printf("Priority: %d\n", todo.Priority)
 	if todo.Disabled {
 		fmt.Printf("Disabled: true\n")
@@ -1654,6 +1687,86 @@ func taskKillCmd(args []string) {
 	}
 
 	fmt.Printf("killed task: %s\n", args[0])
+}
+
+func taskStopCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task stop <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running — start it with: anvil watch")
+		os.Exit(1)
+	}
+
+	if err := daemon.SendStopRequest(todo.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to stop task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("stopped %s — will not be re-dispatched until started\n", todo.Name)
+}
+
+func taskStartCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task start <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running — start it with: anvil watch")
+		os.Exit(1)
+	}
+
+	if err := daemon.SendStartRequest(abs, todo.ID, todo.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("started %s — will be dispatched on next tick\n", todo.Name)
 }
 
 func taskHistoryCmd(args []string) {
@@ -3250,26 +3363,247 @@ func updateCmd(args []string) {
 	}
 
 	fmt.Printf("updated to %s\n", latest)
+}
 
-	// Refresh skills in all watched directories
-	watched, err := loadAllWatched()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to load watched directories: %v\n", err)
-	} else if len(watched) > 0 {
-		fmt.Printf("refreshing skills in %d watched director%s...\n", len(watched), map[bool]string{true: "ies", false: "y"}[len(watched) > 1])
-		for _, w := range watched {
-			// Check if the directory still exists
-			if _, err := os.Stat(w.Path); os.IsNotExist(err) {
-				fmt.Printf("  skipping %s: directory no longer exists\n", w.Path)
-				continue
+func usageCmd(args []string) {
+	var projectFilter string
+	var taskFilter string
+	var sinceStr string
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectFilter = args[i+1]
+				i += 2
+			} else {
+				fmt.Fprintln(os.Stderr, "--project requires a value")
+				os.Exit(1)
 			}
-			if err := project.Init(w.Path, tools.FS); err != nil {
-				fmt.Printf("  failed to refresh %s: %v\n", w.Path, err)
-				continue
+		case "--task":
+			if i+1 < len(args) {
+				taskFilter = args[i+1]
+				i += 2
+			} else {
+				fmt.Fprintln(os.Stderr, "--task requires a value")
+				os.Exit(1)
 			}
-			fmt.Printf("  refreshed %s\n", w.Path)
+		case "--since":
+			if i+1 < len(args) {
+				sinceStr = args[i+1]
+				i += 2
+			} else {
+				fmt.Fprintln(os.Stderr, "--since requires a value")
+				os.Exit(1)
+			}
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `Usage: anvil usage [options]
+
+Show LLM token usage and estimated costs across tasks and projects.
+
+Options:
+  --project <path>   Filter to a specific project (default: all watched projects)
+  --task <name>      Filter to a specific task name
+  --since <date>     Show usage since date (YYYY-MM-DD, default: 7 days ago)
+`)
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
 		}
 	}
+
+	// Default: last 7 days
+	since := time.Now().AddDate(0, 0, -7)
+	if sinceStr != "" {
+		parsed, err := time.Parse("2006-01-02", sinceStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid date %q (expected YYYY-MM-DD): %v\n", sinceStr, err)
+			os.Exit(1)
+		}
+		since = parsed
+	}
+
+	// Resolve project filter to absolute path
+	if projectFilter != "" {
+		abs, err := filepath.Abs(projectFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad project path: %v\n", err)
+			os.Exit(1)
+		}
+		projectFilter = abs
+	}
+
+	// Discover projects
+	var projectPaths []string
+	if projectFilter != "" {
+		projectPaths = []string{projectFilter}
+	} else {
+		watched, err := loadAllWatched()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load watched projects: %v\n", err)
+			os.Exit(1)
+		}
+		for _, w := range watched {
+			projectPaths = append(projectPaths, w.Path)
+		}
+	}
+
+	if len(projectPaths) == 0 {
+		fmt.Println("No watched projects found.")
+		return
+	}
+
+	// Load global config for cost rates
+	cfg, _ := config.Load()
+	inputRate := cfg.InputTokenRate
+	outputRate := cfg.OutputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0
+	}
+	if outputRate <= 0 {
+		outputRate = 15.0
+	}
+
+	type taskUsage struct {
+		Project      string
+		TaskName     string
+		Runs         int
+		InputTokens  int
+		OutputTokens int
+		Cost         float64
+	}
+
+	var allUsage []taskUsage
+	var totalRuns int
+	var totalInput, totalOutput int
+	var totalCost float64
+
+	for _, projPath := range projectPaths {
+		proj, err := project.Load(projPath)
+		if err != nil {
+			continue
+		}
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			continue
+		}
+		projName := filepath.Base(projPath)
+
+		for _, todo := range todos {
+			if taskFilter != "" && todo.Name != taskFilter {
+				continue
+			}
+			records, err := project.ReadAllRunRecords(projPath, todo.ID)
+			if err != nil {
+				continue
+			}
+
+			var tu taskUsage
+			tu.Project = projName
+			tu.TaskName = todo.Name
+
+			for _, rec := range records {
+				if rec.Started.Before(since) {
+					continue
+				}
+				tu.Runs++
+				tu.InputTokens += rec.InputTokens
+				tu.OutputTokens += rec.OutputTokens
+				tu.Cost += rec.EstimatedCostUSD
+			}
+
+			// Recalculate cost if records had zero cost but had tokens
+			// (handles old records that may have tokens but no cost)
+			if tu.Cost == 0 && (tu.InputTokens > 0 || tu.OutputTokens > 0) {
+				tu.Cost = float64(tu.InputTokens)/1_000_000*inputRate +
+					float64(tu.OutputTokens)/1_000_000*outputRate
+			}
+
+			if tu.Runs > 0 {
+				allUsage = append(allUsage, tu)
+				totalRuns += tu.Runs
+				totalInput += tu.InputTokens
+				totalOutput += tu.OutputTokens
+				totalCost += tu.Cost
+			}
+		}
+	}
+
+	if totalRuns == 0 {
+		fmt.Printf("No runs found since %s.\n", since.Format("2006-01-02"))
+		return
+	}
+
+	// Sort by cost descending
+	sort.Slice(allUsage, func(i, j int) bool {
+		return allUsage[i].Cost > allUsage[j].Cost
+	})
+
+	// Print summary
+	fmt.Printf("Token usage since %s\n", since.Format("2006-01-02"))
+	fmt.Printf("Rates: $%.2f/1M input, $%.2f/1M output\n\n", inputRate, outputRate)
+
+	fmt.Printf("%-30s %-6s %12s %12s %10s\n", "TASK", "RUNS", "INPUT", "OUTPUT", "COST")
+	fmt.Printf("%-30s %-6s %12s %12s %10s\n", "----", "----", "-----", "------", "----")
+
+	limit := len(allUsage)
+	if limit > 15 {
+		limit = 15
+	}
+	for _, tu := range allUsage[:limit] {
+		name := tu.TaskName
+		if len(name) > 27 {
+			name = name[:27] + "..."
+		}
+		if len(projectPaths) > 1 {
+			label := tu.Project + "/" + name
+			if len(label) > 30 {
+				label = label[:27] + "..."
+			}
+			name = label
+		}
+		fmt.Printf("%-30s %-6d %12s %12s %10s\n",
+			name,
+			tu.Runs,
+			formatTokens(tu.InputTokens),
+			formatTokens(tu.OutputTokens),
+			formatCost(tu.Cost))
+	}
+	if len(allUsage) > limit {
+		fmt.Printf("  ... and %d more tasks\n", len(allUsage)-limit)
+	}
+
+	fmt.Printf("\n%-30s %-6d %12s %12s %10s\n",
+		"TOTAL",
+		totalRuns,
+		formatTokens(totalInput),
+		formatTokens(totalOutput),
+		formatCost(totalCost))
+}
+
+func formatTokens(n int) string {
+	if n == 0 {
+		return "N/A"
+	}
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func formatCost(c float64) string {
+	if c == 0 {
+		return "N/A"
+	}
+	if c < 0.01 {
+		return fmt.Sprintf("$%.4f", c)
+	}
+	return fmt.Sprintf("$%.2f", c)
 }
 
 // --- helpers ---
