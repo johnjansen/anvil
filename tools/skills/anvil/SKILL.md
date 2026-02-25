@@ -395,6 +395,7 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
+  runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.

@@ -167,6 +167,18 @@ Or skip all permission prompts:
 skip_permissions: true
 ```
 
+### Per-task runner override
+
+Override the global runner chain for a specific task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+runner: "claude -p 'You are a specialized assistant'"
+---
+Use a custom runner command for this task instead of the global runners.
+```
+
 ### Lifecycle hooks
 
 Run shell commands after a task succeeds or fails:
@@ -241,6 +253,20 @@ Run with up to 3 retries, waiting 2 minutes between attempts.
 
 The retry delay uses exponential backoff: the initial delay doubles after each retry attempt (delay * 2^attempt). For example, with retry_delay=1m, retries occur at 1m, 2m, 4m, etc.
 
+### Per-task runner override
+
+Override the global runner chain for a specific task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+runner: "claude -p 'You are a specialized assistant'"
+---
+Run this task with a different runner command than the global default.
+```
+
+The task-level runner is used instead of the global `runners` list for this task only.
+
 ## Configuration
 
 `~/.anvil/config.yaml`:
@@ -251,6 +277,9 @@ runners:
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 10s  # how often to check for work
+input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
+output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
+auto_update: false       # opt-in: auto-update binary on daemon startup
 retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
@@ -307,6 +336,7 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
+  runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
