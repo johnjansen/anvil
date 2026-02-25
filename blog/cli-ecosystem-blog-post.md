@@ -195,9 +195,9 @@ If you'd rather skip the incremental approach and bootstrap the full ecosystem a
 The [anvil-software-factory](anvil-software-factory.md) skill installs all three tools, initializes a project directory, starts the anvil daemon, and walks you through onboarding — all from inside Claude. Install it with one command:
 
 ```bash
-mkdir -p .claude/skills && curl -fsSL \
+mkdir -p .claude/skills/software-factory && curl -fsSL \
   https://raw.githubusercontent.com/johnjansen/anvil/main/blog/anvil-software-factory.md \
-  -o .claude/skills/anvil-software-factory.md
+  -o .claude/skills/software-factory/SKILL.md
 ```
 
 Then invoke it:
