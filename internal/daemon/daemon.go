@@ -120,6 +120,10 @@ type Daemon struct {
 	// Stopped tasks are not re-dispatched until started again via /start.
 	stoppedTasks map[string]bool // taskID -> true
 	stoppedMu    sync.Mutex
+	// persistentBudgetUsed tracks cumulative wall-clock time consumed by each
+	// persistent task during this daemon lifetime.  Resets on daemon restart.
+	persistentBudgetUsed   map[string]time.Duration
+	persistentBudgetUsedMu sync.Mutex
 }
 
 type RunningTask struct {
@@ -184,7 +188,8 @@ func New(cfg *config.Config) *Daemon {
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
-		stoppedTasks:  make(map[string]bool),
+		stoppedTasks:         make(map[string]bool),
+		persistentBudgetUsed: make(map[string]time.Duration),
 	}
 }
 
