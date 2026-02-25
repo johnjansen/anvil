@@ -94,22 +94,20 @@ Persistent tasks are designed for event-driven workflows. Here's how they work:
 
 2. **Immediate re-dispatch** — When the task exits, the scheduler re-dispatches it on the next tick (by default, every 10 seconds). This allows the task to check for new work frequently without blocking a worker between jobs.
 
-3. **Configure behavior** — Use `persistent_cooldown` to wait between cycles, and `persistent_max_runtime` to force restart after a maximum runtime:
+3. **Configure behavior** — Use `persistent_cooldown` to wait between cycles, `persistent_max_runtime` to force restart after a maximum runtime, and `persistent_max_failures` to stop after too many consecutive failures:
 
 ```yaml
 ---
 schedule: "persistent"
 persistent_cooldown: 5s      # wait between restart cycles (default: 0 = immediate)
 persistent_max_runtime: 10m  # max runtime before forced restart (default: 0 = no limit)
+persistent_max_failures: 10  # stop after N consecutive failures (default: 0 = never stop)
 ---
 ```
 
 - `persistent_cooldown` — wait time after a persistent task completes before re-dispatching. Default is 0 (immediate restart).
 - `persistent_max_runtime` — maximum runtime before the task is forcibly restarted. Useful for preventing runaway tasks. Default is 0 (no limit).
-
-#### Starvation prevention
-
-If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
+- `persistent_max_failures` — maximum consecutive failures before the task stops. Default is 0 (never stop).
 
 #### Starvation prevention
 
@@ -253,6 +251,9 @@ runners:
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
 tick_interval: 5s  # how often to check for work
+retention:
+  max_age: 7d      # delete logs older than 7 days
+  max_runs: 50     # keep only last 50 runs per task
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
@@ -305,9 +306,36 @@ defaults:
   skip_permissions: false
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
+  persistent_max_failures: 10
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
+### Log Retention
+
+Configure automatic cleanup of old logs and session data in `~/.anvil/config.yaml`:
+
+```yaml
+retention:
+  max_age: 7d    # delete logs older than 7 days
+  max_runs: 50   # keep only last 50 runs per task
+```
+
+Or run cleanup manually:
+
+```bash
+# Preview what would be deleted
+anvil cleanup --older-than=3d --dry-run
+
+# Shorthand for dry-run
+anvil cleanup --older-than=3d -n
+
+# Actually delete logs older than 3 days
+anvil cleanup --older-than=3d
+
+# Use shorter duration syntax
+anvil cleanup -o=24h
+```
 
 ## CLI Reference
 
@@ -317,13 +345,14 @@ Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/c
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil watch --stop` | Stop the running daemon |
 | `anvil init [path]` | Initialize a project |
-| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
+| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `-f` file, `-` stdin, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
 | `anvil ps` | Show running tasks |
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
+| `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
 | `anvil doctor` | Run diagnostics to check for common issues |
 | `anvil version` | Show version |

@@ -39,6 +39,8 @@ anvil task create [options] <task text>
 Options:
 - `-p, --priority <0-9>` — Priority level (default: 1). Lower = higher priority.
 - `-s, --schedule <cron>` — Cron expression for when to run.
+- `-f, --file <path>` — Read task content from a file.
+- `-` — Read task content from stdin.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
 - `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
@@ -71,6 +73,12 @@ anvil add -s "*/15 * * * *" --skip-permissions "Run automated checks"
 
 # Task with max concurrent instances
 anvil add -s "*/5 * * * *" --max-concurrent 2 "Process in parallel"
+
+# Read task content from a file
+anvil add -s "*/30 * * * *" -f task.md
+
+# Read task content from stdin
+echo "Process items from queue" | anvil add -s "*/30 * * * *" -
 ```
 
 Task files are stored in `.anvil/todos/p<N>/<slugified-name>.md` with YAML frontmatter containing the schedule and a UUID.
@@ -117,6 +125,20 @@ persistent_max_runtime: 10m
 ```
 
 Useful for preventing runaway tasks. Default is 0 (no limit).
+
+### persistent_max_failures
+
+Set `persistent_max_failures` to stop a persistent task after too many consecutive failures:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "persistent"
+persistent_max_failures: 10
+---
+```
+
+When failures exceed this limit, the task stops and requires manual restart. Default is 0 (never stop).
 
 ### Starvation prevention
 
@@ -372,9 +394,36 @@ defaults:
   skip_permissions: false
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
+  persistent_max_failures: 10
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
+### Log Retention
+
+Configure automatic cleanup of old logs and session data in `~/.anvil/config.yaml`:
+
+```yaml
+retention:
+  max_age: 7d    # delete logs older than 7 days
+  max_runs: 50   # keep only last 50 runs per task
+```
+
+Or run cleanup manually:
+
+```bash
+# Preview what would be deleted
+anvil cleanup --older-than=3d --dry-run
+
+# Shorthand for dry-run
+anvil cleanup --older-than=3d -n
+
+# Actually delete logs older than 3 days
+anvil cleanup --older-than=3d
+
+# Use shorter duration syntax
+anvil cleanup -o=24h
+```
 
 ### Hot Reload
 
@@ -566,6 +615,18 @@ anvil daemon log -n 100   # view last 100 lines
 ```
 
 View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
+
+## Cleanup
+
+```bash
+anvil cleanup                         # show retention policy config
+anvil cleanup --older-than=3d         # delete logs older than 3 days
+anvil cleanup --older-than=3d --dry-run  # preview what would be deleted
+anvil cleanup --older-than=3d -n      # shorthand for --dry-run
+anvil cleanup -o=24h                  # short form
+```
+
+Prune old logs and session data. Use `--dry-run` to preview deletions without actually deleting. Without a retention policy configured, it shows how to configure one.
 
 ## Checking Status
 
