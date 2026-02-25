@@ -160,10 +160,14 @@ fi
 
 ### Initialize Speckit Constitution
 
-Once speckit is scaffolded and all tools are initialized, run the `/speckit.constitution` skill to establish the project's development principles. This creates a constitution file that guides how speckit generates specs, plans, and tasks for this project.
+Once speckit is scaffolded and all tools are initialized, establish the project's development principles by running the constitution skill. This creates a constitution file that guides how speckit generates specs, plans, and tasks for this project.
 
 > [!IMPORTANT]
-> This step is interactive — it will ask the user about their project's priorities, coding standards, and workflow preferences. Run the `/speckit.constitution` skill now. Do not skip this step.
+> After all installations and initializations are complete, tell the user you are about to bootstrap their project constitution and then run:
+>
+> `/speckit.constitution Create principles focused on code quality, testing standards, user experience consistency, and performance requirements`
+>
+> This step is interactive — speckit will ask the user about their project's priorities, coding standards, and workflow preferences. Do not skip this step.
 
 ## Step 5: Verify the Setup
 
