@@ -233,6 +233,9 @@ func (d *Daemon) Run() {
 		}(i)
 	}
 
+	// Detect missed scheduled runs while daemon was down
+	d.detectMissedRuns()
+
 	for {
 		select {
 		case <-d.stop:
@@ -269,6 +272,82 @@ func (d *Daemon) Done() <-chan struct{} {
 // reloadConfig reads the config file and updates the daemon's configuration.
 // It logs what changed and applies updates to max_workers, timeout, runners, and tick_interval.
 // Running tasks are not affected - only new task dispatches use the updated config.
+// detectMissedRuns checks all recurring tasks for missed scheduled runs while
+// the daemon was down. It logs a summary for each task with missed runs and
+// dispatches a single catch-up run for tasks with catch_up: true.
+func (d *Daemon) detectMissedRuns() {
+	now := time.Now()
+	paths := loadWatchedPaths()
+
+	for _, p := range paths {
+		proj, err := project.Load(p)
+		if err != nil {
+			continue
+		}
+		projName := filepath.Base(proj.Path)
+
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			continue
+		}
+
+		for _, t := range todos {
+			// Only check recurring tasks with a cron schedule
+			if t.Schedule == "" || t.IsPersistent() || t.Disabled {
+				continue
+			}
+
+			// Need an ID to look up run records
+			if t.ID == "" {
+				continue
+			}
+
+			// Read last run record
+			rec, err := project.ReadCurrentRunRecord(proj.Path, t.ID)
+			if err != nil {
+				// No prior runs — nothing to miss
+				continue
+			}
+
+			lastRun := rec.Finished
+			if lastRun.IsZero() {
+				lastRun = rec.Started
+			}
+			if lastRun.IsZero() {
+				continue
+			}
+
+			// Count missed windows
+			parsed, err := cron.Parse(t.Schedule)
+			if err != nil {
+				continue
+			}
+
+			missed, err := parsed.CountMissed(lastRun, now)
+			if err != nil || missed == 0 {
+				continue
+			}
+
+			elapsed := now.Sub(lastRun).Round(time.Second)
+			dlog.Info("missed %d scheduled runs for %s/%s (last run: %v ago, schedule: %s)", missed, projName, t.Name, elapsed, t.Schedule)
+
+			// Dispatch one catch-up run if configured
+			if t.CatchUp {
+				dlog.Info("dispatching catch-up run for %s/%s", projName, t.Name)
+				select {
+				case d.workQueue <- workItem{project: proj, todo: t}:
+					d.inFlightMu.Lock()
+					taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
+					d.inFlight[taskKey]++
+					d.inFlightMu.Unlock()
+				default:
+					dlog.Warn("work queue full, cannot dispatch catch-up for %s/%s", projName, t.Name)
+				}
+			}
+		}
+	}
+}
+
 func (d *Daemon) reloadConfig() {
 	newConfig, err := config.Load()
 	if err != nil {

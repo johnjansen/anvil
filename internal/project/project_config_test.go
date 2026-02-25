@@ -298,3 +298,57 @@ func TestLoadTodos_ExplicitZeroOverridesDefault(t *testing.T) {
 		t.Errorf("expected retry=0 (explicit override of default), got %d", todo.Retry)
 	}
 }
+
+func TestLoadTodos_CatchUpFromFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+	taskContent := "---\nid: \"test-catchup\"\nschedule: \"*/30 * * * *\"\ncatch_up: true\n---\nImportant triage task\n"
+	os.WriteFile(filepath.Join(todosDir, "triage.md"), []byte(taskContent), 0644)
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if !todos[0].CatchUp {
+		t.Error("expected catch_up=true")
+	}
+}
+
+func TestLoadTodos_CatchUpDefaultsFalse(t *testing.T) {
+	dir := t.TempDir()
+	anvilDir := filepath.Join(dir, ".anvil")
+	todosDir := filepath.Join(anvilDir, "todos", "p1")
+	os.MkdirAll(todosDir, 0755)
+
+	taskContent := "---\nid: \"test-no-catchup\"\nschedule: \"*/30 * * * *\"\n---\nNormal task\n"
+	os.WriteFile(filepath.Join(todosDir, "normal.md"), []byte(taskContent), 0644)
+
+	proj, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		t.Fatalf("LoadTodos error: %v", err)
+	}
+	if len(todos) != 1 {
+		t.Fatalf("expected 1 todo, got %d", len(todos))
+	}
+
+	if todos[0].CatchUp {
+		t.Error("expected catch_up=false by default")
+	}
+}
