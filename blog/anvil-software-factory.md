@@ -93,7 +93,7 @@ Speckit uses the `specify` CLI to scaffold spec-driven development into a projec
 if command -v specify &>/dev/null; then
   echo "specify already installed: $(specify version 2>&1 | grep 'CLI Version' | awk '{print $NF}')"
 else
-  uv tool install specify-cli
+  uv tool install specify-cli --from git+https://github.com/github/spec-kit.git
 fi
 ```
 
