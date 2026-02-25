@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -21,7 +23,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
 	"github.com/johnjansen/anvil/internal/project"
-	"github.com/johnjansen/anvil/internal/updater"
+	"github.com/johnjansen/anvil/internal/service"
 	"github.com/johnjansen/anvil/tools"
 
 	"gopkg.in/yaml.v3"
@@ -87,8 +89,6 @@ func main() {
 		projectCmd(os.Args[2:])
 	case "usage":
 		usageCmd(os.Args[2:])
-	case "cleanup":
-		cleanupCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
 	case "reload":
@@ -113,6 +113,9 @@ Usage:
 Commands:
   init [path]              Initialize a project and register it for watching
   watch [-d|--daemonize]   Start the daemon (once per machine)
+  watch --install          Install as system service (auto-start on boot)
+  watch --uninstall        Remove the system service
+  watch --status           Show system service status
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
@@ -120,7 +123,6 @@ Commands:
   status                   Show watched projects
   reload                   Reload daemon configuration (SIGHUP)
   usage [options]           Show LLM token usage and estimated costs
-  cleanup [options]         Prune old log and run files
   stop-on-idle             Drain running tasks then exit the daemon
   task <subcommand>        Task management commands
   project <subcommand>     Project management commands
@@ -251,7 +253,6 @@ func serveCmd() {
 	}
 
 	d := daemon.New(cfg)
-	d.SetVersion(version)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -272,6 +273,9 @@ func watchCmd2(args []string) {
 	daemonize := false
 	stop := false
 	child := false
+	install := false
+	uninstall := false
+	status := false
 	for _, arg := range args {
 		switch arg {
 		case "--daemonize", "-d":
@@ -280,7 +284,28 @@ func watchCmd2(args []string) {
 			stop = true
 		case "--child":
 			child = true
+		case "--install":
+			install = true
+		case "--uninstall":
+			uninstall = true
+		case "--status":
+			status = true
 		}
+	}
+
+	if install {
+		watchInstall()
+		return
+	}
+
+	if uninstall {
+		watchUninstall()
+		return
+	}
+
+	if status {
+		watchStatus()
+		return
 	}
 
 	if stop {
@@ -300,6 +325,57 @@ func watchCmd2(args []string) {
 
 	// Default: run in foreground (existing behavior)
 	serveCmd()
+}
+
+func watchInstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("cannot determine binary path: %v", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		log.Fatalf("cannot resolve binary path: %v", err)
+	}
+
+	if err := svc.Install(binaryPath); err != nil {
+		log.Fatalf("failed to install service: %v", err)
+	}
+
+	fmt.Printf("service installed and started\n")
+	fmt.Printf("  binary: %s\n", binaryPath)
+	fmt.Printf("  anvil watch will now auto-start on boot and restart on crash\n")
+}
+
+func watchUninstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	if err := svc.Uninstall(); err != nil {
+		log.Fatalf("failed to uninstall service: %v", err)
+	}
+
+	fmt.Println("service uninstalled")
+}
+
+func watchStatus() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	st, err := svc.Status()
+	if err != nil {
+		log.Fatalf("failed to get service status: %v", err)
+	}
+
+	fmt.Printf("service: %s\n", st.Message)
 }
 
 // readDaemonPID reads the PID from the daemon PID file.
@@ -379,7 +455,6 @@ func runDaemonChild() {
 	}
 
 	d := daemon.New(cfg)
-	d.SetVersion(version)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -585,14 +660,13 @@ func addCmd(args []string) {
 	// Handle -h/--help before creating task
 	for _, arg := range args {
 		if arg == "-h" || arg == "--help" {
-			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--runner cmd] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
+			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
 
 Add a new task to the project.
 
 Options:
   -p, --priority n        Priority 0-9 (default: 1)
   -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
-  --runner cmd           Runner command override (e.g., "claude --model haiku")
   --pre-check cmd        Command to run before task execution
   --allowed-tools tools  Comma-separated list of allowed tools
   --max-concurrent n     Max concurrent runs (default: 1)
@@ -606,7 +680,6 @@ Examples:
   anvil add "Review pull requests"
   anvil add -p 2 -s "0 9 * * *" "Daily standup notes"
   anvil add --pre-check "git diff --quiet" "Sync documentation"
-  anvil add -s "*/30 * * * *" --runner "claude --model haiku" "Triage issues"
   anvil add -s "*/30 * * * *" --file triage-prompt.md
   cat prompt.md | anvil add -s "*/30 * * * *" -
   anvil add -s "*/30 * * * *" <<'EOF'
@@ -680,9 +753,6 @@ func getCmd(args []string) {
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
 	fmt.Printf("Priority: %d\n", todo.Priority)
-	if todo.Runner != "" {
-		fmt.Printf("Runner:   %s\n", todo.Runner)
-	}
 	if todo.ID != "" {
 		sessionPath := project.SessionPath(abs, todo.ID)
 		if _, err := os.Stat(sessionPath); err == nil {
@@ -845,7 +915,6 @@ func taskCreateCmd(args []string) {
 	allowedTools := ""
 	maxConcurrent := 1
 	skipPermissions := false
-	runnerCmd := ""
 	filePath := ""
 	readStdin := false
 
@@ -855,7 +924,6 @@ func taskCreateCmd(args []string) {
 	preCheckSet := false
 	allowedToolsSet := false
 	maxConcurrentSet := false
-	runnerSet := false
 
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -912,13 +980,6 @@ func taskCreateCmd(args []string) {
 			}
 			maxConcurrent = n
 			maxConcurrentSet = true
-		case "--runner":
-			if i+1 >= len(args) {
-				log.Fatal("missing value for --runner")
-			}
-			i++
-			runnerCmd = args[i]
-			runnerSet = true
 		case "--skip-permissions":
 			skipPermissions = true
 		case "-f", "--file":
@@ -966,9 +1027,9 @@ func taskCreateCmd(args []string) {
 	// Parse frontmatter from file/stdin content and merge with CLI flags.
 	// CLI flags take precedence over frontmatter values.
 	if filePath != "" || readStdin {
-		taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd = parseFrontmatterAndMerge(
-			taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd,
-			prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet, runnerSet,
+		taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions = parseFrontmatterAndMerge(
+			taskText, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions,
+			prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet,
 		)
 	}
 
@@ -992,7 +1053,7 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to load project: %v", err)
 	}
 
-	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd)
+	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions)
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}
@@ -1021,17 +1082,17 @@ func taskCreateCmd(args []string) {
 // Returns the body (without frontmatter) and the merged configuration values.
 func parseFrontmatterAndMerge(
 	content string,
-	priority int, schedule, preCheck, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string,
-	prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet, runnerSet bool,
-) (string, int, string, string, string, int, bool, string) {
+	priority int, schedule, preCheck, allowedTools string, maxConcurrent int, skipPermissions bool,
+	prioritySet, scheduleSet, preCheckSet, allowedToolsSet, maxConcurrentSet bool,
+) (string, int, string, string, string, int, bool) {
 	if !strings.HasPrefix(content, "---\n") {
-		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
 	}
 
 	parts := strings.SplitN(content[4:], "\n---\n", 2)
 	if len(parts) != 2 {
 		// No closing delimiter found; treat entire content as body.
-		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
 	}
 
 	fm := parts[0]
@@ -1044,11 +1105,10 @@ func parseFrontmatterAndMerge(
 		AllowedTools    string `yaml:"allowed_tools"`
 		MaxConcurrent   *int   `yaml:"max_concurrent"`
 		SkipPermissions bool   `yaml:"skip_permissions"`
-		Runner          string `yaml:"runner"`
 	}
 	if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 		// If frontmatter is invalid YAML, treat the whole thing as body.
-		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
+		return content, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
 	}
 
 	// Merge: CLI flags take precedence over frontmatter.
@@ -1073,11 +1133,8 @@ func parseFrontmatterAndMerge(
 	if fmData.SkipPermissions {
 		skipPermissions = true
 	}
-	if !runnerSet && fmData.Runner != "" {
-		runnerCmd = fmData.Runner
-	}
 
-	return body, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions, runnerCmd
+	return body, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
 }
 
 func taskLsCmd(args []string) {
@@ -2923,13 +2980,38 @@ func updateCmd(args []string) {
 		}
 	}
 
-	latest, err := updater.CheckLatest()
+	// Fetch latest release from GitHub
+	resp, err := http.Get("https://api.github.com/repos/johnjansen/anvil/releases/latest")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(os.Stderr, "update check failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "update check failed: HTTP %d\n", resp.StatusCode)
 		os.Exit(1)
 	}
 
-	if !updater.NeedsUpdate(version, latest) {
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse release info: %v\n", err)
+		os.Exit(1)
+	}
+
+	latest := release.TagName
+	if latest == "" {
+		fmt.Fprintf(os.Stderr, "no releases found\n")
+		os.Exit(1)
+	}
+
+	// Compare versions (strip leading 'v' for comparison)
+	normalizedCurrent := strings.TrimPrefix(version, "v")
+	normalizedLatest := strings.TrimPrefix(latest, "v")
+
+	if normalizedCurrent == normalizedLatest {
 		fmt.Printf("already up to date (%s)\n", version)
 		return
 	}
@@ -2941,141 +3023,69 @@ func updateCmd(args []string) {
 
 	fmt.Printf("updating: %s → %s\n", version, latest)
 
-	res := updater.Apply(version, latest)
-	if res.Error != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", res.Error)
-		if strings.Contains(res.Error.Error(), "temp file") || strings.Contains(res.Error.Error(), "replace binary") {
-			fmt.Fprintf(os.Stderr, "try: sudo anvil update\n")
-		}
+	// Build download URL matching install.sh conventions
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	binaryURL := fmt.Sprintf("https://github.com/johnjansen/anvil/releases/download/%s/anvil-%s-%s", latest, goos, goarch)
+
+	// Find the path to the running binary
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to determine executable path: %v\n", err)
+		os.Exit(1)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve executable path: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("updated to %s (backup at %s)\n", res.LatestVersion, res.BackupPath)
-}
-
-func cleanupCmd(args []string) {
-	olderThan := ""
-	dryRun := false
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--older-than":
-			if i+1 >= len(args) {
-				log.Fatal("missing value for --older-than")
-			}
-			i++
-			olderThan = args[i]
-		case "--dry-run":
-			dryRun = true
-		case "-h", "--help":
-			fmt.Fprintf(os.Stderr, `usage: anvil cleanup [--older-than duration] [--dry-run]
-
-Prune old log and run files based on the retention policy.
-
-Options:
-  --older-than duration   Override max_age (e.g., "3d", "24h", "7d")
-  --dry-run               Show what would be deleted without deleting
-
-When no --older-than is specified, uses the retention policy from
-~/.anvil/config.yaml. If no policy is configured and no --older-than
-is given, nothing is pruned.
-
-Examples:
-  anvil cleanup                    # prune per retention policy
-  anvil cleanup --older-than 3d    # override: prune anything older than 3 days
-  anvil cleanup --dry-run          # show what would be deleted
-`)
-			os.Exit(0)
-		default:
-			log.Fatalf("unknown flag: %s", args[i])
-		}
-	}
-
-	cfg, err := config.Load()
+	// Download new binary to a temp file in the same directory for atomic rename
+	fmt.Printf("downloading %s...\n", binaryURL)
+	dlResp, err := http.Get(binaryURL)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		fmt.Fprintf(os.Stderr, "download failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "download failed: HTTP %d from %s\n", dlResp.StatusCode, binaryURL)
+		os.Exit(1)
 	}
 
-	var maxAge time.Duration
-	maxRuns := cfg.Retention.MaxRuns
+	execDir := filepath.Dir(execPath)
+	tmpFile, err := os.CreateTemp(execDir, ".anvil-update-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create temp file (permission denied?): %v\n", err)
+		fmt.Fprintf(os.Stderr, "try: sudo anvil update\n")
+		os.Exit(1)
+	}
+	tmpPath := tmpFile.Name()
 
-	if olderThan != "" {
-		maxAge, err = config.ParseRetentionAge(olderThan)
-		if err != nil {
-			log.Fatalf("invalid --older-than value: %v", err)
-		}
-	} else if cfg.Retention.MaxAge != "" {
-		maxAge, err = config.ParseRetentionAge(cfg.Retention.MaxAge)
-		if err != nil {
-			log.Fatalf("invalid retention max_age in config: %v", err)
-		}
+	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "download failed: %v\n", err)
+		os.Exit(1)
+	}
+	tmpFile.Close()
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "failed to set permissions: %v\n", err)
+		os.Exit(1)
 	}
 
-	if maxAge == 0 && maxRuns == 0 {
-		fmt.Println("no retention policy configured and no --older-than specified; nothing to do")
-		fmt.Println("configure retention in ~/.anvil/config.yaml:")
-		fmt.Println("  retention:")
-		fmt.Println("    max_age: 30d")
-		fmt.Println("    max_runs: 100")
-		return
+	// Atomically replace the binary
+	if err := os.Rename(tmpPath, execPath); err != nil {
+		os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "failed to replace binary: %v\n", err)
+		fmt.Fprintf(os.Stderr, "try: sudo anvil update\n")
+		os.Exit(1)
 	}
 
-	opts := project.PruneOptions{
-		MaxAge:  maxAge,
-		MaxRuns: maxRuns,
-		DryRun:  dryRun,
-		Now:     time.Now(),
-	}
-
-	paths := daemon.WatchedPaths()
-	// Also include current directory if it's an anvil project
-	abs, absErr := filepath.Abs(".")
-	if absErr == nil {
-		if _, serr := os.Stat(filepath.Join(abs, ".anvil")); serr == nil {
-			found := false
-			for _, p := range paths {
-				if p == abs {
-					found = true
-					break
-				}
-			}
-			if !found {
-				paths = append(paths, abs)
-			}
-		}
-	}
-
-	if len(paths) == 0 {
-		fmt.Println("no watched projects found")
-		return
-	}
-
-	totalLogs := 0
-	totalRuns := 0
-
-	for _, p := range paths {
-		result := project.PruneProject(p, opts)
-		if result.LogsDeleted > 0 || result.RunsDeleted > 0 {
-			action := "deleted"
-			if dryRun {
-				action = "would delete"
-			}
-			fmt.Printf("%s: %s %d logs, %d runs\n", filepath.Base(p), action, result.LogsDeleted, result.RunsDeleted)
-		}
-		for _, e := range result.Errors {
-			fmt.Fprintf(os.Stderr, "  error: %v\n", e)
-		}
-		totalLogs += result.LogsDeleted
-		totalRuns += result.RunsDeleted
-	}
-
-	if totalLogs == 0 && totalRuns == 0 {
-		fmt.Println("nothing to prune")
-	} else if dryRun {
-		fmt.Printf("\ntotal: would delete %d logs, %d runs (dry run)\n", totalLogs, totalRuns)
-	} else {
-		fmt.Printf("\ntotal: deleted %d logs, %d runs\n", totalLogs, totalRuns)
-	}
+	fmt.Printf("updated to %s\n", latest)
 }
 
 func usageCmd(args []string) {
