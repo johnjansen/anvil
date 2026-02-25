@@ -145,7 +145,9 @@ Task subcommands:
   log [-f] <name>           Show execution log (-f to follow)
   rm <name>                 Remove a task (kills if running)
   run <name>                Trigger immediate execution (bypass cron)
-  kill <name>               Kill a running task
+  kill <name>               Kill a running task (persistent tasks auto-restart)
+  stop <name>               Stop a persistent task permanently (kill + prevent restart)
+  start <name>              Start a stopped persistent task (dispatches on next tick)
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
   queue                     Show daemon queue status and skip reasons
@@ -901,6 +903,10 @@ func taskCmd(args []string) {
 		taskQueueCmd(args[1:])
 	case "timeout":
 		taskTimeoutCmd(args[1:])
+	case "stop":
+		taskStopCmd(args[1:])
+	case "start":
+		taskStartCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -1490,6 +1496,86 @@ func taskKillCmd(args []string) {
 	}
 
 	fmt.Printf("killed task: %s\n", args[0])
+}
+
+func taskStopCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task stop <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running — start it with: anvil watch")
+		os.Exit(1)
+	}
+
+	if err := daemon.SendStopRequest(todo.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to stop task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("stopped %s — will not be re-dispatched until started\n", todo.Name)
+}
+
+func taskStartCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task start <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running — start it with: anvil watch")
+		os.Exit(1)
+	}
+
+	if err := daemon.SendStartRequest(abs, todo.ID, todo.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start task: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("started %s — will be dispatched on next tick\n", todo.Name)
 }
 
 func taskHistoryCmd(args []string) {

@@ -26,7 +26,6 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
-	"github.com/johnjansen/anvil/internal/updater"
 
 	"gopkg.in/yaml.v3"
 )
@@ -89,6 +88,7 @@ type Daemon struct {
 	done        chan struct{}
 	reload      chan struct{} // SIGHUP trigger for config reload
 	lastTick    time.Time // last minute we processed (truncated to minute)
+	lastTickMu  sync.Mutex
 	socketPath  string
 	tasks       map[string]*RunningTask
 	tasksMu     sync.RWMutex
@@ -116,9 +116,10 @@ type Daemon struct {
 	// Used by CLI to show queue status.
 	pendingTasks  map[string]string // taskKey -> skip reason
 	pendingTasksMu sync.RWMutex
-	// version is set by the caller to enable auto-update checks.
-	version         string
-	lastUpdateCheck time.Time
+	// stoppedTasks tracks persistent tasks that have been explicitly stopped.
+	// Stopped tasks are not re-dispatched until started again via /start.
+	stoppedTasks map[string]bool // taskID -> true
+	stoppedMu    sync.Mutex
 }
 
 type RunningTask struct {
@@ -183,6 +184,7 @@ func New(cfg *config.Config) *Daemon {
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
+		stoppedTasks:  make(map[string]bool),
 	}
 }
 
@@ -224,9 +226,6 @@ func (d *Daemon) Run() {
 
 	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
 
-	// Check for auto-update on startup
-	go d.checkAutoUpdate()
-
 	// Start socket server
 	go d.startSocketServer()
 
@@ -262,10 +261,6 @@ func (d *Daemon) Run() {
 			d.reloadConfig()
 		case now := <-ticker.C:
 			d.tick(now)
-			// Periodic auto-update check (once per day)
-			if d.config.AutoUpdate && time.Since(d.lastUpdateCheck) >= updater.CheckInterval {
-				go d.checkAutoUpdate()
-			}
 		}
 	}
 }
@@ -280,48 +275,6 @@ func (d *Daemon) Stop() {
 // Done returns a channel that is closed when the daemon has fully stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
-}
-
-// SetVersion sets the current version for auto-update checks.
-func (d *Daemon) SetVersion(v string) {
-	d.version = v
-}
-
-// checkAutoUpdate checks for a newer release and applies it if auto_update is enabled.
-// On successful update, it logs the result and exits so the service manager can restart with the new binary.
-func (d *Daemon) checkAutoUpdate() {
-	if !d.config.AutoUpdate || d.version == "" || d.version == "dev" {
-		return
-	}
-
-	latest, err := updater.CheckLatest()
-	if err != nil {
-		dlog.Warn("auto-update check failed: %v", err)
-		d.lastUpdateCheck = time.Now()
-		return
-	}
-
-	d.lastUpdateCheck = time.Now()
-
-	if !updater.NeedsUpdate(d.version, latest) {
-		dlog.Info("auto-update: already up to date (%s)", d.version)
-		return
-	}
-
-	dlog.Info("auto-update: new version available %s → %s, applying...", d.version, latest)
-
-	res := updater.Apply(d.version, latest)
-	if res.Error != nil {
-		dlog.Warn("auto-update failed: %v", res.Error)
-		return
-	}
-
-	dlog.Info("auto-update: updated to %s (backup at %s), restarting...", res.LatestVersion, res.BackupPath)
-
-	// Exit cleanly so the service manager (launchd/systemd) can restart us with the new binary.
-	d.stopOnce.Do(func() {
-		close(d.stop)
-	})
 }
 
 // reloadConfig reads the config file and updates the daemon's configuration.
@@ -358,12 +311,6 @@ func (d *Daemon) reloadConfig() {
 			d.config.Runners = newConfig.Runners
 			changes = append(changes, fmt.Sprintf("runners %s->%s", oldRunners, newRunners))
 		}
-	}
-
-	// hooks: apply to new task completions
-	if newConfig.Hooks.OnSuccess != d.config.Hooks.OnSuccess || newConfig.Hooks.OnFailure != d.config.Hooks.OnFailure {
-		d.config.Hooks = newConfig.Hooks
-		changes = append(changes, "hooks updated")
 	}
 
 	// tick_interval: will be picked up on next tick
@@ -544,12 +491,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
-	// Select runner: use per-task runner override if set, otherwise global runner chain.
-	taskRunner := d.runner
-	if t.Runner != "" {
-		taskRunner = runner.New([]string{t.Runner}, timeout)
-	}
-
 	// Retry loop with exponential backoff
 	var usedSessionID string
 	var logPath string
@@ -564,7 +505,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			break
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = taskRunner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {
@@ -680,11 +621,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.runnerCooldownsMu.Unlock()
 			dlog.Info("runner[%d] failed — marking as cooldown for 5 minutes", usedRunnerIdx)
 		}
-		// Run global on_failure hook if defined and not skipped
-		if d.config.Hooks.OnFailure != "" && !t.SkipGlobalHooks {
-			d.runHook("on_failure (global)", d.config.Hooks.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
-		}
-		// Run per-task on_failure hook if defined
+		// Run on_failure hook if defined
 		if t.OnFailure != "" {
 			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
 		}
@@ -710,11 +647,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	} else {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
-		// Run global on_success hook if defined and not skipped
-		if d.config.Hooks.OnSuccess != "" && !t.SkipGlobalHooks {
-			d.runHook("on_success (global)", d.config.Hooks.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
-		}
-		// Run per-task on_success hook if defined
+		// Run on_success hook if defined
 		if t.OnSuccess != "" {
 			d.runHook("on_success", t.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
 		}
@@ -823,6 +756,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
 	mux.HandleFunc("/reload", d.handleReload)
+	mux.HandleFunc("/stop", d.handleStopTask)
+	mux.HandleFunc("/start", d.handleStartTask)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -1133,15 +1068,15 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the task is already running
-	d.tasksMu.RLock()
+	d.tasksMu.Lock()
+	var runningTask *RunningTask
 	for _, task := range d.tasks {
 		if task.TaskID == req.TaskID {
-			d.tasksMu.RUnlock()
-			http.Error(w, fmt.Sprintf("task %s is already running", req.TaskName), http.StatusConflict)
-			return
+			runningTask = task
+			break
 		}
 	}
-	d.tasksMu.RUnlock()
+	d.tasksMu.Unlock()
 
 	// Load the project and find the todo
 	proj, err := project.Load(req.ProjectPath)
@@ -1167,6 +1102,22 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
+
+	// If the task is already running, kill it first (for persistent tasks, restart; for others, reject)
+	if runningTask != nil {
+		if !found.IsPersistent() {
+			http.Error(w, fmt.Sprintf("task %s is already running", req.TaskName), http.StatusConflict)
+			return
+		}
+		// Persistent task: kill current instance, then re-dispatch
+		runningTask.Cancel()
+		dlog.Info("force-run: killed running persistent task %s for restart", req.TaskName)
+	}
+
+	// Clear stopped state so the task can be dispatched
+	d.stoppedMu.Lock()
+	delete(d.stoppedTasks, found.ID)
+	d.stoppedMu.Unlock()
 
 	// Enqueue for immediate dispatch (bypass cron, skip pre_check by clearing it)
 	todo := *found
@@ -1199,7 +1150,108 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "name": todo.Name})
 }
 
+// StopRequest is the JSON payload for /stop (stop a persistent task permanently).
+type StopRequest struct {
+	ID string `json:"id"`
+}
+
+// StartRequest is the JSON payload for /start (restart a stopped persistent task).
+type StartRequest struct {
+	ProjectPath string `json:"project_path"`
+	TaskID      string `json:"task_id"`
+	TaskName    string `json:"task_name"`
+}
+
+func (d *Daemon) handleStopTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req StopRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Mark the task as stopped so it won't be re-dispatched
+	d.stoppedMu.Lock()
+	d.stoppedTasks[req.ID] = true
+	d.stoppedMu.Unlock()
+
+	// Kill the running instance if any
+	d.tasksMu.Lock()
+	var found *RunningTask
+	for _, task := range d.tasks {
+		if task.TaskID == req.ID || task.Name == req.ID {
+			found = task
+			break
+		}
+	}
+	if found != nil {
+		found.Cancel()
+	}
+	d.tasksMu.Unlock()
+
+	name := req.ID
+	if found != nil {
+		name = found.Name
+	}
+	dlog.Info("persistent task %s stopped — will not be re-dispatched until started", name)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "id": req.ID})
+}
+
+func (d *Daemon) handleStartTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req StartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.TaskID == "" {
+		http.Error(w, "task_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Clear stopped state
+	d.stoppedMu.Lock()
+	wasStopped := d.stoppedTasks[req.TaskID]
+	delete(d.stoppedTasks, req.TaskID)
+	d.stoppedMu.Unlock()
+
+	// Also clear per-task drain state
+	d.drainedMu.Lock()
+	delete(d.drainedTasks, req.TaskID)
+	d.drainedMu.Unlock()
+
+	if !wasStopped {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "already_running", "id": req.TaskID})
+		return
+	}
+
+	dlog.Info("persistent task %s started — will be dispatched on next tick", req.TaskName)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "started", "id": req.TaskID})
+}
+
 func (d *Daemon) tick(now time.Time) {
+	// Run retention pruning if configured (once per minute)
+	if d.config.Retention.MaxAge > 0 || d.config.Retention.MaxRuns > 0 {
+		d.pruneOldData(now)
+	}
+
 	thisMinute := now.Truncate(time.Minute)
 
 	// Only evaluate cron schedules once per minute
@@ -1337,8 +1389,26 @@ func (d *Daemon) tick(now time.Time) {
 		d.inFlight[taskKey]++
 		d.inFlightMu.Unlock()
 
-		// Skip dispatch if daemon-wide drain is active
-		if atomic.LoadInt32(&d.draining) == 1 {
+		// Skip dispatch if persistent task has been explicitly stopped
+		d.stoppedMu.Lock()
+		taskStopped := d.stoppedTasks[pt.todo.ID]
+		d.stoppedMu.Unlock()
+		if taskStopped {
+			dlog.Info("skip %s/%s — stopped", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "stopped"
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
+		}
+
+		// Skip dispatch if daemon-wide drain is active (persistent tasks exempt)
+		if atomic.LoadInt32(&d.draining) == 1 && !pt.todo.IsPersistent() {
 			dlog.Info("skip %s/%s — draining", projName, pt.todo.Name)
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
@@ -1499,25 +1569,6 @@ func (d *Daemon) tick(now time.Time) {
 	}
 
 	dlog.TickSummary(now, len(projects), totalTodos, totalMatched, dispatched)
-
-	// Run retention pruning once per minute when a policy is configured.
-	if cronTick && (d.config.Retention.MaxAge != "" || d.config.Retention.MaxRuns > 0) {
-		maxAge, _ := config.ParseRetentionAge(d.config.Retention.MaxAge)
-		opts := project.PruneOptions{
-			MaxAge:  maxAge,
-			MaxRuns: d.config.Retention.MaxRuns,
-			Now:     now,
-		}
-		for _, proj := range projects {
-			result := project.PruneProject(proj.Path, opts)
-			if result.LogsDeleted > 0 || result.RunsDeleted > 0 {
-				dlog.Info("retention: pruned %d logs, %d runs in %s", result.LogsDeleted, result.RunsDeleted, filepath.Base(proj.Path))
-			}
-			for _, err := range result.Errors {
-				dlog.Warn("retention: %v", err)
-			}
-		}
-	}
 }
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink pointing to url.
@@ -1551,9 +1602,110 @@ func newRunID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// WatchedPaths returns the list of project paths currently being watched.
-func WatchedPaths() []string {
-	return loadWatchedPaths()
+// pruneOldData removes old log and run files based on retention policy.
+// It runs once per tick to keep disk usage bounded.
+func (d *Daemon) pruneOldData(now time.Time) {
+	paths := loadWatchedPaths()
+	if len(paths) == 0 {
+		return
+	}
+
+	// Only prune on cron ticks (once per minute) to avoid overhead
+	thisMinute := now.Truncate(time.Minute)
+	if !thisMinute.Equal(d.lastTick) {
+		return
+	}
+
+	for _, projPath := range paths {
+		d.pruneProject(projPath)
+	}
+}
+
+func (d *Daemon) pruneProject(projPath string) {
+	anvilDir := filepath.Join(projPath, ".anvil")
+
+	// Prune logs
+	logsDir := filepath.Join(anvilDir, "logs")
+	if _, err := os.Stat(logsDir); err == nil {
+		d.pruneDir(logsDir, "log")
+	}
+
+	// Prune runs
+	runsDir := filepath.Join(anvilDir, "runs")
+	if _, err := os.Stat(runsDir); err == nil {
+		d.pruneDir(runsDir, "run")
+	}
+}
+
+func (d *Daemon) pruneDir(dir, kind string) {
+	taskDirs, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, taskDir := range taskDirs {
+		if !taskDir.IsDir() {
+			continue
+		}
+		taskPath := filepath.Join(dir, taskDir.Name())
+		d.pruneTaskDir(taskPath, kind)
+	}
+}
+
+func (d *Daemon) pruneTaskDir(taskPath, kind string) {
+	entries, err := os.ReadDir(taskPath)
+	if err != nil {
+		return
+	}
+
+	// Collect files with their modification times
+	type fileInfo struct {
+		path    string
+		modTime time.Time
+	}
+	var files []fileInfo
+
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{entry.Name(), info.ModTime()})
+	}
+
+	// Sort by modification time (oldest first)
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.Before(files[j].modTime)
+	})
+
+	var toDelete []string
+	cutoff := time.Now().Add(-d.config.Retention.MaxAge)
+
+	// Delete by age
+	if d.config.Retention.MaxAge > 0 {
+		for _, f := range files {
+			if f.modTime.Before(cutoff) {
+				toDelete = append(toDelete, f.path)
+			}
+		}
+	}
+
+	// Delete by count (keep MaxRuns most recent)
+	if d.config.Retention.MaxRuns > 0 && len(files) > d.config.Retention.MaxRuns {
+		keep := len(files) - d.config.Retention.MaxRuns
+		// files are sorted oldest first, so delete first 'keep' entries
+		for i := 0; i < keep; i++ {
+			toDelete = append(toDelete, files[i].path)
+		}
+	}
+
+	// Actually delete the files
+	for _, name := range toDelete {
+		path := filepath.Join(taskPath, name)
+		if err := os.Remove(path); err != nil {
+			dlog.Warn("failed to prune %s: %v", path, err)
+		}
+	}
 }
 
 func loadWatchedPaths() []string {
@@ -1776,6 +1928,46 @@ func SendRunRequest(projectPath, taskID, taskName string) error {
 		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
 	}
 
+	return nil
+}
+
+// SendStopRequest tells the daemon to permanently stop a persistent task.
+func SendStopRequest(id string) error {
+	data, err := json.Marshal(StopRequest{ID: id})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/stop", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon stop failed: %s", string(body))
+	}
+	return nil
+}
+
+// SendStartRequest tells the daemon to start a stopped persistent task.
+func SendStartRequest(projectPath, taskID, taskName string) error {
+	data, err := json.Marshal(StartRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/start", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon start failed: %s", string(body))
+	}
 	return nil
 }
 

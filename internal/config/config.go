@@ -4,30 +4,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	TickInterval    time.Duration   `yaml:"tick_interval"`
-	Runner          string          `yaml:"runner"`
-	Runners         []string        `yaml:"runners"`
-	Timeout         time.Duration   `yaml:"timeout"`
-	MaxWorkers      int             `yaml:"max_workers"`
-	MaxTodos        int             `yaml:"max_todos"` // deprecated: use max_workers
+	TickInterval time.Duration   `yaml:"tick_interval"`
+	Runner       string         `yaml:"runner"`
+	Runners      []string       `yaml:"runners"`
+	Timeout      time.Duration  `yaml:"timeout"`
+	MaxWorkers   int            `yaml:"max_workers"`
+	MaxTodos     int            `yaml:"max_todos"` // deprecated: use max_workers
 	Hooks           HooksConfig     `yaml:"hooks"`
+	Retention       RetentionConfig `yaml:"retention"`
 	InputTokenRate  float64         `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
 	OutputTokenRate float64         `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
-	Retention       RetentionConfig `yaml:"retention"`
+	AutoUpdate      bool            `yaml:"auto_update"`       // opt-in: auto-update binary on daemon startup
 }
 
-// RetentionConfig controls automatic pruning of old log and run files.
+// RetentionConfig defines data retention policies for logs and runs.
 type RetentionConfig struct {
-	MaxAge  string `yaml:"max_age"`  // duration string, e.g. "7d", "30d", "24h"
-	MaxRuns int    `yaml:"max_runs"` // max run records to keep per task (0 = unlimited)
+	MaxAge  time.Duration `yaml:"max_age"`  // delete logs/runs older than this
+	MaxRuns int           `yaml:"max_runs"` // keep at most this many runs per task
 }
 
 // HooksConfig defines global lifecycle hooks that run for all tasks.
@@ -93,24 +92,6 @@ timeout: 15m
 tick_interval: 5s
 `
 	return true, os.WriteFile(p, []byte(defaults), 0644)
-}
-
-// ParseRetentionAge parses a retention age string like "7d", "30d", "24h", "2h30m".
-// Supports a "d" suffix for days in addition to standard Go duration strings.
-func ParseRetentionAge(s string) (time.Duration, error) {
-	if s == "" {
-		return 0, nil
-	}
-	// Support "d" suffix for days (e.g. "7d", "30d")
-	if strings.HasSuffix(s, "d") {
-		numStr := strings.TrimSuffix(s, "d")
-		days, err := strconv.Atoi(numStr)
-		if err != nil {
-			return 0, fmt.Errorf("invalid day duration %q: %w", s, err)
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
 }
 
 func Load() (*Config, error) {
