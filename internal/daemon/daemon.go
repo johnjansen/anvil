@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,9 +27,18 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
+	"github.com/johnjansen/anvil/internal/updater"
 
 	"gopkg.in/yaml.v3"
 )
+
+// version returns the current anvil version from build info.
+func version() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
 
 // ErrDaemonAlreadyRunning is returned when a daemon is already running
 var ErrDaemonAlreadyRunning = errors.New("daemon already running")
@@ -230,6 +240,25 @@ func (d *Daemon) Run() {
 	defer ticker.Stop()
 
 	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
+
+	// Check for updates on startup if auto_update is enabled
+	if d.config.AutoUpdate {
+		currentVersion := version()
+		latestVersion, err := updater.CheckLatest()
+		if err != nil {
+			dlog.Warn("auto-update check failed: %v", err)
+		} else if updater.NeedsUpdate(currentVersion, latestVersion) {
+			dlog.Info("auto-update available: %s -> %s", currentVersion, latestVersion)
+			result := updater.Apply(currentVersion, latestVersion)
+			if result.Error != nil {
+				dlog.Warn("auto-update failed: %v, continuing with current version", result.Error)
+			} else {
+				dlog.Info("auto-update applied: %s -> %s, restart to use new version", currentVersion, latestVersion)
+			}
+		} else {
+			dlog.Info("auto-update: already on latest version %s", latestVersion)
+		}
+	}
 
 	// Start socket server
 	go d.startSocketServer()
