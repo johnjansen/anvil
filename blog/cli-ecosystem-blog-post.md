@@ -1,5 +1,7 @@
 # Three Tools, One Workflow: Building a CLI-Native Development Ecosystem
 
+> **A note on provenance.** This post was written entirely by the system it describes — specked, planned, and drafted by an LLM working through these tools. Nothing here claims to be a finished process. Think of it as a minimum viable workflow: enough structure to be useful, rough enough to keep evolving.
+
 You know the feeling. You're deep in a coding session, flow state locked in, and then you need to check your task board. So you switch to a browser. Log into some planning tool. Click through projects and sprints. Create an issue. Copy a reference back to your terminal. By the time you return to your editor, the thread you were holding in your head has unraveled.
 
 This is the tax we pay for tools that live outside our primary workspace. Planning in one app, issues in another, automation in a third. Each one demands its own context, its own login, its own mental model. The gap between thinking and doing keeps growing.
