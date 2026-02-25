@@ -605,17 +605,6 @@ anvil update --check     # check if an update is available without installing
 
 `anvil update` fetches the latest GitHub release, downloads the platform binary, and replaces the current executable. Use `--check` to see if a newer version exists without actually updating.
 
-## Usage
-
-```bash
-anvil usage                      # show usage for last 7 days across all projects
-anvil usage --project <path>    # filter to a specific project
-anvil usage --task <name>      # filter to a specific task
-anvil usage --since 2024-01-01 # show usage since a specific date
-```
-
-Shows LLM token usage and estimated costs across tasks and projects. Uses the `input_token_rate` and `output_token_rate` from config to calculate costs.
-
 ## Version
 
 ```bash
