@@ -194,11 +194,10 @@ fi
 Launch the beads web dashboard for the project:
 
 ```bash
-bdui start
+bdui start --open
 ```
 
-> [!NOTE]
-> This starts the UI server at `http://127.0.0.1:3000`. Add `--open` to automatically open it in the browser. The server runs in the background — use `bdui stop` to shut it down.
+This starts the UI server and opens `http://127.0.0.1:3000` in the default browser. The server runs in the background — use `bdui stop` to shut it down.
 
 ### Initialize Speckit Constitution
 
