@@ -29,10 +29,11 @@ which git || echo "MISSING: git"
 which brew || echo "MISSING: homebrew (https://brew.sh)"
 which claude || echo "MISSING: claude CLI (npm install -g @anthropic-ai/claude-code)"
 which uv || echo "MISSING: uv (curl -LsSf https://astral.sh/uv/install.sh | sh)"
+which npm || echo "MISSING: npm/node (https://nodejs.org or nvm)"
 ```
 
 > [!CAUTION]
-> If `git`, `brew`, `claude`, or `uv` are missing, stop and help the user install them first. Claude CLI is required for anvil's task execution. Homebrew is needed for beads installation. uv is needed for speckit's `specify` CLI.
+> If `git`, `brew`, `claude`, `uv`, or `npm` are missing, stop and help the user install them first. Claude CLI is required for anvil's task execution. Homebrew is needed for beads installation. uv is needed for speckit's `specify` CLI. npm is needed for beads-ui.
 
 ## Step 1: Install Beads
 
@@ -51,6 +52,18 @@ Verify it works:
 
 ```bash
 bd version
+```
+
+### Install Beads UI
+
+Beads UI provides a local web dashboard for the issue tracker — board views, epics, keyboard navigation.
+
+```bash
+if command -v bdui &>/dev/null; then
+  echo "beads-ui already installed"
+else
+  npm install -g beads-ui
+fi
 ```
 
 ## Step 2: Install Anvil
@@ -106,6 +119,24 @@ specify init --here --ai claude --script sh --force
 > [!NOTE]
 > The `--force` flag skips the confirmation prompt when the directory is not empty. If the project is brand new, you can omit it.
 
+## Step 3b: Install Additional Skills
+
+Install the **taskstobeads** bridge skill (converts speckit task breakdowns into beads issues) and the **backend-engineer** skill (an autonomous agent that pulls the next highest-priority issue from beads and implements it):
+
+```bash
+# taskstobeads — bridges speckit tasks into beads issues
+mkdir -p .claude/skills/taskstobeads
+curl -fsSL \
+  https://raw.githubusercontent.com/johnjansen/anvil/main/blog/speckit-taskstobeads-skill.md \
+  -o .claude/skills/taskstobeads/SKILL.md
+
+# backend-engineer — picks up and implements the next unblocked issue
+mkdir -p .claude/skills/backend-engineer
+curl -fsSL \
+  https://raw.githubusercontent.com/johnjansen/anvil/main/blog/backend-engineer-skill.md \
+  -o .claude/skills/backend-engineer/SKILL.md
+```
+
 ## Step 4: Initialize the Project
 
 Determine the target directory. If the user provided a project name, create it. Otherwise use the current directory.
@@ -158,6 +189,17 @@ else
 fi
 ```
 
+### Start Beads UI
+
+Launch the beads web dashboard for the project:
+
+```bash
+bdui start
+```
+
+> [!NOTE]
+> This starts the UI server at `http://127.0.0.1:3000`. Add `--open` to automatically open it in the browser. The server runs in the background — use `bdui stop` to shut it down.
+
 ### Initialize Speckit Constitution
 
 Once speckit is scaffolded and all tools are initialized, establish the project's development principles by running the constitution skill. This creates a constitution file that guides how speckit generates specs, plans, and tasks for this project.
@@ -196,8 +238,22 @@ else
 fi
 
 echo ""
+echo "=== Beads UI ==="
+command -v bdui &>/dev/null && echo "OK — $(bdui --version 2>&1)" || echo "Not installed (run: npm install -g beads-ui)"
+
+echo ""
+echo "=== Skills ==="
+for skill in taskstobeads backend-engineer software-factory; do
+  if [ -f ".claude/skills/$skill/SKILL.md" ]; then
+    echo "OK — $skill"
+  else
+    echo "MISSING — $skill"
+  fi
+done
+
+echo ""
 echo "=== Project Structure ==="
-ls -la .beads/ .anvil/ .specify/ .claude/commands/ 2>/dev/null
+ls -la .beads/ .anvil/ .specify/ .claude/commands/ .claude/skills/ 2>/dev/null
 ```
 
 ## Step 6: Quick Onboarding
@@ -225,8 +281,16 @@ AUTOMATION (anvil)
   anvil ps                                   → see running tasks
   anvil task log <name>                      → check execution output
 
+DASHBOARD (beads-ui)
+  bdui start --open                          → launch web dashboard
+  bdui stop                                  → shut it down
+
 BRIDGING TOOLS
   /speckit.taskstobeads                      → convert tasks to beads issues
+
+AUTONOMOUS WORK
+  /backend-engineer                          → pick up and implement the next issue
+  /backend-engineer -l backend               → filter by label
 ```
 
 > [!IMPORTANT]
