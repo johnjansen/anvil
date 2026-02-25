@@ -365,7 +365,7 @@ runners:
   - claude
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
-tick_interval: 5s  # how often to check for work
+tick_interval: 10s  # how often to check for work
 input_token_rate: 3.0    # cost per 1M input tokens in USD
 output_token_rate: 15.0  # cost per 1M output tokens in USD
 auto_update: false       # opt-in: auto-update binary on daemon startup
