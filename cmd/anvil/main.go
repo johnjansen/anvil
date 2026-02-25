@@ -3016,13 +3016,38 @@ func logsCmd(args []string) {
 		os.Exit(1)
 	}
 
-	if len(args) == 0 {
+	// Parse --runs N flag
+	runsCount := 1
+	var filteredArgs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--runs" && i+1 < len(args) {
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "invalid --runs value: must be a positive integer")
+				os.Exit(1)
+			}
+			runsCount = n
+			i++ // skip the value
+		} else if strings.HasPrefix(args[i], "--runs=") {
+			val := strings.TrimPrefix(args[i], "--runs=")
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "invalid --runs value: must be a positive integer")
+				os.Exit(1)
+			}
+			runsCount = n
+		} else {
+			filteredArgs = append(filteredArgs, args[i])
+		}
+	}
+
+	if len(filteredArgs) == 0 {
 		logsMultiplex()
 		return
 	}
 
-	// Single task mode: anvil logs <name>
-	name := args[0]
+	// Single task mode: anvil logs <name> [--runs N]
+	name := filteredArgs[0]
 	abs, err := filepath.Abs(".")
 	if err != nil {
 		log.Fatalf("bad path: %v", err)
@@ -3042,44 +3067,93 @@ func logsCmd(args []string) {
 		}
 	}
 
-	// Check if the task is currently running
-	tasks, err := daemon.SendPsRequest()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get running tasks: %v\n", err)
-		os.Exit(1)
-	}
+	// Check if the task is currently running (only for single-run mode)
+	if runsCount == 1 {
+		tasks, err := daemon.SendPsRequest()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get running tasks: %v\n", err)
+			os.Exit(1)
+		}
 
-	fullKey := fmt.Sprintf("%s/%s", abs, todoName)
-	for _, t := range tasks {
-		if t.Name == fullKey && t.LogPath != "" {
-			// Task is running — follow the live raw log
-			followLog(t.LogPath, abs, todoName)
-			return
+		fullKey := fmt.Sprintf("%s/%s", abs, todoName)
+		for _, t := range tasks {
+			if t.Name == fullKey && t.LogPath != "" {
+				// Task is running — follow the live raw log
+				followLog(t.LogPath, abs, todoName)
+				return
+			}
 		}
 	}
 
-	// Task is not running — print the most recent completed raw log
+	// Task is not running — print log(s) from completed runs
 	if taskID == "" {
 		fmt.Fprintf(os.Stderr, "task not found: %s\n", name)
 		os.Exit(1)
 	}
 
-	rec, err := project.ReadCurrentRunRecord(abs, taskID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "no run record found for task %s\n", name)
-		os.Exit(1)
-	}
-
-	logPath := rawLogPath(abs, rec.TaskID, rec.RunID)
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "no raw log found for task %s (looked at %s)\n", name, logPath)
+	if runsCount == 1 {
+		// Single run: show latest log
+		rec, err := project.ReadCurrentRunRecord(abs, taskID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "no run record found for task %s\n", name)
 			os.Exit(1)
 		}
-		log.Fatalf("failed to read raw log: %v", err)
+
+		logPath := rawLogPath(abs, rec.TaskID, rec.RunID)
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "no raw log found for task %s (looked at %s)\n", name, logPath)
+				os.Exit(1)
+			}
+			log.Fatalf("failed to read raw log: %v", err)
+		}
+		fmt.Print(string(data))
+	} else {
+		// Multiple runs: show last N run logs with headers
+		records, err := project.ReadAllRunRecords(abs, taskID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read run records for task %s: %v\n", name, err)
+			os.Exit(1)
+		}
+		if len(records) == 0 {
+			fmt.Fprintf(os.Stderr, "no run records found for task %s\n", name)
+			os.Exit(1)
+		}
+
+		// Limit to requested count
+		if runsCount > len(records) {
+			runsCount = len(records)
+		}
+
+		// Print runs oldest-first for chronological reading
+		for i := runsCount - 1; i >= 0; i-- {
+			rec := records[i]
+			status := "success"
+			if !rec.Success {
+				status = "failure"
+			}
+			fmt.Printf("=== Run %s [%s] %s → %s ===\n",
+				rec.RunID,
+				status,
+				rec.Started.Format("2006-01-02 15:04:05"),
+				rec.Finished.Format("15:04:05"))
+
+			logPath := rawLogPath(abs, rec.TaskID, rec.RunID)
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				fmt.Printf("  (log not available: %v)\n", err)
+			} else {
+				fmt.Print(string(data))
+				if len(data) > 0 && data[len(data)-1] != '\n' {
+					fmt.Println()
+				}
+			}
+			if i > 0 {
+				fmt.Println()
+			}
+		}
 	}
-	fmt.Print(string(data))
 }
 
 // logsMultiplex follows raw output from all currently running tasks, prefixing

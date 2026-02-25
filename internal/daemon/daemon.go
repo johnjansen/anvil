@@ -632,6 +632,18 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
+	// Truncate oversized log files to keep disk usage bounded.
+	// Uses per-task max_log_size if set, otherwise falls back to global retention config.
+	if logPath != "" {
+		maxSize := t.MaxLogSize
+		if maxSize <= 0 {
+			maxSize = d.config.Retention.MaxLogSize
+		}
+		if maxSize > 0 {
+			truncateLog(logPath, maxSize)
+		}
+	}
+
 	elapsed := time.Since(startTime)
 	// Detect force-cycle: persistent task hit its max runtime (context deadline exceeded)
 	forceCycled := t.IsPersistent() && err != nil && ctx.Err() == context.DeadlineExceeded
@@ -763,6 +775,50 @@ func captureOutputSummary(logPath string) (string, error) {
 	first := strings.Join(lines[:maxLines], "\n")
 	last := strings.Join(lines[len(lines)-maxLines:], "\n")
 	return first + "\n...\n" + last, nil
+}
+
+// truncateLog keeps only the last maxSize bytes of a log file.
+// If the file is smaller than maxSize, it is left unchanged.
+// A marker line is prepended to indicate truncation occurred.
+func truncateLog(logPath string, maxSize int64) {
+	info, err := os.Stat(logPath)
+	if err != nil || info.Size() <= maxSize {
+		return
+	}
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		return
+	}
+
+	// Seek to keep the last maxSize bytes (minus room for the marker)
+	marker := []byte("\n--- [log truncated: exceeded max_log_size] ---\n")
+	keepSize := maxSize - int64(len(marker))
+	if keepSize < 0 {
+		keepSize = 0
+	}
+
+	offset := info.Size() - keepSize
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		f.Close()
+		return
+	}
+
+	tail, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		return
+	}
+
+	// Skip to the next newline to avoid a partial first line
+	if idx := bytes.IndexByte(tail, '\n'); idx >= 0 && idx < len(tail)-1 {
+		tail = tail[idx+1:]
+	}
+
+	// Write truncated content back
+	if err := os.WriteFile(logPath, append(marker, tail...), 0644); err != nil {
+		dlog.Warn("failed to truncate log %s: %v", logPath, err)
+	}
 }
 
 func (d *Daemon) startSocketServer() {
