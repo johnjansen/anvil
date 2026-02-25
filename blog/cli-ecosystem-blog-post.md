@@ -69,6 +69,8 @@ Tasks are markdown files with YAML frontmatter, stored in `.anvil/todos/` and or
 
 The insight here is that a lot of recurring development chores — issue triage, PR reviews, CI checks, doc updates — are a good fit for LLM automation. Anvil makes that a first-class part of your project instead of a fragile cron job tucked away on a server.
 
+> **A note on Gas Town.** If you're looking at anvil and thinking "this sounds like multi-agent orchestration," you should know about [Gas Town](https://github.com/steveyegge/gastown) by [Steve Yegge](https://github.com/steveyegge) — who also created beads. Gas Town is a full workspace manager for coordinating 20-30+ Claude Code agents with persistent state, mailboxes, identity, handoffs, and a Mayor that orchestrates the whole operation. It's a genuinely different thing from anvil. Anvil is a *task scheduler* — it fires off isolated jobs on a cron schedule and doesn't know or care what other tasks are doing. Gas Town is an *orchestration system* — agents have roles, share context, communicate through hooks and convoys, and coordinate on complex multi-step work. Anvil is closer to cron-meets-LLM; Gas Town is closer to a staffing agency. They're complementary, not competing. If your needs grow beyond scheduled tasks into coordinated multi-agent workflows, Gas Town is absolutely worth a look.
+
 ## Putting It Together: A Feature from Start to Finish
 
 Each tool pulls its weight alone. But here's what it looks like when you use all three on a single feature.
