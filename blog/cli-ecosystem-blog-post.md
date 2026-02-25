@@ -278,12 +278,13 @@ At this point you have a spec, a plan, an ordered backlog, and a visual board �
 
 **6. Put a backend engineer on it.**
 
-```bash
-anvil add -s "*/5 * * * *" --pre-check "bd ready --json 2>/dev/null | grep -q '\"id\"'" \
-  "You are a backend engineer. Run bd ready to find the highest-priority unblocked issue. Claim it with bd update <id> -s in-progress -a claude. Read the issue details, understand the context from any referenced specs or closed dependencies, implement the change, write tests, commit with the issue ID in the message, then close it with bd close <id> -r 'summary of what was done'. Only work on one issue per run."
+```
+add a task that runs every 5 minutes to check beads for unblocked work
+and implement the next highest-priority issue. use a pre-check so it
+skips when there's nothing ready.
 ```
 
-Every five minutes, anvil checks if there's unblocked work in beads. If there is, it spins up an agent that claims the top issue, implements it, and closes it — then exits. Next tick, it checks again. Leave it running and the backlog drains itself.
+Anvil creates a scheduled task that checks beads every five minutes. If there's unblocked work, it spins up an agent that claims the top issue, implements it, and closes it — then exits. Next tick, it checks again. Leave it running and the backlog drains itself.
 
 The whole thing takes about two minutes to set up. The result is a running FastAPI server with a styled homepage, every decision documented in markdown, every task tracked as a git-native issue — and an automated engineer that keeps working through the backlog while you do something else.
 
