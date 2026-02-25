@@ -86,7 +86,7 @@ func EnsureConfig() (bool, error) {
   - claude
 max_workers: 10
 timeout: 15m
-tick_interval: 5s
+tick_interval: 10s
 `
 	return true, os.WriteFile(p, []byte(defaults), 0644)
 }
