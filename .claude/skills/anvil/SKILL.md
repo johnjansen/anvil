@@ -400,6 +400,9 @@ Or run cleanup manually:
 # Preview what would be deleted
 anvil cleanup --older-than=3d --dry-run
 
+# Shorthand for dry-run
+anvil cleanup --older-than=3d -n
+
 # Actually delete logs older than 3 days
 anvil cleanup --older-than=3d
 
