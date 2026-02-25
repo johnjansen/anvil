@@ -65,6 +65,8 @@ func main() {
 		psCmd()
 	case "init":
 		initCmd(os.Args[2:])
+	case "register":
+		registerCmd(os.Args[2:])
 	case "add":
 		addCmd(os.Args[2:])
 	case "list":
@@ -114,6 +116,7 @@ Usage:
 
 Commands:
   init [path]              Initialize a project and register it for watching
+  register [path]          Register an existing project for watching (no init)
   watch [-d|--daemonize]   Start the daemon (once per machine)
   watch --install          Install as system service (auto-start on boot)
   watch --uninstall        Remove the system service
@@ -208,6 +211,33 @@ func initCmd(args []string) {
 	// Warn if daemon is not running
 	if !daemon.IsDaemonRunning() {
 		fmt.Fprintf(os.Stderr, "⚠ Daemon is not running. Run 'anvil watch' to start executing tasks.\n")
+	}
+}
+
+func registerCmd(args []string) {
+	path := "."
+	if len(args) > 0 {
+		path = args[0]
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	// Verify the directory exists
+	info, err := os.Stat(abs)
+	if err != nil {
+		log.Fatalf("path does not exist: %s", abs)
+	}
+	if !info.IsDir() {
+		log.Fatalf("not a directory: %s", abs)
+	}
+
+	registerProject(abs)
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintf(os.Stderr, "note: daemon is not running — run 'anvil watch' to start executing tasks\n")
 	}
 }
 
