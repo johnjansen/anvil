@@ -192,7 +192,15 @@ Once one tool clicks, the others plug in naturally. Speckit's output feeds beads
 
 If you'd rather skip the incremental approach and bootstrap the full ecosystem at once, there's a skill for that.
 
-The [anvil-software-factory](anvil-software-factory.md) skill installs all three tools, initializes a project directory, starts the anvil daemon, and walks you through onboarding — all from inside Claude. Drop the skill file into your project's `.claude/skills/` directory (or anywhere Claude can find it) and invoke it:
+The [anvil-software-factory](anvil-software-factory.md) skill installs all three tools, initializes a project directory, starts the anvil daemon, and walks you through onboarding — all from inside Claude. Install it with one command:
+
+```bash
+mkdir -p .claude/skills && curl -fsSL \
+  https://raw.githubusercontent.com/johnjansen/anvil/main/blog/anvil-software-factory.md \
+  -o .claude/skills/anvil-software-factory.md
+```
+
+Then invoke it:
 
 ```
 You:    /anvil-software-factory my-new-project
