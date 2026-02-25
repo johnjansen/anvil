@@ -365,7 +365,7 @@ runners:
   - claude
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
-tick_interval: 10s  # how often to check for work
+tick_interval: 5s  # how often to check for work
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
