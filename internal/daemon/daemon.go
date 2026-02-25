@@ -120,10 +120,6 @@ type Daemon struct {
 	// Stopped tasks are not re-dispatched until started again via /start.
 	stoppedTasks map[string]bool // taskID -> true
 	stoppedMu    sync.Mutex
-	// persistentBudgetUsed tracks cumulative runtime per persistent task for budget enforcement.
-	// Resets on daemon restart. Key is taskKey (project/taskName).
-	persistentBudgetUsed   map[string]time.Duration
-	persistentBudgetUsedMu sync.Mutex
 }
 
 type RunningTask struct {
@@ -188,8 +184,7 @@ func New(cfg *config.Config) *Daemon {
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
-		stoppedTasks:         make(map[string]bool),
-		persistentBudgetUsed: make(map[string]time.Duration),
+		stoppedTasks:  make(map[string]bool),
 	}
 }
 
@@ -378,14 +373,30 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 
 	// Use task-specific timeout if set, otherwise fall back to global config
 	// For persistent tasks, use PersistentMaxRuntime if set (forces cycle after max runtime)
+	// Default persistent max runtime is 4 hours to prevent unbounded context growth
 	timeout := d.config.Timeout
-	if t.IsPersistent() && t.PersistentMaxRuntime > 0 {
-		timeout = t.PersistentMaxRuntime
+	if t.IsPersistent() {
+		if t.PersistentMaxRuntime > 0 {
+			timeout = t.PersistentMaxRuntime
+		} else {
+			timeout = 4 * time.Hour // default: force-cycle every 4 hours
+		}
 	} else if t.Timeout > 0 {
 		timeout = t.Timeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	// For persistent tasks, log a warning at 80% of max runtime to signal upcoming cycle
+	if t.IsPersistent() {
+		warningAt := time.Duration(float64(timeout) * 0.8)
+		taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+		warningTimer := time.AfterFunc(warningAt, func() {
+			remaining := timeout - warningAt
+			dlog.Warn("persistent task %s approaching max runtime — cycling in %v", taskLabel, remaining.Round(time.Second))
+		})
+		defer warningTimer.Stop()
+	}
 
 	runID := newRunID()
 	startTime := time.Now()
@@ -617,7 +628,20 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	}
 
 	elapsed := time.Since(startTime)
-	if err != nil {
+	// Detect force-cycle: persistent task hit its max runtime (context deadline exceeded)
+	forceCycled := t.IsPersistent() && err != nil && ctx.Err() == context.DeadlineExceeded
+	if forceCycled {
+		// Force-cycle is a normal lifecycle event, not a failure.
+		// Log it clearly and skip failure backoff/runner cooldown.
+		dlog.Info("persistent task %s force-cycled after %v — will restart on next tick", t.Name, elapsed.Round(time.Second))
+		// Clear failure count since force-cycle is not a real failure
+		d.persistentFailuresMu.Lock()
+		delete(d.persistentFailures, taskKey)
+		d.persistentFailuresMu.Unlock()
+		// Mark success in run record since this is expected behavior
+		runRecord.Success = true
+		runRecord.Error = ""
+	} else if err != nil {
 		dlog.WorkerFail(workerID, projName, t.Name, err)
 		// If the runner failed, set a 5-minute cooldown to avoid retrying it immediately
 		if usedRunnerIdx >= 0 {
@@ -636,23 +660,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.persistentFailures[taskKey]++
 			failCount := d.persistentFailures[taskKey]
 			d.persistentFailuresMu.Unlock()
-
-			// Get max failures config (default 5)
-			maxFailures := t.PersistentMaxFailures
-			if maxFailures == 0 {
-				maxFailures = 5
-			}
-
-			// Stop retrying if we've hit max failures
-			if failCount > maxFailures {
-				dlog.Warn("persistent task %s failed %d times — stopping retry, manual restart required", t.Name, failCount)
-				// Mark task as disabled so it won't be retried automatically
-				d.persistentCooldownsMu.Lock()
-				d.persistentCooldowns[taskKey] = time.Now().Add(24 * time.Hour) // effectively disable for 24h
-				d.persistentCooldownsMu.Unlock()
-				return
-			}
-
 			// Calculate exponential backoff: base * 2^(failCount-1), default base is 1 minute
 			baseBackoff := t.RetryDelay
 			if baseBackoff <= 0 {
@@ -662,14 +669,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			for i := 1; i < failCount; i++ {
 				backoffDuration *= 2
 			}
-			// Cap backoff at 30 minutes
-			if backoffDuration > 30*time.Minute {
-				backoffDuration = 30 * time.Minute
-			}
 			d.persistentCooldownsMu.Lock()
 			d.persistentCooldowns[taskKey] = time.Now().Add(backoffDuration)
 			d.persistentCooldownsMu.Unlock()
-			dlog.Info("persistent task %s failed (attempt %d of %d) — backing off for %v", t.Name, failCount, maxFailures, backoffDuration)
+			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v", t.Name, failCount, backoffDuration)
 		}
 	} else {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
@@ -688,20 +691,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.persistentFailuresMu.Lock()
 			delete(d.persistentFailures, taskKey)
 			d.persistentFailuresMu.Unlock()
-		}
-	}
-
-	// For persistent tasks with a budget, accumulate runtime
-	if t.IsPersistent() && t.PersistentBudget > 0 {
-		d.persistentBudgetUsedMu.Lock()
-		d.persistentBudgetUsed[taskKey] += elapsed
-		used := d.persistentBudgetUsed[taskKey]
-		d.persistentBudgetUsedMu.Unlock()
-		if used >= t.PersistentBudget {
-			dlog.Warn("persistent task %s budget exhausted (%v of %v) — task will be paused", t.Name, used.Round(time.Second), t.PersistentBudget)
-		} else {
-			remaining := t.PersistentBudget - used
-			dlog.Info("persistent task %s budget: %v used, %v remaining", t.Name, used.Round(time.Second), remaining.Round(time.Second))
 		}
 	}
 
@@ -1523,26 +1512,6 @@ func (d *Daemon) tick(now time.Time) {
 				continue
 			}
 			d.persistentCooldownsMu.Unlock()
-		}
-
-		// Skip dispatch if persistent task has exceeded its budget
-		if pt.todo.IsPersistent() && pt.todo.PersistentBudget > 0 {
-			d.persistentBudgetUsedMu.Lock()
-			used := d.persistentBudgetUsed[taskKey]
-			d.persistentBudgetUsedMu.Unlock()
-			if used >= pt.todo.PersistentBudget {
-				dlog.Warn("persistent task %s/%s budget exceeded (%v used of %v) — paused", projName, pt.todo.Name, used.Round(time.Second), pt.todo.PersistentBudget)
-				d.pendingTasksMu.Lock()
-				d.pendingTasks[taskKey] = "budget exceeded"
-				d.pendingTasksMu.Unlock()
-				d.inFlightMu.Lock()
-				d.inFlight[taskKey]--
-				if d.inFlight[taskKey] <= 0 {
-					delete(d.inFlight, taskKey)
-				}
-				d.inFlightMu.Unlock()
-				continue
-			}
 		}
 
 		// Starvation prevention: if a persistent task has been waiting too long,
