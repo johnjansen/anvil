@@ -49,6 +49,8 @@ Options:
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
 - `--skip-permissions` — Bypass all tool permission prompts.
 
+**Note:** The `runner` option is available in task frontmatter or project config, but not as a CLI flag.
+
 **Important:** The default is a one-shot task (empty schedule — runs once on next tick, then gets deleted). Always pass `-s` with an appropriate schedule unless you intentionally want one-shot execution.
 
 Examples:
