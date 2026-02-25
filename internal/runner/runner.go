@@ -125,15 +125,19 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 
 		var stdout, stderr bytes.Buffer
 		var sw *statusWriter
+		var stderrSw *statusWriter
 		if logFile != nil {
 			stdoutBase := io.MultiWriter(&stdout, logFile)
 			sw = newStatusWriter(stdoutBase, onStatus)
 			cmd.Stdout = sw
-			cmd.Stderr = io.MultiWriter(&stderr, logFile)
+			stderrBase := io.MultiWriter(&stderr, logFile)
+			stderrSw = newStatusWriter(stderrBase, onStatus)
+			cmd.Stderr = stderrSw
 		} else {
 			sw = newStatusWriter(&stdout, onStatus)
 			cmd.Stdout = sw
-			cmd.Stderr = &stderr
+			stderrSw = newStatusWriter(&stderr, onStatus)
+			cmd.Stderr = stderrSw
 		}
 
 		if err := cmd.Start(); err != nil {
@@ -151,6 +155,9 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		waitErr := cmd.Wait()
 		if sw != nil {
 			sw.Flush()
+		}
+		if stderrSw != nil {
+			stderrSw.Flush()
 		}
 		if waitErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
