@@ -22,8 +22,8 @@ import (
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
-	"github.com/johnjansen/anvil/internal/diagnostic"
 	"github.com/johnjansen/anvil/internal/project"
+	"github.com/johnjansen/anvil/internal/service"
 	"github.com/johnjansen/anvil/tools"
 
 	"gopkg.in/yaml.v3"
@@ -91,8 +91,6 @@ func main() {
 		usageCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
-	case "doctor":
-		doctorCmd()
 	case "reload":
 		reloadCmd(os.Args[2:])
 	case "version", "-v", "--version":
@@ -115,6 +113,9 @@ Usage:
 Commands:
   init [path]              Initialize a project and register it for watching
   watch [-d|--daemonize]   Start the daemon (once per machine)
+  watch --install          Install as system service (auto-start on boot)
+  watch --uninstall        Remove the system service
+  watch --status           Show system service status
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
@@ -274,6 +275,9 @@ func watchCmd2(args []string) {
 	daemonize := false
 	stop := false
 	child := false
+	install := false
+	uninstall := false
+	status := false
 	for _, arg := range args {
 		switch arg {
 		case "--daemonize", "-d":
@@ -282,7 +286,28 @@ func watchCmd2(args []string) {
 			stop = true
 		case "--child":
 			child = true
+		case "--install":
+			install = true
+		case "--uninstall":
+			uninstall = true
+		case "--status":
+			status = true
 		}
+	}
+
+	if install {
+		watchInstall()
+		return
+	}
+
+	if uninstall {
+		watchUninstall()
+		return
+	}
+
+	if status {
+		watchStatus()
+		return
 	}
 
 	if stop {
@@ -302,6 +327,57 @@ func watchCmd2(args []string) {
 
 	// Default: run in foreground (existing behavior)
 	serveCmd()
+}
+
+func watchInstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("cannot determine binary path: %v", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		log.Fatalf("cannot resolve binary path: %v", err)
+	}
+
+	if err := svc.Install(binaryPath); err != nil {
+		log.Fatalf("failed to install service: %v", err)
+	}
+
+	fmt.Printf("service installed and started\n")
+	fmt.Printf("  binary: %s\n", binaryPath)
+	fmt.Printf("  anvil watch will now auto-start on boot and restart on crash\n")
+}
+
+func watchUninstall() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	if err := svc.Uninstall(); err != nil {
+		log.Fatalf("failed to uninstall service: %v", err)
+	}
+
+	fmt.Println("service uninstalled")
+}
+
+func watchStatus() {
+	svc, err := service.New()
+	if err != nil {
+		log.Fatalf("failed to initialize service manager: %v", err)
+	}
+
+	st, err := svc.Status()
+	if err != nil {
+		log.Fatalf("failed to get service status: %v", err)
+	}
+
+	fmt.Printf("service: %s\n", st.Message)
 }
 
 // readDaemonPID reads the PID from the daemon PID file.
@@ -474,49 +550,6 @@ func unwatchCmd(args []string) {
 	}
 
 	fmt.Printf("unwatched %s\n", abs)
-}
-
-func doctorCmd() {
-	results := diagnostic.All()
-
-	if len(results) == 0 {
-		fmt.Println("All checks passed!")
-		return
-	}
-
-	fmt.Println("Anvil Diagnostics")
-	fmt.Println(strings.Repeat("=", 60))
-
-	var passes, warnings, failures int
-
-	for _, r := range results {
-		switch r.Status {
-		case "pass":
-			fmt.Printf("[PASS] %s\n", r.Name)
-			passes++
-		case "warn":
-			fmt.Printf("[WARN] %s\n", r.Name)
-			fmt.Printf("       %s\n", r.Message)
-			if r.Fix != "" {
-				fmt.Printf("       Fix: %s\n", r.Fix)
-			}
-			warnings++
-		case "fail":
-			fmt.Printf("[FAIL] %s\n", r.Name)
-			fmt.Printf("       %s\n", r.Message)
-			if r.Fix != "" {
-				fmt.Printf("       Fix: %s\n", r.Fix)
-			}
-			failures++
-		}
-	}
-
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Printf("Summary: %d pass, %d warn, %d fail\n", passes, warnings, failures)
-
-	if failures > 0 {
-		os.Exit(1)
-	}
 }
 
 func statusCmd() {
@@ -1245,15 +1278,6 @@ func taskGetCmd(args []string) {
 	fmt.Printf("File:     %s\n", todo.Path)
 	fmt.Printf("ID:       %s\n", todo.ID)
 	fmt.Printf("Schedule: %s\n", todo.Schedule)
-	// Show next run time for scheduled tasks
-	if todo.Schedule != "" {
-		if p, err := cron.Parse(todo.Schedule); err == nil {
-			if next, err := p.Next(time.Now()); err == nil {
-				until := time.Until(next).Round(time.Minute)
-				fmt.Printf("Next:     %s (%s from now)\n", next.Format("Mon 15:04"), until)
-			}
-		}
-	}
 	fmt.Printf("Priority: %d\n", todo.Priority)
 	if todo.Disabled {
 		fmt.Printf("Disabled: true\n")
@@ -3148,26 +3172,6 @@ func updateCmd(args []string) {
 	}
 
 	fmt.Printf("updated to %s\n", latest)
-
-	// Refresh skills in all watched directories
-	watched, err := loadAllWatched()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to load watched directories: %v\n", err)
-	} else if len(watched) > 0 {
-		fmt.Printf("refreshing skills in %d watched director%s...\n", len(watched), map[bool]string{true: "ies", false: "y"}[len(watched) > 1])
-		for _, w := range watched {
-			// Check if the directory still exists
-			if _, err := os.Stat(w.Path); os.IsNotExist(err) {
-				fmt.Printf("  skipping %s: directory no longer exists\n", w.Path)
-				continue
-			}
-			if err := project.Init(w.Path, tools.FS); err != nil {
-				fmt.Printf("  failed to refresh %s: %v\n", w.Path, err)
-				continue
-			}
-			fmt.Printf("  refreshed %s\n", w.Path)
-		}
-	}
 }
 
 func usageCmd(args []string) {

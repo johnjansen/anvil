@@ -36,6 +36,7 @@ type TaskDefaults struct {
 	MaxConcurrent        int      `yaml:"max_concurrent"`
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
+	Runner               string   `yaml:"runner"`
 }
 
 // ConfigPath returns the path to the project config file.
@@ -89,6 +90,7 @@ type Todo struct {
 	// Persistent task configuration
 	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
+	Runner               string        // per-task runner command override (empty = use global runner chain)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -178,6 +180,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var retryDelay time.Duration
 			var persistentCooldown time.Duration
 			var persistentMaxRuntime time.Duration
+			runnerOverride := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -206,6 +209,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						RetryDelay           string   `yaml:"retry_delay"`
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
+						Runner               string   `yaml:"runner"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -234,6 +238,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.PersistentMaxRuntime != "" {
 							persistentMaxRuntime, _ = time.ParseDuration(fmData.PersistentMaxRuntime)
 						}
+						runnerOverride = fmData.Runner
 					}
 				}
 			}
@@ -241,7 +246,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Apply project defaults for fields not explicitly set in frontmatter.
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
-				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime)
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &runnerOverride)
 
 			todos = append(todos, Todo{
 				Path:                 fp,
@@ -264,6 +269,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				RetryDelay:           retryDelay,
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
+				Runner:               runnerOverride,
 			})
 		}
 	}
@@ -278,7 +284,8 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	skipPermissions *bool, allowedTools *[]string, preCheck *string,
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
-	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration) {
+	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
+	runnerOverride *string) {
 
 	has := func(key string) bool {
 		if fmKeys == nil {
@@ -328,6 +335,9 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 		if d, err := time.ParseDuration(defaults.PersistentMaxRuntime); err == nil {
 			*persistentMaxRuntime = d
 		}
+	}
+	if !has("runner") && defaults.Runner != "" {
+		*runnerOverride = defaults.Runner
 	}
 }
 
@@ -402,7 +412,7 @@ func writeEmbeddedFS(destDir string, fsys fs.FS) error {
 
 // AddTodo writes a new todo file into the project's .anvil/todos/pN/ directory.
 // It returns the relative path like "p1/check-github-for-issues.md".
-func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool) (string, error) {
+func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string) (string, error) {
 	if priority < 0 || priority > 9 {
 		return "", fmt.Errorf("priority must be 0-9, got %d", priority)
 	}
@@ -458,6 +468,9 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 	}
 	if skipPermissions {
 		sb.WriteString("skip_permissions: true\n")
+	}
+	if runnerCmd != "" {
+		sb.WriteString(fmt.Sprintf("runner: %q\n", runnerCmd))
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)
