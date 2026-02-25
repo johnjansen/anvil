@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +38,7 @@ type TaskDefaults struct {
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 	PersistentBudget     string   `yaml:"persistent_budget"`
+	MaxLogSize           string   `yaml:"max_log_size"`
 	Runner               string   `yaml:"runner"`
 }
 
@@ -92,6 +94,7 @@ type Todo struct {
 	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
 	PersistentBudget     time.Duration // cumulative wall-clock budget per daemon lifetime (0 = unlimited)
+	MaxLogSize           int64         // max log file size in bytes (0 = use global default)
 	Runner               string        // per-task runner command override (empty = use global runner chain)
 }
 
@@ -183,6 +186,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var persistentCooldown time.Duration
 			var persistentMaxRuntime time.Duration
 			var persistentBudget time.Duration
+			var maxLogSize int64
 			runnerOverride := ""
 			body := contentStr
 
@@ -213,6 +217,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 						PersistentBudget     string   `yaml:"persistent_budget"`
+						MaxLogSize           string   `yaml:"max_log_size"`
 						Runner               string   `yaml:"runner"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
@@ -245,6 +250,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.PersistentBudget != "" {
 							persistentBudget, _ = time.ParseDuration(fmData.PersistentBudget)
 						}
+						if fmData.MaxLogSize != "" {
+							maxLogSize, _ = config.ParseByteSize(fmData.MaxLogSize)
+						}
 						runnerOverride = fmData.Runner
 					}
 				}
@@ -253,7 +261,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Apply project defaults for fields not explicitly set in frontmatter.
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
-				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &runnerOverride)
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride)
 
 			todos = append(todos, Todo{
 				Path:                 fp,
@@ -277,6 +285,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
 				PersistentBudget:     persistentBudget,
+				MaxLogSize:           maxLogSize,
 				Runner:               runnerOverride,
 			})
 		}
@@ -293,7 +302,7 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
 	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
-	persistentBudget *time.Duration, runnerOverride *string) {
+	persistentBudget *time.Duration, maxLogSize *int64, runnerOverride *string) {
 
 	has := func(key string) bool {
 		if fmKeys == nil {
@@ -347,6 +356,11 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	if !has("persistent_budget") && defaults.PersistentBudget != "" {
 		if d, err := time.ParseDuration(defaults.PersistentBudget); err == nil {
 			*persistentBudget = d
+		}
+	}
+	if !has("max_log_size") && defaults.MaxLogSize != "" {
+		if size, err := config.ParseByteSize(defaults.MaxLogSize); err == nil {
+			*maxLogSize = size
 		}
 	}
 	if !has("runner") && defaults.Runner != "" {

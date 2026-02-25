@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -25,8 +27,75 @@ type Config struct {
 
 // RetentionConfig defines data retention policies for logs and runs.
 type RetentionConfig struct {
-	MaxAge  time.Duration `yaml:"max_age"`  // delete logs/runs older than this
-	MaxRuns int           `yaml:"max_runs"` // keep at most this many runs per task
+	MaxAge     time.Duration `yaml:"max_age"`      // delete logs/runs older than this
+	MaxRuns    int           `yaml:"max_runs"`      // keep at most this many runs per task
+	MaxLogSize int64         `yaml:"max_log_size"` // max size per log file in bytes (0 = unlimited)
+}
+
+// UnmarshalYAML implements custom YAML unmarshaling for RetentionConfig
+// to support human-readable byte sizes for max_log_size (e.g., "50mb", "1gb").
+func (r *RetentionConfig) UnmarshalYAML(value *yaml.Node) error {
+	// Decode into a raw map to handle max_log_size as a string
+	var raw struct {
+		MaxAge     time.Duration `yaml:"max_age"`
+		MaxRuns    int           `yaml:"max_runs"`
+		MaxLogSize string        `yaml:"max_log_size"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	r.MaxAge = raw.MaxAge
+	r.MaxRuns = raw.MaxRuns
+	if raw.MaxLogSize != "" {
+		size, err := ParseByteSize(raw.MaxLogSize)
+		if err != nil {
+			return fmt.Errorf("parsing max_log_size: %w", err)
+		}
+		r.MaxLogSize = size
+	}
+	return nil
+}
+
+// ParseByteSize parses a human-readable byte size string into bytes.
+// Supported suffixes: b, kb, mb, gb (case-insensitive).
+// Plain numbers are treated as bytes.
+func ParseByteSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+
+	// Check longest suffixes first to avoid "b" matching before "mb"
+	suffixes := []struct {
+		suffix string
+		mult   int64
+	}{
+		{"gb", 1024 * 1024 * 1024},
+		{"mb", 1024 * 1024},
+		{"kb", 1024},
+		{"b", 1},
+	}
+
+	for _, entry := range suffixes {
+		if strings.HasSuffix(s, entry.suffix) {
+			numStr := strings.TrimSpace(s[:len(s)-len(entry.suffix)])
+			if numStr == "" {
+				return 0, fmt.Errorf("invalid byte size %q: missing number", s)
+			}
+			n, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid byte size %q: %w", s, err)
+			}
+			return int64(n * float64(entry.mult)), nil
+		}
+	}
+
+	// Plain number (bytes)
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid byte size %q: %w", s, err)
+	}
+	return n, nil
 }
 
 // HooksConfig defines global lifecycle hooks that run for all tasks.
