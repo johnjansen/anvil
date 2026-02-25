@@ -94,20 +94,20 @@ Persistent tasks are designed for event-driven workflows. Here's how they work:
 
 2. **Immediate re-dispatch** — When the task exits, the scheduler re-dispatches it on the next tick (by default, every 10 seconds). This allows the task to check for new work frequently without blocking a worker between jobs.
 
-3. **Configure behavior** — Use `persistent_cooldown` to wait between cycles, `persistent_max_runtime` to force restart after a maximum runtime, and `persistent_max_failures` to stop after too many consecutive failures:
+3. **Configure behavior** — Use `persistent_cooldown` to wait between cycles, `persistent_max_runtime` to force restart after a maximum runtime, and `persistent_budget` to limit cumulative runtime:
 
 ```yaml
 ---
 schedule: "persistent"
 persistent_cooldown: 5s      # wait between restart cycles (default: 0 = immediate)
 persistent_max_runtime: 10m  # max runtime before forced restart (default: 0 = no limit)
-persistent_max_failures: 10  # stop after N consecutive failures (default: 5)
+persistent_budget: 1h        # cumulative budget per daemon lifetime (default: 0 = unlimited)
 ---
 ```
 
 - `persistent_cooldown` — wait time after a persistent task completes before re-dispatching. Default is 0 (immediate restart).
 - `persistent_max_runtime` — maximum runtime before the task is forcibly restarted. Useful for preventing runaway tasks. Default is 0 (no limit).
-- `persistent_max_failures` — maximum consecutive failures before the task stops. Default is 5.
+- `persistent_budget` — cumulative wall-clock time budget per daemon lifetime. Once exhausted, the task stops and requires manual restart. Default is 0 (unlimited).
 
 #### Starvation prevention
 
@@ -306,7 +306,7 @@ defaults:
   skip_permissions: false
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
-  persistent_max_failures: 10
+  persistent_budget: 1h
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
