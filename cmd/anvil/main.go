@@ -166,6 +166,8 @@ Task subcommands:
   resume <name>             Resume a paused task (sets disabled: false)
   edit <name>               Edit task (schedule, priority, content, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
+  export [--all | <tasks>]  Export task(s) to JSON (-o file for output)
+  import <file>             Import tasks from JSON (--force, --dry-run)
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -1533,10 +1535,240 @@ func taskCmd(args []string) {
 			os.Exit(1)
 		}
 		taskLsCmd([]string{"--match", args[1]})
+	case "export":
+		taskExportCmd(args[1:])
+	case "import":
+		taskImportCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
 		os.Exit(1)
+	}
+}
+
+// taskExportFile is the JSON format for task export/import.
+type taskExportFile struct {
+	Version    string           `json:"version"`
+	ExportedAt string           `json:"exported_at"`
+	Tasks      []taskExportItem `json:"tasks"`
+}
+
+type taskExportItem struct {
+	Name        string `json:"name"`
+	Priority    int    `json:"priority"`
+	RawContent  string `json:"raw_content"` // full file content including frontmatter
+	ProjectPath string `json:"project_path"`
+}
+
+func taskExportCmd(args []string) {
+	allTasks := false
+	outputFile := ""
+	var taskNames []string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--all", "-a":
+			allTasks = true
+		case "-o", "--output":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -o/--output")
+			}
+			i++
+			outputFile = args[i]
+		default:
+			// Comma-separated task names or individual names
+			for _, name := range strings.Split(args[i], ",") {
+				name = strings.TrimSpace(name)
+				if name != "" {
+					taskNames = append(taskNames, name)
+				}
+			}
+		}
+	}
+
+	if !allTasks && len(taskNames) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: anvil task export [--all | <task1,task2,...>] [-o file]")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Filter tasks if not --all
+	var selected []project.Todo
+	if allTasks {
+		selected = todos
+	} else {
+		nameSet := make(map[string]bool)
+		for _, n := range taskNames {
+			nameSet[n] = true
+			// Also match without .md suffix
+			if !strings.HasSuffix(n, ".md") {
+				nameSet[n+".md"] = true
+			}
+		}
+		for _, t := range todos {
+			if nameSet[t.Name] {
+				selected = append(selected, t)
+			}
+		}
+	}
+
+	if len(selected) == 0 {
+		fmt.Fprintln(os.Stderr, "no matching tasks found")
+		os.Exit(1)
+	}
+
+	// Build export items by reading raw file content
+	var items []taskExportItem
+	for _, t := range selected {
+		raw, err := os.ReadFile(t.Path)
+		if err != nil {
+			log.Fatalf("failed to read %s: %v", t.Path, err)
+		}
+		items = append(items, taskExportItem{
+			Name:        t.Name,
+			Priority:    t.Priority,
+			RawContent:  string(raw),
+			ProjectPath: abs,
+		})
+	}
+
+	export := taskExportFile{
+		Version:    "1.0",
+		ExportedAt: time.Now().Format(time.RFC3339),
+		Tasks:      items,
+	}
+
+	data, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		log.Fatalf("failed to marshal export: %v", err)
+	}
+
+	if outputFile != "" {
+		if err := os.WriteFile(outputFile, data, 0644); err != nil {
+			log.Fatalf("failed to write %s: %v", outputFile, err)
+		}
+		fmt.Printf("exported %d task(s) to %s\n", len(items), outputFile)
+	} else {
+		fmt.Println(string(data))
+	}
+}
+
+func taskImportCmd(args []string) {
+	force := false
+	dryRun := false
+	var importFile string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--force":
+			force = true
+		case "--dry-run":
+			dryRun = true
+		default:
+			importFile = args[i]
+		}
+	}
+
+	if importFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: anvil task import <file> [--force] [--dry-run]")
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(importFile)
+	if err != nil {
+		log.Fatalf("failed to read %s: %v", importFile, err)
+	}
+
+	var export taskExportFile
+	if err := json.Unmarshal(data, &export); err != nil {
+		log.Fatalf("failed to parse %s: %v", importFile, err)
+	}
+
+	if len(export.Tasks) == 0 {
+		fmt.Println("no tasks in export file")
+		return
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	// Ensure .anvil/todos exists
+	todosDir := filepath.Join(abs, ".anvil", "todos")
+	if _, err := os.Stat(todosDir); os.IsNotExist(err) {
+		if err := project.Init(abs, tools.FS); err != nil {
+			log.Fatalf("failed to init project: %v", err)
+		}
+	}
+
+	imported := 0
+	skipped := 0
+	for _, task := range export.Tasks {
+		dir := filepath.Join(todosDir, fmt.Sprintf("p%d", task.Priority))
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Fatalf("failed to create %s: %v", dir, err)
+		}
+
+		destPath := filepath.Join(dir, task.Name)
+		exists := false
+		if _, err := os.Stat(destPath); err == nil {
+			exists = true
+		}
+
+		if exists && !force {
+			if dryRun {
+				fmt.Printf("  skip %s (already exists)\n", task.Name)
+			} else {
+				fmt.Printf("  skip %s (already exists, use --force to overwrite)\n", task.Name)
+			}
+			skipped++
+			continue
+		}
+
+		if dryRun {
+			action := "import"
+			if exists {
+				action = "overwrite"
+			}
+			fmt.Printf("  %s p%d/%s\n", action, task.Priority, task.Name)
+			imported++
+			continue
+		}
+
+		if err := os.WriteFile(destPath, []byte(task.RawContent), 0644); err != nil {
+			log.Fatalf("failed to write %s: %v", destPath, err)
+		}
+		action := "imported"
+		if exists {
+			action = "overwrote"
+		}
+		fmt.Printf("  %s p%d/%s\n", action, task.Priority, task.Name)
+		imported++
+	}
+
+	if dryRun {
+		fmt.Printf("\ndry run: would import %d task(s), skip %d\n", imported, skipped)
+	} else {
+		fmt.Printf("\nimported %d task(s) from %s", imported, importFile)
+		if skipped > 0 {
+			fmt.Printf(", skipped %d", skipped)
+		}
+		fmt.Println()
 	}
 }
 
