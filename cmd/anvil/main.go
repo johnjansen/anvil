@@ -94,6 +94,8 @@ func main() {
 		stopOnIdleCmd()
 	case "task":
 		taskCmd(os.Args[2:])
+	case "prompt":
+		promptCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
 	case "template":
@@ -135,6 +137,7 @@ Commands:
   status [--json]          Show watched projects and daemon status
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
+  prompt <subcommand>    Prompt testing and validation tools
   update [--check]         Update anvil to the latest release
   reload [--graceful]       Reload daemon configuration (--graceful waits for tasks)
   version                  Show version
