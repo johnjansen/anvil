@@ -166,6 +166,7 @@ Task subcommands:
   pause <name>              Pause a task (sets disabled: true)
   resume <name>             Resume a paused task (sets disabled: false)
   edit <name>               Edit task (schedule, priority, content, or --remove field)
+  edit --all <pat>           Bulk-edit tasks matching glob (--priority, --schedule, --disabled, --enabled, --dry-run)
   timeout [name]            Show task timeout progress (--all for all tasks)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
@@ -2814,6 +2815,10 @@ func taskEditCmd(args []string) {
 	var newContent *string
 	var contentFile *string
 	var removeField *string
+	allPattern := ""
+	dryRun := false
+	setDisabled := false
+	setEnabled := false
 
 	// Fields that can be cleared with --remove
 	removableFields := map[string]bool{
@@ -2867,10 +2872,39 @@ func taskEditCmd(args []string) {
 			}
 			i++
 			removeField = &args[i]
+		case "--all":
+			if i+1 >= len(args) {
+				log.Fatal("missing pattern for --all")
+			}
+			i++
+			allPattern = args[i]
+		case "--dry-run":
+			dryRun = true
+		case "--disabled":
+			setDisabled = true
+		case "--enabled":
+			setEnabled = true
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field]
+       anvil task edit --all <pattern> [-s schedule] [-p priority] [--disabled] [--enabled] [--dry-run]
+
+Edit a single task, or use --all to bulk-edit tasks matching a glob pattern.
+
+Bulk edit options:
+  --all <pattern>    Edit all tasks matching glob pattern (e.g., 'check-*')
+  --disabled         Disable (pause) matching tasks
+  --enabled          Enable (resume) matching tasks
+  --dry-run          Preview changes without applying
+`)
+			os.Exit(0)
 		default:
 			nameArgs = append(nameArgs, args[i])
 		}
 		i++
+	}
+
+	if setDisabled && setEnabled {
+		log.Fatal("cannot use both --disabled and --enabled")
 	}
 
 	if newContent != nil && contentFile != nil {
@@ -2898,6 +2932,25 @@ func taskEditCmd(args []string) {
 		}
 		s := string(data)
 		newContent = &s
+	}
+
+	// Handle --all bulk edit mode
+	if allPattern != "" {
+		if newSchedule == nil && newPriority == nil && !setDisabled && !setEnabled {
+			log.Fatal("--all requires at least one edit flag: -s/--schedule, -p/--priority, --disabled, or --enabled")
+		}
+		if newContent != nil || contentFile != nil || removeField != nil {
+			log.Fatal("--content, --content-file, and --remove are not supported with --all")
+		}
+		taskEditAllCmd(allPattern, newSchedule, newPriority, setDisabled, setEnabled, dryRun)
+		return
+	}
+
+	if dryRun {
+		log.Fatal("--dry-run can only be used with --all")
+	}
+	if setDisabled || setEnabled {
+		log.Fatal("--disabled/--enabled can only be used with --all (use 'anvil task pause/resume' for single tasks)")
 	}
 
 	if len(nameArgs) == 0 {
@@ -3105,6 +3158,154 @@ func taskEditCmd(args []string) {
 	}
 
 	fmt.Printf("edited: %s\n", todo.Name)
+}
+
+func taskEditAllCmd(pattern string, newSchedule *string, newPriority *int, setDisabled, setEnabled, dryRun bool) {
+	// Validate schedule if provided
+	if newSchedule != nil && *newSchedule != "" && *newSchedule != "persistent" {
+		if _, err := cron.Parse(*newSchedule); err != nil {
+			log.Fatalf("invalid schedule %q: %v", *newSchedule, err)
+		}
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Match tasks by glob pattern against the task name (without .md suffix)
+	var matched []project.Todo
+	for _, t := range todos {
+		name := strings.TrimSuffix(t.Name, ".md")
+		ok, err := filepath.Match(pattern, name)
+		if err != nil {
+			log.Fatalf("invalid glob pattern %q: %v", pattern, err)
+		}
+		if ok {
+			matched = append(matched, t)
+		}
+	}
+
+	if len(matched) == 0 {
+		fmt.Fprintf(os.Stderr, "no tasks match pattern: %s\n", pattern)
+		os.Exit(1)
+	}
+
+	if dryRun {
+		fmt.Printf("dry run: %d task(s) would be updated:\n", len(matched))
+	}
+
+	updated := 0
+	for _, todo := range matched {
+		name := strings.TrimSuffix(todo.Name, ".md")
+		changes := []string{}
+
+		if newPriority != nil && *newPriority != todo.Priority {
+			changes = append(changes, fmt.Sprintf("priority: p%d -> p%d", todo.Priority, *newPriority))
+		}
+		if newSchedule != nil && *newSchedule != todo.Schedule {
+			changes = append(changes, fmt.Sprintf("schedule: %s -> %s", todo.Schedule, *newSchedule))
+		}
+		if setDisabled && !todo.Disabled {
+			changes = append(changes, "disabled: false -> true")
+		}
+		if setEnabled && todo.Disabled {
+			changes = append(changes, "disabled: true -> false")
+		}
+
+		if len(changes) == 0 {
+			continue
+		}
+
+		if dryRun {
+			fmt.Printf("  %s: %s\n", name, strings.Join(changes, ", "))
+			updated++
+			continue
+		}
+
+		// Read and parse current file
+		raw, err := os.ReadFile(todo.Path)
+		if err != nil {
+			log.Fatalf("failed to read task file %s: %v", todo.Path, err)
+		}
+
+		contentStr := string(raw)
+		body := contentStr
+
+		if !strings.HasPrefix(contentStr, "---\n") {
+			log.Fatalf("task %s has no front-matter", name)
+		}
+
+		parts := strings.SplitN(contentStr[4:], "\n---\n", 2)
+		if len(parts) != 2 {
+			log.Fatalf("failed to parse front-matter for task %s", name)
+		}
+
+		var fmMap map[string]interface{}
+		if err := yaml.Unmarshal([]byte(parts[0]), &fmMap); err != nil {
+			log.Fatalf("failed to parse front-matter for task %s: %v", name, err)
+		}
+		body = parts[1]
+
+		if newSchedule != nil {
+			fmMap["schedule"] = *newSchedule
+		}
+		if setDisabled {
+			fmMap["disabled"] = true
+		}
+		if setEnabled {
+			delete(fmMap, "disabled")
+		}
+
+		fmBytes, err := yaml.Marshal(fmMap)
+		if err != nil {
+			log.Fatalf("failed to marshal front-matter for task %s: %v", name, err)
+		}
+
+		var sb strings.Builder
+		sb.WriteString("---\n")
+		sb.WriteString(string(fmBytes))
+		sb.WriteString("---\n")
+		sb.WriteString(body)
+
+		// Handle priority change (move to new directory)
+		if newPriority != nil && *newPriority != todo.Priority {
+			newDir := filepath.Join(abs, ".anvil", "todos", fmt.Sprintf("p%d", *newPriority))
+			if err := os.MkdirAll(newDir, 0755); err != nil {
+				log.Fatalf("failed to create priority directory: %v", err)
+			}
+			newPath := filepath.Join(newDir, filepath.Base(todo.Path))
+			if err := os.WriteFile(newPath, []byte(sb.String()), 0644); err != nil {
+				log.Fatalf("failed to write task file: %v", err)
+			}
+			if err := os.Remove(todo.Path); err != nil {
+				log.Fatalf("failed to remove old task file: %v", err)
+			}
+		} else {
+			if err := os.WriteFile(todo.Path, []byte(sb.String()), 0644); err != nil {
+				log.Fatalf("failed to write task file: %v", err)
+			}
+		}
+
+		fmt.Printf("  %s: %s\n", name, strings.Join(changes, ", "))
+		updated++
+	}
+
+	if dryRun {
+		fmt.Printf("\n%d task(s) would be updated (dry run)\n", updated)
+	} else {
+		fmt.Printf("\n%d task(s) updated\n", updated)
+	}
 }
 
 func daemonCmd(args []string) {
