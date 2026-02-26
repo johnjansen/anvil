@@ -106,6 +106,7 @@ type Daemon struct {
 	tasksMu     sync.RWMutex
 	httpServer  *http.Server
 	draining    int32           // atomic: 1 = stop-on-idle mode active
+	gracefulStop int32          // atomic: 1 = graceful shutdown in progress
 	drainedTasks map[string]bool // taskID -> true: per-task stop-on-idle
 	drainedMu   sync.Mutex
 	// persistentFailures tracks consecutive failure counts for persistent tasks
@@ -294,6 +295,11 @@ func (d *Daemon) Run() {
 		}(i)
 	}
 
+	// Set up SIGTERM/SIGINT handler for graceful shutdown
+	termChan := make(chan os.Signal, 1)
+	signal.Notify(termChan, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(termChan)
+
 	for {
 		select {
 		case <-d.stop:
@@ -303,6 +309,10 @@ func (d *Daemon) Run() {
 			}
 			close(d.workQueue) // signals workers to drain and exit
 			workerWg.Wait()
+			os.Remove(d.socketPath)
+			return
+		case <-termChan:
+			d.gracefulShutdown(&workerWg)
 			os.Remove(d.socketPath)
 			return
 		case <-sighupChan:
@@ -325,6 +335,62 @@ func (d *Daemon) Stop() {
 // Done returns a channel that is closed when the daemon has fully stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
+}
+
+// gracefulShutdown waits for running tasks to complete before stopping.
+// It sets the draining flag to prevent new task dispatches, then waits up to
+// the configured timeout for running tasks to finish.
+func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
+	atomic.StoreInt32(&d.gracefulStop, 1)
+	atomic.StoreInt32(&d.draining, 1) // prevent new task dispatches
+
+	timeout := d.config.GracefulShutdownTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
+
+	d.tasksMu.RLock()
+	taskCount := len(d.tasks)
+	d.tasksMu.RUnlock()
+
+	if taskCount == 0 {
+		dlog.Info("graceful shutdown: no running tasks, stopping immediately")
+	} else {
+		dlog.Info("graceful shutdown: waiting for %d running task(s) to complete (timeout: %s)", taskCount, timeout)
+		deadline := time.After(timeout)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+	waitLoop:
+		for {
+			select {
+			case <-deadline:
+				d.tasksMu.RLock()
+				remaining := len(d.tasks)
+				d.tasksMu.RUnlock()
+				dlog.Warn("graceful shutdown timeout reached, %d task(s) still running — force stopping", remaining)
+				break waitLoop
+			case <-ticker.C:
+				d.tasksMu.RLock()
+				remaining := len(d.tasks)
+				d.tasksMu.RUnlock()
+				if remaining == 0 {
+					dlog.Info("graceful shutdown: all tasks completed")
+					break waitLoop
+				}
+			}
+		}
+	}
+
+	dlog.Stopping()
+	if d.httpServer != nil {
+		d.httpServer.Shutdown(context.Background())
+	}
+	close(d.workQueue)
+	workerWg.Wait()
+	d.stopOnce.Do(func() {
+		close(d.stop)
+	})
 }
 
 // reloadConfig reads the config file and updates the daemon's configuration.
