@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -174,7 +175,8 @@ Project subcommands:
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
 
 Daemon subcommands:
-  log [-f] [-n lines]    View daemon log (-f to follow, -n for last N lines)
+  log [-f] [-n lines]        View daemon log (-f to follow, -n for last N lines)
+  config-validate [--show]   Validate config (--show prints parsed config)
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -3053,16 +3055,142 @@ func daemonCmd(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: anvil daemon <subcommand>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Subcommands:")
-		fmt.Fprintln(os.Stderr, "  log [-f] [-n lines]   View daemon log (-f to follow, -n for last N lines)")
+		fmt.Fprintln(os.Stderr, "  log [-f] [-n lines]        View daemon log (-f to follow, -n for last N lines)")
+		fmt.Fprintln(os.Stderr, "  config-validate [--show]   Validate config file (--show prints parsed config)")
 		os.Exit(1)
 	}
 	switch args[0] {
 	case "log":
 		daemonLogCmd(args[1:])
+	case "config-validate":
+		daemonConfigValidateCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", args[0])
 		os.Exit(1)
 	}
+}
+
+func daemonConfigValidateCmd(args []string) {
+	showParsed := false
+	for _, a := range args {
+		if a == "--show" {
+			showParsed = true
+		}
+	}
+
+	configPath := config.Path()
+	var warnings []string
+	var errors []string
+
+	// Check config file exists
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("no config file at %s (defaults will be used)\n", configPath)
+			if showParsed {
+				cfg := config.Default()
+				showConfig(cfg)
+			}
+			return
+		}
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configPath, err)
+		os.Exit(1)
+	}
+
+	// Validate YAML syntax
+	var rawMap map[string]interface{}
+	if err := yaml.Unmarshal(data, &rawMap); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid YAML syntax: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check for deprecated fields
+	if _, ok := rawMap["max_todos"]; ok {
+		warnings = append(warnings, "deprecated field 'max_todos' — use 'max_workers' instead")
+	}
+	if _, ok := rawMap["runner"]; ok {
+		if _, hasRunners := rawMap["runners"]; hasRunners {
+			warnings = append(warnings, "'runner' is ignored when 'runners' is set")
+		} else {
+			warnings = append(warnings, "'runner' (singular) is deprecated — use 'runners' (list) instead")
+		}
+	}
+
+	// Load and validate via config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Validate duration fields
+	if cfg.TickInterval <= 0 {
+		errors = append(errors, "tick_interval must be positive")
+	}
+	if cfg.Timeout <= 0 {
+		errors = append(errors, "timeout must be positive")
+	}
+	if cfg.MaxWorkers <= 0 {
+		errors = append(errors, "max_workers must be positive")
+	}
+
+	// Validate runners
+	if len(cfg.Runners) == 0 {
+		warnings = append(warnings, "no runners configured — daemon will use default")
+	}
+
+	// Validate webhooks
+	for name, wh := range cfg.Webhooks {
+		if wh.URL == "" {
+			errors = append(errors, fmt.Sprintf("webhook %q: url is required", name))
+		} else {
+			u, err := url.Parse(wh.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				errors = append(errors, fmt.Sprintf("webhook %q: invalid url %q (must be http or https)", name, wh.URL))
+			}
+		}
+		if wh.Method != "" && wh.Method != "POST" && wh.Method != "PUT" && wh.Method != "PATCH" {
+			warnings = append(warnings, fmt.Sprintf("webhook %q: unusual method %q (typically POST)", name, wh.Method))
+		}
+		for _, evt := range wh.Events {
+			switch evt {
+			case "success", "failure", "start", "timeout", "persistent_cycle",
+				"task_success", "task_failure", "task_start", "task_timeout":
+				// valid
+			default:
+				errors = append(errors, fmt.Sprintf("webhook %q: unknown event %q", name, evt))
+			}
+		}
+	}
+
+	// Print results
+	if len(errors) > 0 {
+		for _, e := range errors {
+			fmt.Fprintf(os.Stderr, "error: %s\n", e)
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+		}
+		os.Exit(1)
+	}
+
+	for _, w := range warnings {
+		fmt.Printf("warning: %s\n", w)
+	}
+	fmt.Println("config is valid")
+
+	if showParsed {
+		fmt.Println()
+		showConfig(cfg)
+	}
+}
+
+func showConfig(cfg *config.Config) {
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		log.Fatalf("failed to marshal config: %v", err)
+	}
+	fmt.Print(string(out))
 }
 
 func daemonLogCmd(args []string) {
