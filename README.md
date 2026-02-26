@@ -241,6 +241,41 @@ Run with up to 3 retries, waiting 2 minutes between attempts.
 
 The retry delay uses exponential backoff: the initial delay doubles after each retry attempt (delay * 2^attempt). For example, with retry_delay=1m, retries occur at 1m, 2m, 4m, etc.
 
+### Task labels
+
+Add labels to tasks for organization and filtering:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+labels:
+  - triage
+  - github
+  - automated
+---
+Triage GitHub issues...
+```
+
+Or set labels via `anvil task edit`:
+
+```bash
+anvil task edit <name> --add-label triage
+anvil task edit <name> --remove-label archived
+```
+
+Labels can be used to filter tasks in `anvil task ls`:
+
+```bash
+# Show only tasks with the "triage" label
+anvil task ls --label triage
+
+# Show tasks with any of these labels
+anvil task ls --label triage,github
+
+# Exclude tasks with a label
+anvil task ls --label !archived
+```
+
 ### Per-task runner override
 
 Override the global runner chain for a specific task:
@@ -254,6 +289,72 @@ Run this task with a different runner command than the global default.
 ```
 
 The task-level runner is used instead of the global `runners` list for this task only.
+
+### Environment Variables
+
+Set environment variables that will be injected into the task's execution environment:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+env:
+  GITHUB_TOKEN: "env:GITHUB_TOKEN"
+  CUSTOM_VAR: "my-value"
+---
+Run with environment variables...
+```
+
+- Prefix a value with `env:` to inherit from the current environment (e.g., `env:GITHUB_TOKEN` reads the `GITHUB_TOKEN` env var)
+- Use literal strings directly for custom values
+- Environment variables are available in hooks, pre_check commands, and the task itself
+
+### Task Dependencies
+
+Set task dependencies to ensure a task only runs after its dependencies have completed successfully:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+depends_on:
+  - fetch-data
+  - process-data
+---
+Run after dependencies complete...
+```
+
+The task will only be dispatched when all tasks in `depends_on` have completed successfully (exit code 0) in their most recent run. If any dependency failed, the dependent task is skipped silently.
+
+### Webhook Notifications
+
+Configure HTTP webhooks to receive notifications for task lifecycle events:
+
+```yaml
+webhooks:
+  slack:
+    url: "https://hooks.slack.com/services/xxx"
+    method: "POST"  # default: POST
+    headers:
+      Authorization: "Bearer xxx"
+    events: ["success", "failure", "start", "timeout", "persistent_cycle"]
+    timeout: 10s  # default: 10s
+```
+
+Supported events:
+- `start` — task execution started
+- `success` — task completed successfully
+- `failure` — task failed
+- `timeout` — task timed out
+- `persistent_cycle` — persistent task completed a cycle
+
+You can also set a per-task webhook:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+webhook: "https://hooks.slack.com/services/xxx"
+---
+Triage GitHub issues...
+```
 
 ## Configuration
 
@@ -326,6 +427,11 @@ defaults:
   persistent_max_runtime: 30m
   persistent_budget: 1h
   runner: "claude -p 'You are a task runner'"
+  env:
+    MY_VAR: "value"
+    TOKEN: "env:EXTERNAL_TOKEN"
+  depends_on:
+    - other-task
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.

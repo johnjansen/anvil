@@ -269,7 +269,8 @@ Triage GitHub issues...
 Or set labels via `anvil task edit`:
 
 ```bash
-anvil task edit <name> --labels "triage,github,automated"
+anvil task edit <name> --add-label triage
+anvil task edit <name> --remove-label old-label
 ```
 
 Labels can be used to filter tasks in `anvil task ls`:
@@ -452,6 +453,40 @@ defaults:
   runner: "claude -p 'You are a task runner'"
 ```
 
+## Environment Variables
+
+Set environment variables that will be injected into the task's execution environment:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+env:
+  GITHUB_TOKEN: "env:GITHUB_TOKEN"
+  CUSTOM_VAR: "my-value"
+---
+Run with environment variables...
+```
+
+- Prefix a value with `env:` to inherit from the current environment (e.g., `env:GITHUB_TOKEN` reads the `GITHUB_TOKEN` env var)
+- Use literal strings directly for custom values
+- Environment variables are available in hooks, pre_check commands, and the task itself
+
+## Task Dependencies
+
+Set task dependencies to ensure a task only runs after its dependencies have completed successfully:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+depends_on:
+  - fetch-data
+  - process-data
+---
+Run after dependencies complete...
+```
+
+The task will only be dispatched when all tasks in `depends_on` have completed successfully (exit code 0) in their most recent run. If any dependency failed, the dependent task is skipped silently.
+
 ## Runtime Status Reporting
 
 Tasks can report their current status to the daemon by printing a special line to stdout:
@@ -535,6 +570,11 @@ defaults:
   persistent_budget: 1h
   max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
+  env:
+    MY_VAR: "value"
+    TOKEN: "env:EXTERNAL_TOKEN"
+  depends_on:
+    - other-task
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.

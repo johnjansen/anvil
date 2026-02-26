@@ -250,6 +250,42 @@ Check GitHub for new untriaged issues and apply labels.
 
 The `pre_check` command runs in the project directory. Zero exit = proceed; non-zero = skip quietly.
 
+## Task Labels
+
+Add labels to tasks for organization and filtering via frontmatter:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+labels:
+  - triage
+  - github
+  - automated
+---
+Triage GitHub issues...
+```
+
+Or set labels via `anvil task edit`:
+
+```bash
+anvil task edit <name> --add-label triage
+anvil task edit <name> --remove-label old-label
+```
+
+Labels can be used to filter tasks in `anvil task ls`:
+
+```bash
+# Show only tasks with the "triage" label
+anvil task ls --label triage
+
+# Show tasks with any of these labels
+anvil task ls --label triage,github
+
+# Exclude tasks with a label
+anvil task ls --label !archived
+```
+
 ## disabled
 
 Set `disabled: true` to pause a task without deleting it:
@@ -380,6 +416,20 @@ The webhook payload includes:
 
 Webhooks are sent asynchronously with 3 retry attempts and exponential backoff. Failed deliveries are logged but don't affect task outcome.
 
+## Per-task Webhook
+
+Override or supplement global webhooks for a specific task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+webhook: "https://hooks.slack.com/services/xxx"
+---
+Triage GitHub issues...
+```
+
+The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
+
 ## Per-task runner override
 
 Override the global runner chain for a specific task:
@@ -402,6 +452,40 @@ You can also set a default runner at the project level:
 defaults:
   runner: "claude -p 'You are a task runner'"
 ```
+
+## Environment Variables
+
+Set environment variables that will be injected into the task's execution environment:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+env:
+  GITHUB_TOKEN: "env:GITHUB_TOKEN"
+  CUSTOM_VAR: "my-value"
+---
+Run with environment variables...
+```
+
+- Prefix a value with `env:` to inherit from the current environment (e.g., `env:GITHUB_TOKEN` reads the `GITHUB_TOKEN` env var)
+- Use literal strings directly for custom values
+- Environment variables are available in hooks, pre_check commands, and the task itself
+
+## Task Dependencies
+
+Set task dependencies to ensure a task only runs after its dependencies have completed successfully:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+depends_on:
+  - fetch-data
+  - process-data
+---
+Run after dependencies complete...
+```
+
+The task will only be dispatched when all tasks in `depends_on` have completed successfully (exit code 0) in their most recent run. If any dependency failed, the dependent task is skipped silently.
 
 ## Runtime Status Reporting
 
@@ -486,23 +570,14 @@ defaults:
   persistent_budget: 1h
   max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
+  env:
+    MY_VAR: "value"
+    TOKEN: "env:EXTERNAL_TOKEN"
+  depends_on:
+    - other-task
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
-
-### Per-task Webhook
-
-Override or supplement global webhooks for a specific task:
-
-```yaml
----
-schedule: "*/30 * * * *"
-webhook: "https://hooks.slack.com/services/xxx"
----
-Triage GitHub issues...
-```
-
-The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
 ### Log Retention
 
@@ -554,9 +629,21 @@ anvil task ls           # list tasks in current project
 anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
 anvil task ls --json    # output in JSON format
+anvil task ls --label triage    # filter by label
+anvil task ls --label triage,github  # filter by multiple labels (OR)
+anvil task ls --label !archived      # exclude tasks with label
+anvil task ls --match "search-term" # search in task names and content
 ```
 
 Output columns: priority, schedule, status (running/idle/disabled/locked), name, content preview. A `disabled` status means the task is paused (set `disabled: true` in frontmatter) — use `anvil task resume <name>` to re-enable. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
+
+## Finding Tasks
+
+```bash
+anvil task find <pattern>
+```
+
+Find tasks by name pattern. This is an alias for `anvil task ls --match <pattern>`.
 
 ## Getting Task Details
 
@@ -632,17 +719,27 @@ anvil task edit <name> -p 0                 # change priority
 anvil task edit <name> --content "New task description"  # change content
 anvil task edit <name> --content-file task.md  # change content from file
 anvil task edit <name> --remove pre_check   # remove a frontmatter field
-
-# Bulk edit
-anvil task edit --all -s "0 9 * * 1-5"           # change schedule for all tasks
-anvil task edit --all "triage-*" --disabled        # disable matching tasks
-anvil task edit --all --enabled                     # re-enable all tasks
-anvil task edit --all -p 2 --dry-run               # preview priority change
 ```
 
 Edits the task's frontmatter in place. Moving a task to a different priority moves the file to the corresponding priority directory.
 
 The `--remove` flag (also `--clear`) removes a field from the task's frontmatter. Valid fields: `allowed_tools`, `on_failure`, `on_success`, `persistent_budget`, `persistent_cooldown`, `persistent_max_runtime`, `pre_check`, `schedule`, `timeout`.
+
+### Bulk Edit
+
+```bash
+# Change schedule for all tasks matching pattern
+anvil task edit --all -s "0 9 * * 1-5"
+
+# Disable tasks matching pattern
+anvil task edit --all "triage-*" --disabled
+
+# Enable all tasks
+anvil task edit --all --enabled
+
+# Preview priority change without applying
+anvil task edit --all -p 2 --dry-run
+```
 
 Bulk edit (`--all`) supports `-s`/`--schedule`, `-p`/`--priority`, `--disabled`, and `--enabled`. Use `--dry-run` to preview. Does not support `--content`, `--content-file`, or `--remove`.
 
@@ -661,6 +758,8 @@ Full task management via `anvil task`:
 ```bash
 anvil task create [options] <task>   # create a new task
 anvil task ls [-a|--all]             # list tasks (--all for all projects)
+anvil task ls --label <label>        # filter by label
+anvil task ls --match <pattern>      # search in task names and content
 anvil task get <name>                # show task details including run status
 anvil task get <name> --json        # output in JSON format
 anvil task log [-f] <name>           # show execution log (-f to follow)
