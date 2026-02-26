@@ -1027,72 +1027,117 @@ func psWatch(jsonOutput bool) {
 		first = false
 
 		if jsonOutput {
-			// In JSON watch mode, output one JSON array per cycle
-			if !daemon.IsDaemonRunning() {
-				fmt.Println("[]")
-				continue
-			}
-			tasks, err := daemon.SendPsRequest()
-			if err != nil {
-				fmt.Println("[]")
-				continue
-			}
-			if len(tasks) == 0 {
-				fmt.Println("[]")
-				continue
-			}
-			data, err := json.MarshalIndent(tasks, "", "  ")
-			if err != nil {
-				fmt.Println("[]")
-				continue
-			}
-			fmt.Println(string(data))
+			psWatchJSON()
 			continue
 		}
 
-		// Text mode: clear screen and redraw
+		// Text mode: clear screen and redraw dashboard
 		fmt.Print("\033[2J\033[H") // ANSI: clear screen and move cursor to top-left
 
-		now := time.Now().Format("15:04:05")
-		fmt.Printf("Every 2s: anvil ps --watch                                  %s\n\n", now)
-
 		if !daemon.IsDaemonRunning() {
-			fmt.Println("daemon not running")
+			fmt.Println("anvil daemon — not running")
 			continue
 		}
 
-		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
-			fmt.Println("(draining — no new tasks will be dispatched)")
-		}
+		status, statusErr := daemon.SendStatusRequest()
+		tasks, _ := daemon.SendPsRequest()
 
-		tasks, err := daemon.SendPsRequest()
-		if err != nil {
-			fmt.Printf("failed to get tasks: %v\n", err)
-			continue
-		}
-
-		if len(tasks) == 0 {
-			fmt.Println("no running tasks")
-			continue
-		}
-
-		fmt.Printf("%-30s %-20s %-10s %-10s %-30s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STATUS", "STARTED")
-		fmt.Printf("%s\n", strings.Repeat("-", 120))
-
-		for _, t := range tasks {
-			status := ""
-			if t.Status != "" {
-				status = t.Status
+		// Header line
+		if statusErr == nil {
+			fmt.Printf("anvil daemon (PID %d), %d workers — Uptime: %s\n",
+				status.PID, status.Workers, status.Uptime)
+			fmt.Printf("Completed: %d | Failed: %d", status.Completed, status.Failed)
+			if status.Draining {
+				fmt.Print(" | DRAINING")
 			}
-			fmt.Printf("%-30s %-20s %-10d %-10s %-30s %s\n",
-				truncate(t.Project, 30),
-				truncate(t.Name, 20),
-				t.PID,
-				t.Elapsed,
-				truncate(status, 30),
-				t.Started)
+			fmt.Println()
+		} else {
+			fmt.Println("anvil daemon")
 		}
+		fmt.Println()
+
+		// Running tasks section
+		if len(tasks) > 0 {
+			fmt.Printf("RUNNING (%d)\n", len(tasks))
+			for _, t := range tasks {
+				statusText := t.Status
+				if statusText == "" {
+					statusText = "running"
+				}
+				// Build progress bar from percent_used
+				bar := progressBar(t.PercentUsed, 10)
+				projName := filepath.Base(t.Project)
+				fmt.Printf("  %-30s %-8s %s  %s\n",
+					truncate(projName+"/"+t.Name, 30),
+					t.Elapsed,
+					bar,
+					truncate(statusText, 40))
+			}
+		} else {
+			fmt.Println("RUNNING (0)")
+			fmt.Println("  (no tasks running)")
+		}
+
+		// Idle workers
+		if statusErr == nil {
+			idle := status.Workers - len(tasks)
+			if idle < 0 {
+				idle = 0
+			}
+			if idle > 0 {
+				fmt.Printf("\nIDLE (%d)\n", idle)
+				var ids []string
+				workerIdx := 0
+				for i := 0; i < status.Workers; i++ {
+					// Simple display: show idle worker indices
+					isRunning := false
+					if workerIdx < len(tasks) {
+						// Approximate: first N workers are busy
+						isRunning = i < len(tasks)
+					}
+					_ = workerIdx
+					if !isRunning {
+						ids = append(ids, fmt.Sprintf("[w%d]", i))
+					}
+				}
+				fmt.Printf("  %s\n", strings.Join(ids, " "))
+			}
+		}
+		fmt.Println()
 	}
+}
+
+func psWatchJSON() {
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("[]")
+		return
+	}
+	tasks, err := daemon.SendPsRequest()
+	if err != nil || len(tasks) == 0 {
+		fmt.Println("[]")
+		return
+	}
+	data, err := json.MarshalIndent(tasks, "", "  ")
+	if err != nil {
+		fmt.Println("[]")
+		return
+	}
+	fmt.Println(string(data))
+}
+
+// progressBar returns a visual bar like "████░░░░░░" for the given percentage.
+func progressBar(percent float64, width int) string {
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	filled := int(percent / 100 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
 // truncate shortens a string to the specified length
