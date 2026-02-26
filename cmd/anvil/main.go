@@ -1573,6 +1573,10 @@ func taskCmd(args []string) {
 		taskTimeoutCmd(args[1:])
 	case "start":
 		taskStartCmd(args[1:])
+	case "stop":
+		taskStopCmd(args[1:])
+	case "next":
+		taskNextCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
