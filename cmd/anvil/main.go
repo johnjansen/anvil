@@ -131,6 +131,7 @@ Commands:
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
+  reload                   Reload daemon configuration
   version                  Show version
 
 Add options:
@@ -3357,6 +3358,237 @@ func taskStopOnIdleCmd(args []string) {
 	}
 
 	fmt.Printf("stop-on-idle: task %s will not be rescheduled after its current run\n", todo.Name)
+}
+
+// taskNextCmd shows the next scheduled run time for tasks.
+func taskNextCmd(args []string) {
+	jsonOutput := false
+	allProjects := false
+	var taskName string
+
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOutput = true
+		case "--all":
+			allProjects = true
+		case "-h", "--help":
+			fmt.Println("Usage: anvil task next [options] [task-name]")
+			fmt.Println("")
+			fmt.Println("Show the next scheduled run time for tasks.")
+			fmt.Println("")
+			fmt.Println("Options:")
+			fmt.Println("  --json    Output as JSON")
+			fmt.Println("  --all     Show tasks from all watched projects")
+			fmt.Println("  -h        Show this help")
+			fmt.Println("")
+			fmt.Println("If task-name is omitted, shows all tasks in the current project.")
+			return
+		default:
+			taskName = a
+		}
+	}
+
+	now := time.Now()
+
+	if allProjects {
+		// Load all watched projects
+		watched, err := loadAllWatched()
+		if err != nil {
+			log.Fatalf("failed to read watched: %v", err)
+		}
+		if len(watched) == 0 {
+			if jsonOutput {
+				fmt.Println("[]")
+			} else {
+				fmt.Println("no watched projects")
+			}
+			return
+		}
+
+		type nextResult struct {
+			Project string `json:"project"`
+			Name    string `json:"name"`
+			NextRun string `json:"next_run,omitempty"`
+			In      string `json:"in,omitempty"`
+			Error   string `json:"error,omitempty"`
+		}
+		var results []nextResult
+
+		for _, w := range watched {
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				continue
+			}
+			todos, _ := proj.LoadTodos()
+			for _, t := range todos {
+				r := nextResult{
+					Project: filepath.Base(w.Path),
+					Name:    t.Name,
+				}
+				if t.Schedule == "" || t.Schedule == "once" {
+					r.NextRun = "never (one-shot)"
+				} else {
+					p, err := cron.Parse(t.Schedule)
+					if err != nil {
+						r.Error = err.Error()
+					} else {
+						next, err := p.Next(now)
+						if err != nil {
+							r.Error = err.Error()
+						} else {
+							r.NextRun = next.Format("Mon Jan 2 15:04:05")
+							r.In = formatDurationShort(time.Until(next))
+						}
+					}
+				}
+				results = append(results, r)
+			}
+		}
+
+		if jsonOutput {
+			data, _ := json.MarshalIndent(results, "", "  ")
+			fmt.Println(string(data))
+		} else {
+			for _, r := range results {
+				if r.Error != "" {
+					fmt.Printf("%s/%s: error: %s\n", r.Project, r.Name, r.Error)
+				} else {
+					fmt.Printf("%s/%s: %s (%s)\n", r.Project, r.Name, r.NextRun, r.In)
+				}
+			}
+		}
+		return
+	}
+
+	// Single project mode
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	if taskName != "" {
+		// Show specific task
+		todo := findTodo(todos, taskName)
+		if todo == nil {
+			fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+			os.Exit(1)
+		}
+
+		if todo.Schedule == "" || todo.Schedule == "once" {
+			if jsonOutput {
+				data, _ := json.MarshalIndent(map[string]string{
+					"name": todo.Name, "next_run": "never", "note": "one-shot task"}, "", "  ")
+				fmt.Println(string(data))
+			} else {
+				fmt.Printf("%s: never (one-shot task)\n", todo.Name)
+			}
+			return
+		}
+
+		p, err := cron.Parse(todo.Schedule)
+		if err != nil {
+			if jsonOutput {
+				data, _ := json.MarshalIndent(map[string]string{
+					"name": todo.Name, "error": err.Error()}, "", "  ")
+				fmt.Println(string(data))
+			} else {
+				fmt.Fprintf(os.Stderr, "invalid schedule '%s': %v\n", todo.Schedule, err)
+			}
+			os.Exit(1)
+		}
+
+		next, err := p.Next(now)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to calculate next run: %v\n", err)
+			os.Exit(1)
+		}
+
+		if jsonOutput {
+			data, _ := json.MarshalIndent(map[string]string{
+				"name":     todo.Name,
+				"schedule": todo.Schedule,
+				"next_run": next.Format(time.RFC3339),
+				"in":      formatDurationShort(time.Until(next))}, "", "  ")
+			fmt.Println(string(data))
+		} else {
+			fmt.Printf("%s: next run at %s (%s)\n", todo.Name, next.Format("Mon Jan 2 15:04:05 MST"), formatDurationShort(time.Until(next)))
+		}
+		return
+	}
+
+	// Show all tasks in current project
+	type nextResult struct {
+		Name    string `json:"name"`
+		NextRun string `json:"next_run,omitempty"`
+		In      string `json:"in,omitempty"`
+		Error   string `json:"error,omitempty"`
+	}
+	var results []nextResult
+
+	for _, t := range todos {
+		r := nextResult{Name: t.Name}
+		if t.Schedule == "" || t.Schedule == "once" {
+			r.NextRun = "never (one-shot)"
+		} else {
+			p, err := cron.Parse(t.Schedule)
+			if err != nil {
+				r.Error = err.Error()
+			} else {
+				next, err := p.Next(now)
+				if err != nil {
+					r.Error = err.Error()
+				} else {
+					r.NextRun = next.Format("Mon Jan 2 15:04:05")
+					r.In = formatDurationShort(time.Until(next))
+				}
+			}
+		}
+		results = append(results, r)
+	}
+
+	if jsonOutput {
+		data, _ := json.MarshalIndent(results, "", "  ")
+		fmt.Println(string(data))
+	} else {
+		for _, r := range results {
+			if r.Error != "" {
+				fmt.Printf("%s: error: %s\n", r.Name, r.Error)
+			} else {
+				fmt.Printf("%s: %s (%s)\n", r.Name, r.NextRun, r.In)
+			}
+		}
+	}
+}
+
+// formatDurationShort formats a duration as short human-readable relative time.
+func formatDurationShort(d time.Duration) string {
+	if d < 0 {
+		d = -d
+		if d < time.Minute {
+			return "now"
+		}
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
 }
 
 func projectCmd(args []string) {
