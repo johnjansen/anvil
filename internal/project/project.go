@@ -78,6 +78,19 @@ type AllowedWindow struct {
 	Days  string `yaml:"days"`  // allowed days: range "1-5", list "1,3,5", or combined "1-5,0" (0=Sunday)
 }
 
+// SLAConfig defines per-task SLA tracking configuration.
+// When MaxDelay > 0, the daemon checks dispatch delay against the threshold.
+type SLAConfig struct {
+	MaxDelay time.Duration // maximum allowed delay before SLA violation
+	Strict   bool          // if true, skip task instead of running late
+}
+
+// TaskStateConfig defines per-task state management configuration.
+type TaskStateConfig struct {
+	Bucket string `yaml:"bucket"` // state bucket name
+	Key    string `yaml:"key"`    // state key (supports {{ .TaskID }} template)
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -113,6 +126,11 @@ type Todo struct {
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
+	SLA                  SLAConfig     // per-task SLA tracking configuration
+	OnSLAViolation       string        // shell command to run when SLA is violated
+	State                *TaskStateConfig // optional task state management config
+	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
+	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -134,6 +152,11 @@ type RunRecord struct {
 	Attempt          int       `json:"attempt,omitempty"`           // final attempt number (1-based), 0 if no retries configured
 	MaxRetries       int       `json:"max_retries,omitempty"`       // configured max retries for this task
 	RetryDelay       string    `json:"retry_delay,omitempty"`       // configured base delay between retries
+	ScheduledTime    time.Time     `json:"scheduled_time,omitempty"`    // when the task was supposed to run (cron prev match)
+	DispatchDelay    time.Duration `json:"dispatch_delay,omitempty"`    // actual delay from scheduled time
+	SLAViolation     bool          `json:"sla_violation,omitempty"`     // whether this run violated SLA
+	SLAMaxDelay      time.Duration `json:"sla_max_delay,omitempty"`     // configured max_delay at time of dispatch
+	SLASkipped       bool          `json:"sla_skipped,omitempty"`       // true if strict mode skipped this run
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -217,6 +240,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var dependsOn []string
 			checkpoint := false
 			var allowedWindow AllowedWindow
+			var slaConfig SLAConfig
+			onSLAViolation := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -256,6 +281,11 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
+						SLA                  *struct {
+							MaxDelay string `yaml:"max_delay"`
+							Strict   bool   `yaml:"strict"`
+						} `yaml:"sla"`
+						OnSLAViolation       string            `yaml:"on_sla_violation"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -301,6 +331,13 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.AllowedWindow != nil {
 							allowedWindow = *fmData.AllowedWindow
 						}
+						if fmData.SLA != nil && fmData.SLA.MaxDelay != "" {
+							if d, err := time.ParseDuration(fmData.SLA.MaxDelay); err == nil {
+								slaConfig.MaxDelay = d
+								slaConfig.Strict = fmData.SLA.Strict
+							}
+						}
+						onSLAViolation = fmData.OnSLAViolation
 					}
 				}
 			}
@@ -345,6 +382,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
 				Window:               allowedWindow,
+				SLA:                  slaConfig,
+				OnSLAViolation:       onSLAViolation,
 			})
 		}
 	}
@@ -451,21 +490,44 @@ func RemoveLock(todo Todo) error {
 	return os.Remove(lockPath)
 }
 
+// InitResult holds metadata about an Init operation.
+type InitResult struct {
+	AlreadyExists bool   // true if .anvil/ already existed
+	TaskCount     int    // number of existing tasks found
+	BackupPath    string // path to backup directory if tasks were backed up
+}
+
 // Init creates the .anvil/ directory structure and writes embedded tools into .claude/.
 // The toolsFS should contain a "skills" directory at its root.
+// If force is true and a project already exists, existing tasks are preserved.
 // Priority subdirectories are created on-demand when tasks are added.
-func Init(path string, toolsFS fs.FS) error {
+func Init(path string, toolsFS fs.FS, force bool) (InitResult, error) {
+	result := InitResult{}
 	todosDir := filepath.Join(path, ".anvil", "todos")
+
+	// Check if project already exists
+	if _, err := os.Stat(todosDir); err == nil {
+		result.AlreadyExists = true
+		// Count existing tasks
+		entries, _ := os.ReadDir(todosDir)
+		for _, e := range entries {
+			if e.IsDir() {
+				subEntries, _ := os.ReadDir(filepath.Join(todosDir, e.Name()))
+				result.TaskCount += len(subEntries)
+			}
+		}
+	}
+
 	if err := os.MkdirAll(todosDir, 0755); err != nil {
-		return fmt.Errorf("creating .anvil/todos: %w", err)
+		return result, fmt.Errorf("creating .anvil/todos: %w", err)
 	}
 
 	claudeDir := filepath.Join(path, ".claude")
 	if err := writeEmbeddedFS(claudeDir, toolsFS); err != nil {
-		return fmt.Errorf("writing .claude/ tools: %w", err)
+		return result, fmt.Errorf("writing .claude/ tools: %w", err)
 	}
 
-	return nil
+	return result, nil
 }
 
 // writeEmbeddedFS walks an fs.FS and writes all files into destDir,
@@ -709,6 +771,43 @@ func LatestCheckpointData(projectPath, taskID string) string {
 		return ""
 	}
 	return rec.CheckpointData
+}
+
+// stateDir returns the path to the state directory for a bucket.
+func stateDir(projectPath, bucket string) string {
+	return filepath.Join(projectPath, ".anvil", "state", bucket)
+}
+
+// ReadTaskState reads a task state from the state bucket.
+func ReadTaskState(projectPath, bucket, key string) (map[string]interface{}, error) {
+	p := filepath.Join(stateDir(projectPath, bucket), key+".json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+// WriteTaskState writes a task state to the state bucket.
+func WriteTaskState(projectPath, bucket, key string, state map[string]interface{}) error {
+	dir := stateDir(projectPath, bucket)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, key+".json"), data, 0644)
+}
+
+// DeleteTaskState removes a task state from the state bucket.
+func DeleteTaskState(projectPath, bucket, key string) error {
+	return os.Remove(filepath.Join(stateDir(projectPath, bucket), key+".json"))
 }
 
 var (
