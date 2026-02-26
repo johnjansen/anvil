@@ -148,7 +148,8 @@ Add options:
 
 Task subcommands:
   create [options] <task>   Create a new task
-  ls [-a|--all] [--json]    List tasks (--all for all watched projects)
+  ls [-a|--all] [--json] [-m|--match <pattern>]  List tasks (filter by name)
+  find <pattern> [--json]   Search tasks by name (alias for ls --match)
   get <name> [--json]       Show task details including run status
   log [-f] <name>           Show execution log (-f to follow)
   history <name> [--json]   Show run history
@@ -1465,6 +1466,8 @@ func taskCmd(args []string) {
 		taskCreateCmd(args[1:])
 	case "ls":
 		taskLsCmd(args[1:])
+	case "find":
+		taskFindCmd(args[1:])
 	case "get":
 		taskGetCmd(args[1:])
 	case "log":
@@ -1770,14 +1773,24 @@ func parseFrontmatterAndMerge(
 func taskLsCmd(args []string) {
 	allProjects := false
 	jsonOutput := false
-	for _, a := range args {
-		if a == "--all" || a == "-a" {
+	matchPattern := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--all", "-a":
 			allProjects = true
-		}
-		if a == "--json" {
+		case "--json":
 			jsonOutput = true
+		case "--match", "-m":
+			if i+1 < len(args) {
+				i++
+				matchPattern = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --match requires a pattern argument")
+				os.Exit(1)
+			}
 		}
 	}
+	matchLower := strings.ToLower(matchPattern)
 
 	// Gather running tasks once
 	var runningTasks []daemon.TaskInfo
@@ -1825,6 +1838,19 @@ func taskLsCmd(args []string) {
 		projects = append(projects, projectTodos{path: abs, todos: todos})
 	}
 
+	// Filter by match pattern if provided
+	if matchLower != "" {
+		for i := range projects {
+			var filtered []project.Todo
+			for _, t := range projects[i].todos {
+				if strings.Contains(strings.ToLower(t.Name), matchLower) {
+					filtered = append(filtered, t)
+				}
+			}
+			projects[i].todos = filtered
+		}
+	}
+
 	total := 0
 	for _, p := range projects {
 		total += len(p.todos)
@@ -1833,7 +1859,14 @@ func taskLsCmd(args []string) {
 		if jsonOutput {
 			fmt.Println("[]")
 		} else {
-			fmt.Println("no tasks")
+			if matchLower != "" {
+				fmt.Printf("no tasks matching %q\n", matchPattern)
+			} else {
+				fmt.Println("no tasks")
+			}
+		}
+		if matchLower != "" {
+			os.Exit(1)
 		}
 		return
 	}
@@ -1911,6 +1944,17 @@ func taskLsCmd(args []string) {
 			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s\n", t.Priority, t.Schedule, status, t.Name, preview)
 		}
 	}
+}
+
+func taskFindCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: anvil task find <pattern> [--all] [--json]")
+		os.Exit(1)
+	}
+	// First positional arg is the pattern, rest are flags
+	pattern := args[0]
+	lsArgs := append([]string{"--match", pattern}, args[1:]...)
+	taskLsCmd(lsArgs)
 }
 
 func taskGetCmd(args []string) {
