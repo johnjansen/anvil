@@ -370,6 +370,26 @@ Run with environment variables...
 - Use literal strings directly for custom values
 - Environment variables are available in hooks, pre_check commands, and the task itself
 
+### Execution Time Window
+
+Restrict a task to only run during specific times:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+allowed_window:
+  start: "09:00"   # HH:MM 24h format
+  end: "18:00"
+  days: "1-5"      # Monday-Friday (0=Sunday)
+---
+Only run during business hours on weekdays.
+```
+
+- `start` / `end` — time-of-day window in 24h HH:MM format. Supports windows that span midnight (e.g., `start: "22:00"`, `end: "06:00"`).
+- `days` — allowed days of the week. Supports ranges (`1-5`), lists (`1,3,5`), or combined (`1-5,0`). Day 0 is Sunday.
+
+If the task's cron schedule fires outside the window, execution is silently skipped until the next in-window match. Use `anvil task run <name> --force` to bypass the window for a one-off run.
+
 ### Task Dependencies
 
 Set task dependencies to ensure a task only runs after its dependencies have completed successfully:
@@ -534,6 +554,11 @@ input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
 output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
 auto_update: false       # opt-in: auto-update binary on daemon startup
 graceful_shutdown_timeout: 5m  # max wait for running tasks on graceful stop (default: 5m)
+quiet_hours:
+  enabled: false
+  start: "22:00"
+  end: "07:00"
+  exclude_priority: 0   # only p0 tasks bypass quiet hours
 retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
@@ -549,6 +574,22 @@ env:
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
 
 Global `env` sets environment variables for all tasks. Prefix a value with `env:` to inherit from the current environment (e.g., `env:GITHUB_TOKEN` reads the `GITHUB_TOKEN` env var). Task-level `env` overrides global `env` for that specific task.
+
+### Quiet Hours
+
+Restrict non-critical task execution during specified hours:
+
+```yaml
+quiet_hours:
+  enabled: true
+  start: "22:00"        # HH:MM 24h format
+  end: "07:00"
+  exclude_priority: 0   # tasks with priority <= this bypass quiet hours (default: 0 = only p0)
+```
+
+During quiet hours, only tasks with priority at or below `exclude_priority` will run. All other tasks are silently skipped until quiet hours end. Quiet hours pair with per-task `allowed_window` — both must allow execution for a task to run.
+
+Use `anvil task run <name> --force` to bypass quiet hours for a one-off run.
 
 Multiple runners with fallback:
 
@@ -665,7 +706,7 @@ anvil cleanup -o=24h
 
 | Command | Description |
 |---------|-------------|
-| `anvil init [path]` | Initialize a project |
+| `anvil init [--force] [path]` | Initialize a project (--force overwrites existing) |
 | `anvil register [path]` | Register a project for watching (without full init) |
 | `anvil watch` | Start the daemon |
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
@@ -700,7 +741,7 @@ anvil cleanup -o=24h
 | `anvil task ls` | List tasks in current project |
 | `anvil task ls [-a|--all] [--json] [--label L] [--match P]` | List tasks across all projects with optional filtering |
 | `anvil task get <name> [--json]` | Show task details |
-| `anvil task run <name>` | Trigger immediate execution (bypass cron) |
+| `anvil task run <name> [--force]` | Trigger immediate execution (--force bypasses time window and quiet hours) |
 | `anvil task log <name>` | Show execution log |
 | `anvil task log -f <name>` | Follow live log output |
 | `anvil task rm <name>` | Remove a task |

@@ -565,34 +565,6 @@ If the primary runner times out, try this fallback runner instead.
 
 This is useful for long-running tasks that might benefit from a quicker model on timeout.
 
-### Per-task runner chain
-
-Override the runner chain for a specific task with a custom list of runners tried in sequence:
-
-```yaml
----
-schedule: "*/30 * * * *"
-runner_chain:
-  - claude -p "You are a helpful assistant"
-  - claude --model haiku -p "You are a fallback assistant"
----
-Run this task with a custom chain of runners. On failure, the next runner in the chain is tried.
-```
-
-### Runner on timeout
-
-Configure a fallback runner to use when the primary runner times out:
-
-```yaml
----
-schedule: "*/30 * * * *"
-runner_on_timeout: "claude --model haiku -p 'You are a quick fallback'"
----
-If the primary runner times out, try this fallback runner instead.
-```
-
-This is useful for long-running tasks that might benefit from a quicker model on timeout.
-
 ## Environment Variables
 
 Set environment variables that will be injected into the task's execution environment:
@@ -610,6 +582,26 @@ Run with environment variables...
 - Prefix a value with `env:` to inherit from the current environment (e.g., `env:GITHUB_TOKEN` reads the `GITHUB_TOKEN` env var)
 - Use literal strings directly for custom values
 - Environment variables are available in hooks, pre_check commands, and the task itself
+
+## Execution Time Window
+
+Restrict a task to only run during specific times:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+allowed_window:
+  start: "09:00"   # HH:MM 24h format
+  end: "18:00"
+  days: "1-5"      # Monday-Friday (0=Sunday)
+---
+Only run during business hours on weekdays.
+```
+
+- `start` / `end` — time-of-day window in 24h HH:MM format. Supports windows that span midnight (e.g., `start: "22:00"`, `end: "06:00"`).
+- `days` — allowed days of the week. Supports ranges (`1-5`), lists (`1,3,5`), or combined (`1-5,0`). Day 0 is Sunday.
+
+If the task's cron schedule fires outside the window, execution is silently skipped. Use `anvil task run <name> --force` to bypass the window.
 
 ## Task Dependencies
 
@@ -787,6 +779,11 @@ input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
 output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
 auto_update: false       # opt-in: auto-update binary on daemon startup
 graceful_shutdown_timeout: 5m  # max wait for running tasks on graceful stop (default: 5m)
+quiet_hours:
+  enabled: false
+  start: "22:00"
+  end: "07:00"
+  exclude_priority: 0   # only p0 tasks bypass quiet hours
 rate_limit:
   max_concurrent_calls: 10    # max concurrent LLM API calls (default: unlimited)
   requests_per_minute: 60    # max API requests per minute (default: unlimited)
@@ -1056,7 +1053,7 @@ anvil task get <name>                # show task details including run status
 anvil task get <name> --json        # output in JSON format
 anvil task log [-f] <name>           # show execution log (-f to follow)
 anvil task rm <name>                 # remove task (kills if running)
-anvil task run <name>                # trigger immediate execution (bypass cron)
+anvil task run <name> [--force]       # trigger immediate execution (--force bypasses time window/quiet hours)
 anvil task kill <name>               # kill a running task
 anvil task stop-on-idle <name>      # finish current run then stop rescheduling
 anvil task unlock <name>             # remove stale lock file to allow retry
