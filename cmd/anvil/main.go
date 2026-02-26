@@ -178,6 +178,7 @@ Task subcommands:
   pipeline [--dot|--verbose] [--all]  Visualize task dependency pipelines
   reset-budget <name>        Reset persistent task budget consumption
   state <name>              View, export, import, or clear task state
+  dry-run <name> [options]   Validate and preview task config without executing
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1897,6 +1898,8 @@ func taskCmd(args []string) {
 			os.Exit(1)
 		}
 		taskLsCmd([]string{"--match", args[1]})
+	case "dry-run":
+		taskDryRunCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
