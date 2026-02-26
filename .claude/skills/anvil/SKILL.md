@@ -336,50 +336,6 @@ Hooks run in the project directory with a 60-second timeout. Environment variabl
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
-## Webhook Notifications
-
-Configure HTTP webhooks to receive notifications for task lifecycle events:
-
-```yaml
-webhooks:
-  slack:
-    url: "https://hooks.slack.com/services/xxx"
-    method: "POST"  # default: POST
-    headers:
-      Authorization: "Bearer xxx"
-    events: ["success", "failure", "start", "timeout", "persistent_cycle"]
-    timeout: 10s  # default: 10s
-  teams:
-    url: "https://outlook.office.com/webhook/xxx"
-    events: ["failure", "timeout"]
-```
-
-Supported events:
-- `start` — task execution started
-- `success` — task completed successfully
-- `failure` — task failed
-- `timeout` — task timed out
-- `persistent_cycle` — persistent task completed a cycle
-
-You can use short event names in config (`success` instead of `task_success`). An empty events list means "all events".
-
-The webhook payload includes:
-
-| Field | Description |
-|-------|-------------|
-| `event` | Event type (e.g., `task_success`) |
-| `task_name` | Task filename |
-| `project` | Project directory path |
-| `status` | Status string (`success`, `failure`, `started`, `timeout`, `force_cycled`) |
-| `run_id` | Unique run identifier |
-| `started_at` | RFC 3339 timestamp |
-| `finished_at` | RFC 3339 timestamp |
-| `duration_seconds` | Execution duration |
-| `estimated_cost_usd` | Estimated LLM cost |
-| `error` | Error message (if failure/timeout) |
-
-Webhooks are sent asynchronously with 3 retry attempts and exponential backoff. Failed deliveries are logged but don't affect task outcome.
-
 ## Per-task runner override
 
 Override the global runner chain for a specific task:
@@ -450,14 +406,6 @@ retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
   max_log_size: 50mb  # max size per log file (0 = unlimited)
-webhooks:
-  slack:
-    url: "https://hooks.slack.com/services/xxx"
-    method: "POST"
-    headers:
-      Authorization: "Bearer xxx"
-    events: ["success", "failure", "start", "timeout"]
-    timeout: 10s
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
@@ -484,25 +432,10 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
-  max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
-
-### Per-task Webhook
-
-Override or supplement global webhooks for a specific task:
-
-```yaml
----
-schedule: "*/30 * * * *"
-webhook: "https://hooks.slack.com/services/xxx"
----
-Triage GitHub issues...
-```
-
-The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
 ### Log Retention
 
@@ -631,20 +564,9 @@ anvil task edit <name> -s "*/30 * * * *"  # change schedule
 anvil task edit <name> -p 0                 # change priority
 anvil task edit <name> --content "New task description"  # change content
 anvil task edit <name> --content-file task.md  # change content from file
-anvil task edit <name> --remove pre_check   # remove a frontmatter field
-
-# Bulk edit
-anvil task edit --all -s "0 9 * * 1-5"           # change schedule for all tasks
-anvil task edit --all "triage-*" --disabled        # disable matching tasks
-anvil task edit --all --enabled                     # re-enable all tasks
-anvil task edit --all -p 2 --dry-run               # preview priority change
 ```
 
 Edits the task's frontmatter in place. Moving a task to a different priority moves the file to the corresponding priority directory.
-
-The `--remove` flag (also `--clear`) removes a field from the task's frontmatter. Valid fields: `allowed_tools`, `on_failure`, `on_success`, `persistent_budget`, `persistent_cooldown`, `persistent_max_runtime`, `pre_check`, `schedule`, `timeout`.
-
-Bulk edit (`--all`) supports `-s`/`--schedule`, `-p`/`--priority`, `--disabled`, and `--enabled`. Use `--dry-run` to preview. Does not support `--content`, `--content-file`, or `--remove`.
 
 ## Stopping the Daemon
 
@@ -672,13 +594,9 @@ anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
-anvil task next [name]              # show next scheduled run time (--all for all projects)
+anvil task next [name]               # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)
-anvil task find <pattern>            # find tasks by name pattern (alias for ls --match)
-anvil task edit --all [pattern] [-s|-p|--disabled|--enabled] [--dry-run]  # bulk edit tasks
-anvil task export [names...] [-a|--all] [-o file]  # export tasks to JSON
-anvil task import <file> [--base-path path] [-n|--dry-run] [-f|--force]  # import tasks from JSON
 ```
 
 ## Project Subcommands
@@ -717,52 +635,9 @@ Shows the currently installed anvil version.
 anvil daemon log           # view last 50 lines of daemon log
 anvil daemon log -f       # follow daemon log in real-time
 anvil daemon log -n 100   # view last 100 lines
-anvil daemon log --level info     # filter by minimum level (debug, info, warn, error)
-anvil daemon log --match "error"  # filter by text pattern
-anvil daemon log --since "1h"     # show entries since duration ago
-anvil daemon log --until "2pm"   # show entries until specific time
 ```
 
 View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
-
-Filtering options:
-- `--level` — minimum log level to show (debug, info, warn, error)
-- `--match` — text pattern to filter log lines
-- `--since` — show entries since duration ago (e.g., "1h", "30m", "2026-01-15")
-- `--until` — show entries until specific time (e.g., "2pm", "2026-01-15T15:00")
-
-## Validating Configuration
-
-```bash
-anvil daemon config-validate          # validate ~/.anvil/config.yaml
-anvil daemon config-validate --show   # validate and show parsed config
-```
-
-Checks the daemon config file for syntax errors and invalid values without starting the daemon.
-
-## Task Import/Export
-
-```bash
-# Export specific tasks to stdout
-anvil task export task1.md task2.md
-
-# Export all tasks from current project to a file
-anvil task export --all -o backup.json
-
-# Import tasks from a JSON file
-anvil task import backup.json
-
-# Preview import without creating tasks
-anvil task import backup.json --dry-run
-
-# Import with path remapping
-anvil task import backup.json --base-path /new/project/path
-
-# Overwrite existing tasks
-anvil task import backup.json --force
-```
-
-Export tasks to a portable JSON format for sharing between machines or backing up configurations. Use `--base-path` during import to remap project paths.
 
 ## Cleanup
 
@@ -779,11 +654,11 @@ Prune old logs and session data. Use `--dry-run` to preview deletions without ac
 ## Checking Status
 
 ```bash
-anvil status [--json]
+anvil status
 anvil ps [--json] [-w|--watch]
 ```
 
-`anvil status [--json]` shows watched projects, daemon status, and todo counts. `anvil ps [--json] [-w|--watch]` shows currently running tasks.
+`anvil status` shows watched projects and todo counts. `anvil ps [--json] [-w|--watch]` shows currently running tasks.
 
 ## Unwatching
 
@@ -801,11 +676,6 @@ anvil usage                     # show usage for last 7 days
 anvil usage --project <path>    # filter to a specific project
 anvil usage --task <name>      # filter to a specific task
 anvil usage --since 2026-01-01 # show usage since a specific date
-anvil usage --metrics          # show task runtime metrics (total runtime, success rate, etc.)
-anvil usage --top 10           # limit to top 10 tasks (use with --metrics)
-anvil usage --json             # output as JSON
 ```
 
 Shows LLM token usage and estimated costs across tasks and projects. Tracks input/output tokens and calculates estimated USD costs based on the `input_token_rate` and `output_token_rate` configured in `~/.anvil/config.yaml`.
-
-With `--metrics`, shows task runtime metrics including total runtime, average execution time, run count, and success rates. Use `--top N` to limit output to the top N tasks by runtime.

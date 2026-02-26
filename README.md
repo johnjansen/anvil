@@ -195,57 +195,6 @@ Hooks run in the project directory with a 60-second timeout. The following envir
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
-### Webhook notifications
-
-Configure HTTP webhook endpoints to receive task lifecycle events:
-
-```yaml
-webhooks:
-  slack:
-    url: "https://hooks.slack.com/services/xxx"
-    method: "POST"
-    headers:
-      Authorization: "Bearer xxx"
-    events: ["success", "failure", "start", "timeout"]
-    timeout: 10s
-  teams:
-    url: "https://outlook.office.com/webhook/xxx"
-    events: ["failure", "timeout"]
-```
-
-**Configuration options:**
-- `url` — webhook endpoint URL (required)
-- `method` — HTTP method (default: POST)
-- `headers` — custom HTTP headers (optional)
-- `events` — list of events to subscribe to (default: all events)
-- `timeout` — request timeout (default: 10s)
-
-**Supported events:**
-- `start` — task has started execution
-- `success` — task completed successfully
-- `failure` — task failed with an error
-- `timeout` — task exceeded its timeout
-- `persistent_cycle` — persistent task completed a cycle
-
-You can use the short form (e.g., `success` instead of `task_success`) in the config.
-
-**Webhook payload:**
-```json
-{
-  "event": "task_success",
-  "task_name": "triage-issues.md",
-  "project": "/path/to/project",
-  "status": "success",
-  "run_id": "uuid",
-  "started_at": "2026-01-15T10:30:00Z",
-  "finished_at": "2026-01-15T10:35:00Z",
-  "duration_seconds": 300.0,
-  "estimated_cost_usd": 0.15
-}
-```
-
-Webhook errors are logged as warnings but do not affect task execution. Retries are attempted up to 3 times with exponential backoff.
-
 ### Pause/Resume tasks
 
 Set `disabled: true` in the frontmatter to pause a task without deleting it:
@@ -326,14 +275,6 @@ retention:
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
-webhooks:
-  slack:
-    url: "https://hooks.slack.com/services/xxx"
-    method: "POST"
-    headers:
-      Authorization: "Bearer xxx"
-    events: ["success", "failure", "start", "timeout"]
-    timeout: 10s
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
@@ -362,23 +303,6 @@ kill -HUP $(cat ~/.anvil/daemon.pid)
 
 The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
 
-### Health Endpoint
-
-The daemon exposes a `/health` HTTP endpoint (via Unix socket at `$ANVIL_SOCKET/health`) for monitoring and container orchestration:
-
-```bash
-# Query the health endpoint via socket
-curl --unix-socket ~/.anvil/daemon.sock http://localhost/health
-```
-
-The endpoint returns JSON with:
-- `healthy` — boolean indicating if daemon is healthy
-- `workers_available` — number of idle workers
-- `workers_total` — total worker pool size
-- `watched_projects` — number of watched projects
-
-Use this for health checks in containers, load balancers, or monitoring systems.
-
 ### Project-level Configuration
 
 Each project can have its own `.anvil/config.yaml` to set defaults for all tasks in that project:
@@ -401,25 +325,10 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
-  max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
-
-### Per-task Webhook
-
-Override or supplement global webhooks for a specific task:
-
-```yaml
----
-schedule: "*/30 * * * *"
-webhook: "https://hooks.slack.com/services/xxx"
----
-Triage GitHub issues...
-```
-
-The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
 ### Log Retention
 
@@ -462,15 +371,14 @@ anvil cleanup -o=24h
 | `anvil watch --status` | Show system service status |
 | `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
-| `anvil daemon log` | View daemon log (-f to follow, -n for lines, --level, --match, --since, --until) |
-| `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
+| `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
 | `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
-| `anvil status [--json]` | Show watched projects and daemon status |
+| `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
-| `anvil usage [--project <path>] [--task <name>] [--since <date>] [--metrics] [--top N] [--json]` | Show LLM token usage and estimated costs (--metrics shows runtime metrics, --top limits output, --json for JSON output) |
+| `anvil usage [--project <path>] [--task <name>] [--since <date>]` | Show LLM token usage and estimated costs |
 | `anvil version` | Show version |
 
 **Task management:**
@@ -492,17 +400,12 @@ anvil cleanup -o=24h
 | `anvil task history <name> --failures` | Show only failed runs |
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task queue` | Show daemon queue status and skip reasons |
-| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field]` | Edit task schedule, priority, content, or remove a field |
-| `anvil task edit --all [pattern] [-s schedule] [-p priority] [--disabled\|--enabled] [--dry-run]` | Bulk edit tasks matching a pattern |
+| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path]` | Edit task schedule, priority, or content |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
-| `anvil task next [name]` | Show next scheduled run time (--all for all projects) |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
-| `anvil task find <pattern>` | Find tasks by name pattern (alias for ls --match) |
-| `anvil task export [names...] [-a\|--all] [-o file]` | Export tasks to JSON for sharing or backup |
-| `anvil task import <file> [--base-path path] [-n\|--dry-run] [-f\|--force]` | Import tasks from a JSON export file |
 
 **Task status:**
 
@@ -522,65 +425,6 @@ anvil cleanup -o=24h
 | `anvil project ls [-a|--all]` | List watched projects |
 | `anvil project get [path]` | Show project and running tasks |
 | `anvil project rm [path] [--clean]` | Unwatch a project (--clean removes .anvil/ too) |
-
-## Bulk Editing Tasks
-
-Edit multiple tasks at once using `--all`:
-
-```bash
-# Change schedule for all tasks
-anvil task edit --all -s "0 9 * * 1-5"
-
-# Disable all tasks matching a pattern
-anvil task edit --all "triage-*" --disabled
-
-# Re-enable all tasks
-anvil task edit --all --enabled
-
-# Preview changes without applying
-anvil task edit --all -p 2 --dry-run
-
-# Change priority for tasks matching a glob pattern
-anvil task edit --all "check-*" -p 0
-```
-
-Bulk edit supports `-s`/`--schedule`, `-p`/`--priority`, `--disabled`, and `--enabled` flags. Use `--dry-run` to preview changes before applying. Does not support `--content`, `--content-file`, or `--remove`.
-
-## Task Import/Export
-
-Share or back up task configurations:
-
-```bash
-# Export specific tasks to stdout
-anvil task export task1.md task2.md
-
-# Export all tasks from current project to a file
-anvil task export --all -o backup.json
-
-# Import tasks from a JSON file
-anvil task import backup.json
-
-# Preview import without creating tasks
-anvil task import backup.json --dry-run
-
-# Import with path remapping (for sharing between machines)
-anvil task import backup.json --base-path /new/project/path
-
-# Overwrite existing tasks on import
-anvil task import backup.json --force
-```
-
-## Validating Configuration
-
-Check your daemon config for errors without starting the daemon:
-
-```bash
-# Validate ~/.anvil/config.yaml
-anvil daemon config-validate
-
-# Validate and show the parsed config
-anvil daemon config-validate --show
-```
 
 ## Runtime Status Reporting
 
