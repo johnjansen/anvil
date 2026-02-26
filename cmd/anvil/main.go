@@ -156,7 +156,7 @@ Task subcommands:
   queue [--json]             Show daemon queue status and skip reasons
   pause <name>              Pause a task (sets disabled: true)
   resume <name>             Resume a paused task (sets disabled: false)
-  edit <name>                Edit task schedule or priority
+  edit <name>                Edit task (schedule, priority, or content)
   timeout [name]            Show task timeout progress (--all for all tasks)
 
 Project subcommands:
@@ -2355,7 +2355,10 @@ func taskEditCmd(args []string) {
 	// Parse flags
 	var newSchedule *string
 	var newPriority *int
+	var newContent *string
+	var contentFile *string
 
+	var nameArgs []string
 	i := 0
 	for i < len(args) {
 		switch args[i] {
@@ -2381,27 +2384,40 @@ func taskEditCmd(args []string) {
 				log.Fatalf("priority must be 0-9, got %d", n)
 			}
 			newPriority = &n
+		case "--content":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --content")
+			}
+			i++
+			newContent = &args[i]
+		case "--content-file":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --content-file")
+			}
+			i++
+			contentFile = &args[i]
 		default:
-			break
+			nameArgs = append(nameArgs, args[i])
 		}
 		i++
 	}
 
-	// Remaining arg should be task name
-	nameArgs := args
-	if newSchedule != nil || newPriority != nil {
-		// Strip the flags we consumed
-		for len(nameArgs) > 0 && (nameArgs[0] == "-s" || nameArgs[0] == "--schedule" || nameArgs[0] == "-p" || nameArgs[0] == "--priority") {
-			if len(nameArgs) >= 2 {
-				nameArgs = nameArgs[2:]
-			} else {
-				break
-			}
+	if newContent != nil && contentFile != nil {
+		log.Fatal("cannot use both --content and --content-file")
+	}
+
+	// Read content from file if --content-file was provided
+	if contentFile != nil {
+		data, err := os.ReadFile(*contentFile)
+		if err != nil {
+			log.Fatalf("failed to read content file %q: %v", *contentFile, err)
 		}
+		s := string(data)
+		newContent = &s
 	}
 
 	if len(nameArgs) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path]\n")
 		os.Exit(1)
 	}
 
@@ -2427,7 +2443,7 @@ func taskEditCmd(args []string) {
 	}
 
 	// If targeted flags provided, apply them without opening editor
-	if newSchedule != nil || newPriority != nil {
+	if newSchedule != nil || newPriority != nil || newContent != nil {
 		// Validate schedule if provided
 		if newSchedule != nil && *newSchedule != "" && *newSchedule != "persistent" {
 			if _, err := cron.Parse(*newSchedule); err != nil {
@@ -2480,6 +2496,14 @@ func taskEditCmd(args []string) {
 						log.Fatalf("failed to marshal front-matter: %v", err)
 					}
 
+					// Replace body content if --content was provided
+					if newContent != nil {
+						body = *newContent
+						if !strings.HasSuffix(body, "\n") {
+							body += "\n"
+						}
+					}
+
 					// Build new file content
 					var sb strings.Builder
 					sb.WriteString("---\n")
@@ -2512,6 +2536,9 @@ func taskEditCmd(args []string) {
 
 					if newSchedule != nil {
 						fmt.Printf("updated schedule: %s\n", *newSchedule)
+					}
+					if newContent != nil {
+						fmt.Printf("updated content\n")
 					}
 					return
 				}
