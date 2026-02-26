@@ -528,11 +528,11 @@ The `logs` command shows raw stdout/stderr output from worker processes. Without
 ## Running Tasks
 
 ```bash
-anvil ps
+anvil ps [--json] [-w|--watch]
 anvil task ls
 ```
 
-Use `anvil ps` to show currently running tasks. Use `anvil task ls` to see tasks across all watched projects.
+Use `anvil ps [--json] [-w|--watch]` to show currently running tasks. Use `anvil task ls` to see tasks across all watched projects.
 
 Shows tasks with their running/idle status. Use `anvil task ls --all` to see tasks across all watched projects.
 
@@ -654,10 +654,10 @@ Prune old logs and session data. Use `--dry-run` to preview deletions without ac
 
 ```bash
 anvil status
-anvil ps
+anvil ps [--json] [-w|--watch]
 ```
 
-`anvil status` shows watched projects and todo counts. `anvil ps` shows currently running tasks.
+`anvil status` shows watched projects and todo counts. `anvil ps [--json] [-w|--watch]` shows currently running tasks.
 
 ## Unwatching
 

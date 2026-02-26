@@ -303,6 +303,22 @@ kill -HUP $(cat ~/.anvil/daemon.pid)
 
 The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
 
+### Health Endpoint
+
+The daemon exposes a `/health` HTTP endpoint for monitoring and container orchestration:
+
+```bash
+anvil health
+```
+
+The endpoint returns JSON with:
+- `healthy` — boolean indicating if daemon is healthy
+- `workers_available` — number of idle workers
+- `workers_total` — total worker pool size
+- `watched_projects` — number of watched projects
+
+Use this for health checks in containers, load balancers, or monitoring systems.
+
 ### Project-level Configuration
 
 Each project can have its own `.anvil/config.yaml` to set defaults for all tasks in that project:
@@ -372,7 +388,7 @@ anvil cleanup -o=24h
 | `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
-| `anvil ps` | Show running tasks |
+| `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
