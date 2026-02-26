@@ -246,6 +246,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						PersistentBudget     string   `yaml:"persistent_budget"`
 						MaxLogSize           string   `yaml:"max_log_size"`
 						Runner               string   `yaml:"runner"`
+						RunnerChain          []string `yaml:"runner_chain"`
+						RunnerOnTimeout      string   `yaml:"runner_on_timeout"`
 						Webhook              string   `yaml:"webhook"`
 						Labels               []string          `yaml:"labels"`
 						Env                  map[string]string `yaml:"env"`
