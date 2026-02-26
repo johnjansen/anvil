@@ -450,7 +450,7 @@ anvil cleanup -o=24h
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
 | `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
 | `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
-| `anvil status` | Show watched projects |
+| `anvil status [--json]` | Show watched projects and daemon status |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
@@ -477,7 +477,7 @@ anvil cleanup -o=24h
 | `anvil task history <name> --failures` | Show only failed runs |
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task queue` | Show daemon queue status and skip reasons |
-| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path]` | Edit task schedule, priority, or content |
+| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field]` | Edit task schedule, priority, content, or remove a field |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |

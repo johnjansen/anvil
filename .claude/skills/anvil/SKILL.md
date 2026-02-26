@@ -608,9 +608,12 @@ anvil task edit <name> -s "*/30 * * * *"  # change schedule
 anvil task edit <name> -p 0                 # change priority
 anvil task edit <name> --content "New task description"  # change content
 anvil task edit <name> --content-file task.md  # change content from file
+anvil task edit <name> --remove pre_check   # remove a frontmatter field
 ```
 
 Edits the task's frontmatter in place. Moving a task to a different priority moves the file to the corresponding priority directory.
+
+The `--remove` flag (also `--clear`) removes a field from the task's frontmatter. Valid fields: `allowed_tools`, `on_failure`, `on_success`, `persistent_budget`, `persistent_cooldown`, `persistent_max_runtime`, `pre_check`, `schedule`, `timeout`.
 
 ## Stopping the Daemon
 
@@ -734,11 +737,11 @@ Prune old logs and session data. Use `--dry-run` to preview deletions without ac
 ## Checking Status
 
 ```bash
-anvil status
+anvil status [--json]
 anvil ps [--json] [-w|--watch]
 ```
 
-`anvil status` shows watched projects and todo counts. `anvil ps [--json] [-w|--watch]` shows currently running tasks.
+`anvil status [--json]` shows watched projects, daemon status, and todo counts. `anvil ps [--json] [-w|--watch]` shows currently running tasks.
 
 ## Unwatching
 
