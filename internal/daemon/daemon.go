@@ -99,6 +99,7 @@ type Daemon struct {
 	reload      chan struct{} // SIGHUP trigger for config reload
 	lastTick    time.Time // last minute we processed (truncated to minute)
 	lastTickMu  sync.Mutex
+	startedAt   time.Time // when the daemon started
 	socketPath  string
 	tasks       map[string]*RunningTask
 	tasksMu     sync.RWMutex
@@ -205,6 +206,9 @@ func New(cfg *config.Config) *Daemon {
 
 func (d *Daemon) Run() {
 	defer close(d.done)
+
+	// Record start time for health checks
+	d.startedAt = time.Now()
 
 	// Write PID file on startup
 	if err := checkAndWritePID(); err != nil {
@@ -872,6 +876,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/drain/task", d.handleDrainTask)
 	mux.HandleFunc("/run", d.handleRun)
 	mux.HandleFunc("/status", d.handleStatus)
+	mux.HandleFunc("/health", d.handleHealth)
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
 	mux.HandleFunc("/reload", d.handleReload)
@@ -1107,6 +1112,95 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+// HealthResponse is the JSON response for /health endpoint.
+type HealthResponse struct {
+	Healthy          bool              `json:"healthy"`
+	WorkersAvailable int               `json:"workers_available"`
+	WorkersTotal     int               `json:"workers_total"`
+	WatchedProjects  int               `json:"watched_projects"`
+	TasksRunning     int               `json:"tasks_running"`
+	Uptime           string            `json:"daemon_uptime,omitempty"`
+	Components       map[string]string `json:"components,omitempty"`
+	Detailed         bool              `json:"-"`
+}
+
+func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if detailed mode
+	detailed := r.URL.Query().Get("detailed") == "true"
+
+	// Get worker counts
+	maxWorkers := d.config.MaxWorkers
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
+
+	d.inFlightMu.Lock()
+	inFlight := len(d.inFlight)
+	d.inFlightMu.Unlock()
+
+	d.tasksMu.RLock()
+	tasksRunning := len(d.tasks)
+	d.tasksMu.RUnlock()
+
+	workersAvailable := maxWorkers - inFlight
+	if workersAvailable < 0 {
+		workersAvailable = 0
+	}
+
+	// Check if draining (not healthy)
+	draining := atomic.LoadInt32(&d.draining) == 1
+
+	// Count watched projects
+	watchedPaths := loadWatchedPaths()
+	watchedProjects := len(watchedPaths)
+
+	// Determine overall health
+	healthy := !draining && workersAvailable > 0
+
+	// Build response
+	resp := HealthResponse{
+		Healthy:          healthy,
+		WorkersAvailable: workersAvailable,
+		WorkersTotal:     maxWorkers,
+		WatchedProjects:  watchedProjects,
+		TasksRunning:     tasksRunning,
+		Detailed:         detailed,
+	}
+
+	// Add component status if detailed
+	if detailed {
+		// Calculate uptime
+		if d.startedAt.IsZero() {
+			resp.Uptime = "unknown"
+		} else {
+			resp.Uptime = time.Since(d.startedAt).Round(time.Second).String()
+		}
+
+		resp.Components = map[string]string{
+			"socket_server":    "ok",
+			"config_loaded":   "ok",
+			"watched_projects": "ok",
+		}
+		if draining {
+			resp.Components["daemon_status"] = "draining"
+			resp.Healthy = false
+		}
+	}
+
+	// Set appropriate status code
+	if !healthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (d *Daemon) handleDrain(w http.ResponseWriter, r *http.Request) {
