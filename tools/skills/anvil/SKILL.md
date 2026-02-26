@@ -171,28 +171,26 @@ anvil template get <name>
 ```
 
 Templates are stored in:
-- `.anvil/templates/` (project-specific)
-- `~/.anvil/templates/` (global)
+- `.anvil/templates/` — project-specific templates
+- `~/.anvil/templates/` — global templates shared across all projects
 
-Template file format (`.yaml` or `.yml`):
+A template is a YAML file:
 
 ```yaml
-name: github-triage
-schedule: "*/30 * * * *"
+# .anvil/templates/daily-standup.yaml
+name: daily-standup
+schedule: "0 9 * * 1-5"
 priority: 1
 allowed_tools:
   - Bash
   - Read
   - Write
-  - Edit
----
-Triage GitHub issues with the specified labels.
 ```
 
 Use a template when creating a task:
 
 ```bash
-anvil add -t github-triage "Triage issues from the last hour"
+anvil add -t daily-standup "Morning standup summary"
 ```
 
 Template values can be overridden by CLI flags — flags take precedence over template values.
@@ -622,6 +620,14 @@ input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
 output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
 auto_update: false       # opt-in: auto-update binary on daemon startup
 graceful_shutdown_timeout: 5m  # max wait for running tasks on graceful stop (default: 5m)
+rate_limit:
+  max_concurrent_calls: 10    # max concurrent LLM API calls (default: unlimited)
+  requests_per_minute: 60    # max API requests per minute (default: unlimited)
+  requests_per_hour: 1000    # max API requests per hour (default: unlimited)
+  burst: 20                  # allow short bursts above rate (default: 10)
+  provider:
+    claude:
+      requests_per_minute: 50
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
@@ -713,6 +719,31 @@ kill -HUP $(cat ~/.anvil/daemon.pid)
 ```
 
 The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected unless `--graceful` is used — in that case, the daemon waits for running tasks to complete before reloading.
+
+### Rate Limiting
+
+Configure rate limiting for LLM API calls to prevent exceeding provider limits:
+
+```yaml
+rate_limit:
+  max_concurrent_calls: 10    # max concurrent LLM API calls (default: unlimited)
+  requests_per_minute: 60    # max API requests per minute (default: unlimited)
+  requests_per_hour: 1000    # max API requests per hour (default: unlimited)
+  burst: 20                  # allow short bursts above rate (default: 10)
+  provider:
+    claude:
+      requests_per_minute: 50
+    openai:
+      requests_per_hour: 500
+```
+
+- `max_concurrent_calls` — Maximum number of tasks that can make LLM API calls simultaneously
+- `requests_per_minute` — Maximum API requests allowed per minute across all tasks
+- `requests_per_hour` — Maximum API requests allowed per hour across all tasks
+- `burst` — Allows short bursts above the configured rate (default: 10)
+- `provider` — Set different limits per LLM provider (uses the first word of the runner command)
+
+When rate limited, tasks are skipped and re-queued on the next tick. The skip reason is visible in `anvil task queue`.
 
 ## Listing Tasks
 
