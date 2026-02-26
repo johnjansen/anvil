@@ -162,7 +162,7 @@ Task subcommands:
   queue [--json]             Show daemon queue status and skip reasons
   pause <name>              Pause a task (sets disabled: true)
   resume <name>             Resume a paused task (sets disabled: false)
-  edit <name>                Edit task (schedule, priority, or content)
+  edit <name>                Edit task (schedule, priority, content, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
 
 Project subcommands:
@@ -2675,6 +2675,15 @@ func taskEditCmd(args []string) {
 	var newPriority *int
 	var newContent *string
 	var contentFile *string
+	var removeField *string
+
+	// Fields that can be cleared with --remove
+	removableFields := map[string]bool{
+		"schedule": true, "allowed_tools": true, "pre_check": true,
+		"on_success": true, "on_failure": true, "timeout": true,
+		"persistent_cooldown": true, "persistent_max_runtime": true,
+		"persistent_max_failures": true, "persistent_budget": true,
+	}
 
 	var nameArgs []string
 	i := 0
@@ -2714,6 +2723,12 @@ func taskEditCmd(args []string) {
 			}
 			i++
 			contentFile = &args[i]
+		case "--remove", "--clear":
+			if i+1 >= len(args) {
+				log.Fatal("missing field name for --remove")
+			}
+			i++
+			removeField = &args[i]
 		default:
 			nameArgs = append(nameArgs, args[i])
 		}
@@ -2722,6 +2737,19 @@ func taskEditCmd(args []string) {
 
 	if newContent != nil && contentFile != nil {
 		log.Fatal("cannot use both --content and --content-file")
+	}
+
+	if removeField != nil && (newSchedule != nil || newPriority != nil || newContent != nil || contentFile != nil) {
+		log.Fatal("cannot combine --remove with other edit flags")
+	}
+
+	if removeField != nil && !removableFields[*removeField] {
+		var fields []string
+		for k := range removableFields {
+			fields = append(fields, k)
+		}
+		sort.Strings(fields)
+		log.Fatalf("invalid field %q for --remove. Valid fields: %s", *removeField, strings.Join(fields, ", "))
 	}
 
 	// Read content from file if --content-file was provided
@@ -2735,7 +2763,7 @@ func taskEditCmd(args []string) {
 	}
 
 	if len(nameArgs) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field]\n")
 		os.Exit(1)
 	}
 
@@ -2758,6 +2786,45 @@ func taskEditCmd(args []string) {
 	if todo == nil {
 		fmt.Fprintf(os.Stderr, "task not found: %s\n", nameArgs[0])
 		os.Exit(1)
+	}
+
+	// Handle --remove flag: clear a field from frontmatter
+	if removeField != nil {
+		raw, err := os.ReadFile(todo.Path)
+		if err != nil {
+			log.Fatalf("failed to read task file: %v", err)
+		}
+		contentStr := string(raw)
+		if !strings.HasPrefix(contentStr, "---\n") {
+			log.Fatal("task has no front-matter to modify")
+		}
+		parts := strings.SplitN(contentStr[4:], "\n---\n", 2)
+		if len(parts) != 2 {
+			log.Fatal("failed to parse task front-matter")
+		}
+		var fmMap map[string]interface{}
+		if err := yaml.Unmarshal([]byte(parts[0]), &fmMap); err != nil {
+			log.Fatalf("failed to parse front-matter: %v", err)
+		}
+		if _, exists := fmMap[*removeField]; !exists {
+			fmt.Printf("field %q is not set — nothing to remove\n", *removeField)
+			return
+		}
+		delete(fmMap, *removeField)
+		fmBytes, err := yaml.Marshal(fmMap)
+		if err != nil {
+			log.Fatalf("failed to marshal front-matter: %v", err)
+		}
+		var sb strings.Builder
+		sb.WriteString("---\n")
+		sb.WriteString(string(fmBytes))
+		sb.WriteString("---\n")
+		sb.WriteString(parts[1])
+		if err := os.WriteFile(todo.Path, []byte(sb.String()), 0644); err != nil {
+			log.Fatalf("failed to write task file: %v", err)
+		}
+		fmt.Printf("removed %s from %s\n", *removeField, todo.Name)
+		return
 	}
 
 	// If targeted flags provided, apply them without opening editor
