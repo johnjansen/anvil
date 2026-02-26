@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -1946,14 +1947,27 @@ func taskLsCmd(args []string) {
 		projects = append(projects, projectTodos{path: abs, todos: todos})
 	}
 
-	// Filter by match pattern if specified (case-insensitive substring match)
+	// Filter by match pattern if specified (regex or case-insensitive substring match)
 	if matchPattern != "" {
-		patternLower := strings.ToLower(matchPattern)
+		// Check if it's a valid regex
+		var regex *regexp.Regexp
+		isRegex := false
+		if re, err := regexp.Compile("(?i)" + matchPattern); err == nil {
+			regex = re
+			isRegex = true
+		}
+
 		var filtered []projectTodos
 		for _, p := range projects {
 			var projectFiltered []project.Todo
 			for _, t := range p.todos {
-				if strings.Contains(strings.ToLower(t.Name), patternLower) {
+				matched := false
+				if isRegex {
+					matched = regex.MatchString(t.Name)
+				} else {
+					matched = strings.Contains(strings.ToLower(t.Name), strings.ToLower(matchPattern))
+				}
+				if matched {
 					projectFiltered = append(projectFiltered, t)
 				}
 			}
