@@ -124,6 +124,8 @@ Commands:
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
+  ps [--json] [-w|--watch] Show running tasks (--watch for live updates)
+  status [--json]          Show watched projects and daemon status
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
@@ -874,12 +876,26 @@ func pruneDir(dir string, maxAge time.Duration, maxRuns int, dryRun bool) (int, 
 
 func psCmd() {
 	jsonOutput := false
+	watchMode := false
 	for _, a := range os.Args[2:] {
-		if a == "--json" {
+		switch a {
+		case "--json":
 			jsonOutput = true
+		case "--watch", "-w":
+			watchMode = true
 		}
 	}
 
+	if watchMode {
+		psWatch(jsonOutput)
+		return
+	}
+
+	psOnce(jsonOutput)
+}
+
+// psOnce prints the current running tasks once and returns.
+func psOnce(jsonOutput bool) {
 	if !daemon.IsDaemonRunning() {
 		if jsonOutput {
 			fmt.Println("[]")
@@ -941,6 +957,94 @@ func psCmd() {
 			t.Elapsed,
 			truncate(status, 30),
 			t.Started)
+	}
+}
+
+// psWatch continuously refreshes the running tasks display every 2 seconds.
+func psWatch(jsonOutput bool) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	first := true
+	for {
+		select {
+		case <-sigCh:
+			return
+		default:
+		}
+
+		if !first {
+			time.Sleep(2 * time.Second)
+		}
+		first = false
+
+		if jsonOutput {
+			// In JSON watch mode, output one JSON array per cycle
+			if !daemon.IsDaemonRunning() {
+				fmt.Println("[]")
+				continue
+			}
+			tasks, err := daemon.SendPsRequest()
+			if err != nil {
+				fmt.Println("[]")
+				continue
+			}
+			if len(tasks) == 0 {
+				fmt.Println("[]")
+				continue
+			}
+			data, err := json.MarshalIndent(tasks, "", "  ")
+			if err != nil {
+				fmt.Println("[]")
+				continue
+			}
+			fmt.Println(string(data))
+			continue
+		}
+
+		// Text mode: clear screen and redraw
+		fmt.Print("\033[2J\033[H") // ANSI: clear screen and move cursor to top-left
+
+		now := time.Now().Format("15:04:05")
+		fmt.Printf("Every 2s: anvil ps --watch                                  %s\n\n", now)
+
+		if !daemon.IsDaemonRunning() {
+			fmt.Println("daemon not running")
+			continue
+		}
+
+		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
+			fmt.Println("(draining — no new tasks will be dispatched)")
+		}
+
+		tasks, err := daemon.SendPsRequest()
+		if err != nil {
+			fmt.Printf("failed to get tasks: %v\n", err)
+			continue
+		}
+
+		if len(tasks) == 0 {
+			fmt.Println("no running tasks")
+			continue
+		}
+
+		fmt.Printf("%-30s %-20s %-10s %-10s %-30s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STATUS", "STARTED")
+		fmt.Printf("%s\n", strings.Repeat("-", 120))
+
+		for _, t := range tasks {
+			status := ""
+			if t.Status != "" {
+				status = t.Status
+			}
+			fmt.Printf("%-30s %-20s %-10d %-10s %-30s %s\n",
+				truncate(t.Project, 30),
+				truncate(t.Name, 20),
+				t.PID,
+				t.Elapsed,
+				truncate(status, 30),
+				t.Started)
+		}
 	}
 }
 
