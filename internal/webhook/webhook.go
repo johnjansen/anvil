@@ -12,11 +12,12 @@ import (
 
 // Event represents a task lifecycle event type.
 const (
-	EventStart          = "task_start"
-	EventSuccess        = "task_success"
-	EventFailure        = "task_failure"
-	EventTimeout        = "task_timeout"
+	EventStart           = "task_start"
+	EventSuccess         = "task_success"
+	EventFailure         = "task_failure"
+	EventTimeout         = "task_timeout"
 	EventPersistentCycle = "persistent_cycle"
+	EventSkipped         = "task_skipped"
 )
 
 // Payload is the JSON body sent to webhook endpoints.
@@ -31,6 +32,11 @@ type Payload struct {
 	DurationSeconds  float64 `json:"duration_seconds,omitempty"`
 	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
 	Error            string  `json:"error,omitempty"`
+	// Skipped event fields (dependency failure)
+	SkipReason       string `json:"reason,omitempty"`
+	FailedDependency string `json:"failed_dependency,omitempty"`
+	DepExitCode      int    `json:"dependency_exit_code,omitempty"`
+	DepLastRun       string `json:"dependency_last_run,omitempty"`
 }
 
 // Sender dispatches webhook notifications for task lifecycle events.
@@ -167,6 +173,8 @@ func eventToStatus(event string) string {
 		return "timeout"
 	case EventPersistentCycle:
 		return "force_cycled"
+	case EventSkipped:
+		return "skipped"
 	default:
 		return event
 	}
@@ -185,9 +193,26 @@ func eventToShort(event string) string {
 		return "timeout"
 	case EventPersistentCycle:
 		return "persistent_cycle"
+	case EventSkipped:
+		return "skipped"
 	default:
 		return event
 	}
+}
+
+// BuildSkippedPayload constructs a webhook payload for a task skipped due to dependency failure.
+func BuildSkippedPayload(taskName, projectPath, reason, failedDep string, depExitCode int, depLastRun time.Time) Payload {
+	p := Payload{
+		TaskName:         taskName,
+		Project:          projectPath,
+		SkipReason:       reason,
+		FailedDependency: failedDep,
+		DepExitCode:      depExitCode,
+	}
+	if !depLastRun.IsZero() {
+		p.DepLastRun = depLastRun.Format(time.RFC3339)
+	}
+	return p
 }
 
 // BuildPayload constructs a webhook payload from task execution data.

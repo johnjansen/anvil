@@ -474,6 +474,46 @@ Triage GitHub issues...
 
 The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
+## Desktop Notifications
+
+Configure desktop notifications in `~/.anvil/config.yaml`:
+
+```yaml
+notifications:
+  enabled: true
+  on_failure: true      # notify on task failure (default when enabled)
+  on_success: false     # notify on task success
+  on_budget_warning: true  # notify when persistent task budget is exhausted
+  persistent_cycle: false  # notify on persistent task cycle completion
+  command: ""           # custom command (see below)
+```
+
+Supported platforms:
+- **macOS**: Uses `osascript` to display notifications
+- **Linux**: Uses `notify-send`
+- **Windows**: Uses PowerShell toast notifications
+
+Custom command supports `{title}` and `{message}` placeholders:
+
+```yaml
+notifications:
+  enabled: true
+  command: "echo '{title}: {message}' | logger"
+```
+
+You can also override notifications per-task:
+
+```yaml
+---
+schedule: "*/30 * * *"
+notify_on_failure: false
+notify_on_success: true
+---
+Triage GitHub issues...
+```
+
+Notifications fire asynchronously after webhooks, so they never block task execution.
+
 ## Per-task runner override
 
 Override the global runner chain for a specific task:
@@ -554,6 +594,52 @@ On the next run, the daemon sets `ANVIL_CHECKPOINT_DATA` to the last emitted che
 - `checkpoint: true` — enable checkpointing for this task (default: false)
 - Multiple `##anvil:checkpoint` lines can be emitted; the last one wins
 - Checkpoint data is stored in the run record and visible via `anvil task get`
+
+## Task State Management
+
+For long-running data processing tasks, use state buckets to persist arbitrary JSON state between runs:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+state:
+  bucket: "data-processing"
+  key: "cursor-{{ .TaskID }}"
+---
+Process items from where we left off...
+```
+
+The task reads/writes a JSON state file via `ANVIL_STATE_FILE` environment variable:
+
+```python
+import json
+import os
+
+# Read previous state
+with open(os.environ['ANVIL_STATE_FILE'], 'r') as f:
+    state = json.load(f)
+
+# Update state
+state['last_processed_id'] = 42
+
+# Write back (automatically persisted after task completes)
+with open(os.environ['ANVIL_STATE_FILE'], 'w') as f:
+    json.dump(state, f)
+```
+
+- `bucket` — named bucket for grouping related state (shared across tasks)
+- `key` — unique key within the bucket (supports `{{ .TaskID }}` template variable)
+
+State is automatically persisted to `.anvil/state/<bucket>/<key>.json` in the project directory after each run. Multiple tasks can share the same bucket but have different keys.
+
+View and manage state:
+
+```bash
+anvil task state <name>              # show current state
+anvil task state <name> --export FILE  # export state to file
+anvil task state <name> --import FILE  # import state from file
+anvil task state <name> --clear        # clear state
+```
 
 ## Pipeline Visualization
 
@@ -650,7 +736,7 @@ rate_limit:
   requests_per_minute: 60    # max API requests per minute (default: unlimited)
   requests_per_hour: 1000    # max API requests per hour (default: unlimited)
   burst: 20                  # allow short bursts above rate (default: 10)
-  provider:
+  provider_limits:
     claude:
       requests_per_minute: 50
 hooks:
@@ -755,7 +841,7 @@ rate_limit:
   requests_per_minute: 60    # max API requests per minute (default: unlimited)
   requests_per_hour: 1000    # max API requests per hour (default: unlimited)
   burst: 20                  # allow short bursts above rate (default: 10)
-  provider:
+  provider_limits:
     claude:
       requests_per_minute: 50
     openai:
@@ -766,7 +852,7 @@ rate_limit:
 - `requests_per_minute` — Maximum API requests allowed per minute across all tasks
 - `requests_per_hour` — Maximum API requests allowed per hour across all tasks
 - `burst` — Allows short bursts above the configured rate (default: 10)
-- `provider` — Set different limits per LLM provider (uses the first word of the runner command)
+- `provider_limits` — Set different limits per LLM provider (uses the first word of the runner command)
 
 When rate limited, tasks are skipped and re-queued on the next tick. The skip reason is visible in `anvil task queue`.
 
@@ -926,6 +1012,7 @@ anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes
 anvil task analyze [--all]         # analyze task schedules for potential conflicts
 anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
 anvil task reset-budget <name>    # reset persistent task budget consumption
+anvil task state <name> [--export|--import|--clear]  # view, export, import, or clear task state
 anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)

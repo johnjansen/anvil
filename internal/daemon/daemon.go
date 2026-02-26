@@ -138,6 +138,8 @@ type Daemon struct {
 	persistentBudgetUsed   map[string]time.Duration
 	persistentBudgetUsedMu sync.Mutex
 	webhooks *webhook.Sender
+	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
+	rateLimitSemaphore chan struct{}
 	// Metrics counters for Prometheus endpoint
 	metricsSuccessCount int64 // atomic: total successful task runs
 	metricsFailureCount int64 // atomic: total failed task runs
@@ -466,13 +468,36 @@ func (d *Daemon) reloadConfig() {
 // worker pulls work items from the queue and executes them one at a time.
 func (d *Daemon) worker(id int) {
 	dlog.WorkerStarted(id)
-	for item := range d.workQueue {
-		projName := filepath.Base(item.project.Path)
-		dlog.WorkerPickup(id, projName, item.todo.Name, item.todo.Priority)
-		d.runTask(id, item.project, item.todo)
-		dlog.WorkerIdle(id)
+	for {
+		select {
+		case <-d.stop:
+			dlog.WorkerStopped(id)
+			return
+		case item, ok := <-d.workQueue:
+			if !ok {
+				dlog.WorkerStopped(id)
+				return
+			}
+			// Acquire rate limit slot if configured
+			if d.rateLimitSemaphore != nil {
+				select {
+				case <-d.stop:
+					dlog.WorkerStopped(id)
+					return
+				case d.rateLimitSemaphore <- struct{}{}:
+					// Slot acquired, proceed with task
+				}
+			}
+			projName := filepath.Base(item.project.Path)
+			dlog.WorkerPickup(id, projName, item.todo.Name, item.todo.Priority)
+			d.runTask(id, item.project, item.todo)
+			// Release rate limit slot
+			if d.rateLimitSemaphore != nil {
+				<-d.rateLimitSemaphore
+			}
+			dlog.WorkerIdle(id)
+		}
 	}
-	dlog.WorkerStopped(id)
 }
 
 // mergeEnv merges global and task-specific environment variable maps.
@@ -491,29 +516,51 @@ func mergeEnv(global, task map[string]string) map[string]string {
 	return merged
 }
 
+// depFailInfo holds details about a dependency that prevented a task from running.
+type depFailInfo struct {
+	Reason    string    // human-readable reason (e.g., "dependency failed: fetch-data.md")
+	DepName   string    // name of the failed dependency
+	DepError  string    // error message from the failed dependency run
+	Finished  time.Time // when the dependency last ran
+	ExitCode  int       // 0 if success, 1 if failed (no explicit exit code in RunRecord)
+}
+
 // checkDependenciesMet verifies all dependencies have completed successfully in the current cycle.
-// Returns (true, "") if all dependencies are met, (false, reason) if not.
-func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, reason string) {
+// Returns (true, nil) if all dependencies are met, (false, info) if not.
+func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, info *depFailInfo) {
 	for _, dep := range dependsOn {
 		// dep is the task name (e.g., "fetch-data.md")
 		// We need to find the task ID from the project todos directory
 		runRecord, err := project.ReadCurrentRunRecord(projectPath, dep)
 		if err != nil {
 			// No run record found - dependency hasn't run yet
-			return false, "dependency not run: " + dep
+			return false, &depFailInfo{
+				Reason:  "dependency not run: " + dep,
+				DepName: dep,
+			}
 		}
 		if !runRecord.Success {
-			return false, "dependency failed: " + dep
+			return false, &depFailInfo{
+				Reason:   "dependency failed: " + dep,
+				DepName:  dep,
+				DepError: runRecord.Error,
+				Finished: runRecord.Finished,
+				ExitCode: 1,
+			}
 		}
 		// Check if the run finished in this daemon cycle (within last ~1 minute)
 		// This ensures dependencies from previous cycles are re-run
 		elapsed := time.Since(runRecord.Finished)
 		if elapsed > 2*time.Minute {
 			// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
-			return false, "dependency stale: " + dep
+			return false, &depFailInfo{
+				Reason:   "dependency stale: " + dep,
+				DepName:  dep,
+				Finished: runRecord.Finished,
+			}
 		}
 	}
-	return true, ""
+	return true, nil
 }
 
 // runTask executes a single todo task and handles all bookkeeping.
@@ -696,6 +743,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var checkpointMu sync.Mutex
 	var lastCheckpointData string
 
+	// State file path and storage config (used for persisting task state)
+	var stateFilePath string
+	var stateBucket string
+	var stateKey string
+
 	for attempt := 0; ; attempt++ {
 		finalAttempt = attempt
 		// Check if context is already cancelled before attempting
@@ -715,6 +767,43 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 					mergedEnv = make(map[string]string)
 				}
 				mergedEnv["ANVIL_CHECKPOINT_DATA"] = cpData
+			}
+		}
+
+		// If state is configured, inject ANVIL_STATE_FILE with current state
+		if t.State != nil {
+			stateBucket = t.State.Bucket
+			// Resolve key template (e.g., {{ .TaskID }} -> actual task ID)
+			stateKey = strings.ReplaceAll(t.State.Key, "{{ .TaskID }}", t.ID)
+			// Read existing state
+			existingState, err := project.ReadTaskState(proj.Path, stateBucket, stateKey)
+			if err == nil && existingState != nil {
+				// Create temp file for task to read/write
+				tmpFile, err := os.CreateTemp("", "anvil-state-*.json")
+				if err == nil {
+					defer os.Remove(tmpFile.Name()) // Clean up on error
+					stateData, _ := json.Marshal(existingState)
+					tmpFile.Write(stateData)
+					tmpFile.Close()
+					stateFilePath = tmpFile.Name()
+					if mergedEnv == nil {
+						mergedEnv = make(map[string]string)
+					}
+					mergedEnv["ANVIL_STATE_FILE"] = stateFilePath
+				}
+			} else if os.IsNotExist(err) || err == nil {
+				// No existing state - create empty temp file
+				tmpFile, err := os.CreateTemp("", "anvil-state-*.json")
+				if err == nil {
+					defer os.Remove(tmpFile.Name()) // Clean up on error
+					tmpFile.Write([]byte("{}"))
+					tmpFile.Close()
+					stateFilePath = tmpFile.Name()
+					if mergedEnv == nil {
+						mergedEnv = make(map[string]string)
+					}
+					mergedEnv["ANVIL_STATE_FILE"] = stateFilePath
+				}
 			}
 		}
 
@@ -898,6 +987,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		if t.Webhook != "" {
 			d.webhooks.FireURL(t.Webhook, whEvent, whPayload)
 		}
+		// Send desktop notification on failure
+		if shouldNotifyFailure(d.config.Notifications, t.NotifyOnFailure) {
+			go sendNotification(d.config.Notifications, "anvil: task failed", fmt.Sprintf("%s/%s failed after %s", projName, t.Name, elapsed.Round(time.Second)))
+		}
 		// For persistent tasks, track failures and apply exponential backoff
 		if t.IsPersistent() {
 			d.persistentFailuresMu.Lock()
@@ -929,6 +1022,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		d.webhooks.Fire(webhook.EventSuccess, whPayload)
 		if t.Webhook != "" {
 			d.webhooks.FireURL(t.Webhook, webhook.EventSuccess, whPayload)
+		}
+		// Send desktop notification on success
+		if shouldNotifySuccess(d.config.Notifications, t.NotifyOnSuccess) {
+			go sendNotification(d.config.Notifications, "anvil: task completed", fmt.Sprintf("%s/%s completed in %s", projName, t.Name, elapsed.Round(time.Second)))
 		}
 		// Remove the todo file after successful execution (one-shot only)
 		if t.Schedule == "" {
@@ -970,6 +1067,18 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		delete(d.starvationTrackers, taskKey)
 		d.starvationTrackersMu.Unlock()
 		dlog.Info("persistent task %s completed — next run in %v", t.Name, t.PersistentCooldown)
+	}
+
+	// If state was configured, save the state file back to persistent storage
+	if stateFilePath != "" && stateBucket != "" && stateKey != "" {
+		if stateData, err := os.ReadFile(stateFilePath); err == nil {
+			var state map[string]interface{}
+			if err := json.Unmarshal(stateData, &state); err == nil {
+				if err := project.WriteTaskState(proj.Path, stateBucket, stateKey, state); err != nil {
+					dlog.Warn("failed to save state for %s: %v", t.Name, err)
+				}
+			}
+		}
 	}
 
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
@@ -1393,7 +1502,10 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 
 // DaemonStatus holds runtime state about the daemon.
 type DaemonStatus struct {
-	Draining bool `json:"draining"`
+	Draining       bool `json:"draining"`
+	RateLimited    bool `json:"rate_limited"`   // true if rate limiting is configured
+	RateLimitSlots int  `json:"rate_limit_slots"` // total slots configured (0 if not limited)
+	RateInUse      int  `json:"rate_in_use"`    // current slots in use
 }
 
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -1403,6 +1515,13 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status := DaemonStatus{
 		Draining: atomic.LoadInt32(&d.draining) == 1,
+	}
+	// Populate rate limit status if configured
+	if d.rateLimitSemaphore != nil {
+		status.RateLimited = true
+		status.RateLimitSlots = cap(d.rateLimitSemaphore)
+		// Count slots currently in use (len of channel)
+		status.RateInUse = len(d.rateLimitSemaphore)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
@@ -2001,16 +2120,29 @@ func (d *Daemon) tick(now time.Time) {
 
 		// Skip if task has dependencies that haven't completed successfully
 		if len(pt.todo.DependsOn) > 0 {
-			depMet, depFail := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn)
+			depMet, depInfo := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn)
 			if !depMet {
 				reason := "dependency not met"
-				if depFail != "" {
-					reason = depFail
+				if depInfo != nil {
+					reason = depInfo.Reason
 				}
 				dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, reason)
 				d.pendingTasksMu.Lock()
 				d.pendingTasks[taskKey] = reason
 				d.pendingTasksMu.Unlock()
+
+				// Fire skipped webhook for dependency failures
+				if depInfo != nil && strings.HasPrefix(depInfo.Reason, "dependency failed") {
+					skipPayload := webhook.BuildSkippedPayload(
+						pt.todo.Name, pt.proj.Path, "dependency_failed",
+						depInfo.DepName, depInfo.ExitCode, depInfo.Finished,
+					)
+					d.webhooks.Fire(webhook.EventSkipped, skipPayload)
+					if pt.todo.Webhook != "" {
+						d.webhooks.FireURL(pt.todo.Webhook, webhook.EventSkipped, skipPayload)
+					}
+				}
+
 				d.inFlightMu.Lock()
 				d.inFlight[taskKey]--
 				if d.inFlight[taskKey] <= 0 {
