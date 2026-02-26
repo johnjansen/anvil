@@ -178,7 +178,6 @@ Task subcommands:
   pipeline [--dot|--verbose] [--all]  Visualize task dependency pipelines
   reset-budget <name>        Reset persistent task budget consumption
   state <name>              View, export, import, or clear task state
-  state <name>              View, export, import, or clear task state
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 

@@ -632,11 +632,13 @@ with open(os.environ['ANVIL_STATE_FILE'], 'w') as f:
 
 State is automatically persisted to `.anvil/state/<bucket>/<key>.json` in the project directory after each run. Multiple tasks can share the same bucket but have different keys.
 
-View state:
+View and manage state:
 
 ```bash
-anvil task state <bucket>       # show all keys in a bucket
-anvil task state <bucket> <key> # show specific key value
+anvil task state <name>              # show current state
+anvil task state <name> --export FILE  # export state to file
+anvil task state <name> --import FILE  # import state from file
+anvil task state <name> --clear        # clear state
 ```
 
 ## Pipeline Visualization
@@ -1010,7 +1012,7 @@ anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes
 anvil task analyze [--all]         # analyze task schedules for potential conflicts
 anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
 anvil task reset-budget <name>    # reset persistent task budget consumption
-anvil task state <bucket> [key]   # show task state bucket contents
+anvil task state <name> [--export|--import|--clear]  # view, export, import, or clear task state
 anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)

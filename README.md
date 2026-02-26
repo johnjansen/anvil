@@ -693,8 +693,7 @@ anvil cleanup -o=24h
 | `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task pipeline [--dot|--verbose] [--all]` | Visualize task dependency pipelines |
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
-| `anvil task state <bucket> [key]` | Show task state bucket contents |
-| `anvil task state <name> [--get|--set <key=value>] [--delete]` | Manage task state buckets |
+| `anvil task state <name> [--export FILE \| --import FILE \| --clear]` | View, export, import, or clear task state |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 | `anvil task find <pattern>` | Find tasks by name pattern |
