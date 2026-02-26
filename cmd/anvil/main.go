@@ -342,8 +342,7 @@ func serveCmd() {
 	case <-detachCh:
 		// User pressed 'd' or Ctrl+D to hot-daemonize
 		log.Printf("detaching to background...")
-		d.Stop()
-		daemonizeProcess()
+		detachToBackground(d)
 	}
 }
 
@@ -514,6 +513,54 @@ func daemonizeProcess() {
 
 	logFile.Close()
 	fmt.Fprintf(os.Stderr, "daemon started (PID %d)\n", cmd.Process.Pid)
+}
+
+// detachToBackground starts a new daemon in the background, then stops the foreground daemon.
+// This allows the foreground daemon to drain its work queue before exiting.
+// The new daemon continues accepting new tasks.
+func detachToBackground(d *daemon.Daemon) {
+	// First, start the background daemon
+	if err := config.EnsureDir(); err != nil {
+		log.Printf("failed to create ~/.anvil: %v", err)
+		return
+	}
+
+	// Get the executable path
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("failed to find executable path: %v", err)
+		return
+	}
+
+	// Open the log file for the detached daemon
+	logFile, err := os.OpenFile(config.DaemonLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("failed to open daemon log: %v", err)
+		return
+	}
+
+	// Start the new daemon process in a new session
+	// Use --child flag which runs the daemon without writing PID file (daemon.Run does that)
+	cmd := exec.Command(exe, "watch", "--child")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		log.Printf("failed to start background daemon: %v", err)
+		return
+	}
+
+	newPID := cmd.Process.Pid
+	logFile.Close()
+
+	// Now stop the foreground daemon gracefully (allows draining work queue)
+	log.Printf("stopping foreground daemon to detach (background PID: %d)...", newPID)
+	d.Stop()
+
+	// Print detach message to stderr
+	fmt.Fprintf(os.Stderr, "Detached to background (PID %d). Use 'anvil ps' to monitor.\n", newPID)
 }
 
 // runDaemonChild is the internal entry point for the detached child process.
