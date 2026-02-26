@@ -149,9 +149,10 @@ Add options:
 Task subcommands:
   create [options] <task>   Create a new task
   ls [-a|--all] [--json]    List tasks (--all for all watched projects)
+  find <pattern>            Find tasks by name pattern (alias for ls --match)
   get <name> [--json]       Show task details including run status
   log [-f] <name>           Show execution log (-f to follow)
-  history <name> [--json]   Show run history
+  history <name> [--json]    Show run history
   rm <name>                 Remove a task (kills if running)
   run <name>                Trigger immediate execution (bypass cron)
   kill <name>               Kill a running task (persistent tasks auto-restart)
@@ -159,10 +160,10 @@ Task subcommands:
   start <name>              Start a stopped persistent task (dispatches on next tick)
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
-  queue [--json]             Show daemon queue status and skip reasons
+  queue [--json]            Show daemon queue status and skip reasons
   pause <name>              Pause a task (sets disabled: true)
   resume <name>             Resume a paused task (sets disabled: false)
-  edit <name>                Edit task (schedule, priority, content, or --remove field)
+  edit <name>               Edit task (schedule, priority, content, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
 
 Project subcommands:
@@ -1491,10 +1492,15 @@ func taskCmd(args []string) {
 		taskQueueCmd(args[1:])
 	case "timeout":
 		taskTimeoutCmd(args[1:])
-	case "stop":
-		taskStopCmd(args[1:])
 	case "start":
 		taskStartCmd(args[1:])
+	case "find":
+		// "find" is an alias for "ls --match" - inject the pattern as --match flag
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "usage: anvil task find <pattern>\n")
+			os.Exit(1)
+		}
+		taskLsCmd([]string{"--match", args[1]})
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -1770,12 +1776,26 @@ func parseFrontmatterAndMerge(
 func taskLsCmd(args []string) {
 	allProjects := false
 	jsonOutput := false
-	for _, a := range args {
+	matchPattern := ""
+
+	// Parse flags: --match/-m for pattern, --all/-a for all projects, --json for JSON output
+	var filteredArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "--all" || a == "-a" {
 			allProjects = true
-		}
-		if a == "--json" {
+		} else if a == "--json" {
 			jsonOutput = true
+		} else if a == "--match" || a == "-m" {
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --match/-m")
+			}
+			i++
+			matchPattern = args[i]
+		} else if strings.HasPrefix(a, "--match=") || strings.HasPrefix(a, "-m=") {
+			matchPattern = strings.TrimPrefix(strings.TrimPrefix(a, "--match="), "-m=")
+		} else {
+			filteredArgs = append(filteredArgs, a)
 		}
 	}
 
@@ -1825,6 +1845,24 @@ func taskLsCmd(args []string) {
 		projects = append(projects, projectTodos{path: abs, todos: todos})
 	}
 
+	// Filter by match pattern if specified (case-insensitive substring match)
+	if matchPattern != "" {
+		patternLower := strings.ToLower(matchPattern)
+		var filtered []projectTodos
+		for _, p := range projects {
+			var projectFiltered []project.Todo
+			for _, t := range p.todos {
+				if strings.Contains(strings.ToLower(t.Name), patternLower) {
+					projectFiltered = append(projectFiltered, t)
+				}
+			}
+			if len(projectFiltered) > 0 {
+				filtered = append(filtered, projectTodos{path: p.path, todos: projectFiltered})
+			}
+		}
+		projects = filtered
+	}
+
 	total := 0
 	for _, p := range projects {
 		total += len(p.todos)
@@ -1832,8 +1870,13 @@ func taskLsCmd(args []string) {
 	if total == 0 {
 		if jsonOutput {
 			fmt.Println("[]")
+		} else if matchPattern != "" {
+			fmt.Println("no tasks")
 		} else {
 			fmt.Println("no tasks")
+		}
+		if matchPattern != "" {
+			os.Exit(1)
 		}
 		return
 	}
