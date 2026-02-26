@@ -219,6 +219,15 @@ func registerCmd(args []string) {
 		log.Fatalf("bad path: %v", err)
 	}
 
+	// Verify the directory exists
+	info, err := os.Stat(abs)
+	if err != nil {
+		log.Fatalf("path does not exist: %s", abs)
+	}
+	if !info.IsDir() {
+		log.Fatalf("not a directory: %s", abs)
+	}
+
 	registerProject(abs)
 
 	if !daemon.IsDaemonRunning() {
