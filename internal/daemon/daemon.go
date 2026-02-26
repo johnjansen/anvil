@@ -414,6 +414,31 @@ func mergeEnv(global, task map[string]string) map[string]string {
 	return merged
 }
 
+// checkDependenciesMet verifies all dependencies have completed successfully in the current cycle.
+// Returns (true, "") if all dependencies are met, (false, reason) if not.
+func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, reason string) {
+	for _, dep := range dependsOn {
+		// dep is the task name (e.g., "fetch-data.md")
+		// We need to find the task ID from the project todos directory
+		runRecord, err := project.ReadCurrentRunRecord(projectPath, dep)
+		if err != nil {
+			// No run record found - dependency hasn't run yet
+			return false, "dependency not run: " + dep
+		}
+		if !runRecord.Success {
+			return false, "dependency failed: " + dep
+		}
+		// Check if the run finished in this daemon cycle (within last ~1 minute)
+		// This ensures dependencies from previous cycles are re-run
+		elapsed := time.Since(runRecord.Finished)
+		if elapsed > 2*time.Minute {
+			// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
+			return false, "dependency stale: " + dep
+		}
+	}
+	return true, ""
+}
+
 // runTask executes a single todo task and handles all bookkeeping.
 func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
@@ -1768,6 +1793,28 @@ func (d *Daemon) tick(now time.Time) {
 		}
 		d.inFlight[taskKey]++
 		d.inFlightMu.Unlock()
+
+		// Skip if task has dependencies that haven't completed successfully
+		if len(pt.todo.DependsOn) > 0 {
+			depMet, depFail := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn)
+			if !depMet {
+				reason := "dependency not met"
+				if depFail != "" {
+					reason = depFail
+				}
+				dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, reason)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = reason
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
+		}
 
 		// Skip dispatch if persistent task has been explicitly stopped
 		d.stoppedMu.Lock()

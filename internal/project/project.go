@@ -99,6 +99,7 @@ type Todo struct {
 	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
 	Labels               []string      // user-defined labels for organizing and filtering tasks
 	Env                  map[string]string // environment variables injected into task execution
+	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -194,6 +195,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			webhookURL := ""
 			var labels []string
 			var envVars map[string]string
+			var dependsOn []string
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -228,6 +230,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Webhook              string   `yaml:"webhook"`
 						Labels               []string          `yaml:"labels"`
 						Env                  map[string]string `yaml:"env"`
+						DependsOn            []string          `yaml:"depends_on"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -266,6 +269,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						webhookURL = fmData.Webhook
 						labels = fmData.Labels
 						envVars = fmData.Env
+						dependsOn = fmData.DependsOn
 					}
 				}
 			}
@@ -305,6 +309,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Webhook:              webhookURL,
 				Labels:               labels,
 				Env:                  resolvedEnv,
+				DependsOn:            dependsOn,
 			})
 		}
 	}
