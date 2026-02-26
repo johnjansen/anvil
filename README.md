@@ -376,9 +376,14 @@ retention:
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
+env:
+  GITHUB_TOKEN: "env:GITHUB_TOKEN"
+  CUSTOM_VAR: "my-value"
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
+
+Global `env` sets environment variables for all tasks. Prefix a value with `env:` to inherit from the current environment (e.g., `env:GITHUB_TOKEN` reads the `GITHUB_TOKEN` env var). Task-level `env` overrides global `env` for that specific task.
 
 Multiple runners with fallback:
 
