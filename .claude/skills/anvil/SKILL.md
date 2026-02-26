@@ -50,6 +50,7 @@ Options:
 - `-n, --dry-run` — Validate schedule without creating the task.
 - `-f, --file <path>` — Read task content from a file.
 - `-` — Read task content from stdin.
+- `-t, --template <name>` — Use a task template for configuration.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
 - `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
@@ -154,6 +155,43 @@ When the cumulative runtime exceeds this budget, the task stops and requires man
 ### Starvation prevention
 
 If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
+
+## Task Templates
+
+Create reusable task templates to standardize common patterns:
+
+```bash
+# List available templates
+anvil template ls
+
+# Show template details
+anvil template get <name>
+```
+
+Templates are stored in:
+- `.anvil/templates/` — project-specific templates
+- `~/.anvil/templates/` — global templates shared across all projects
+
+A template is a YAML file:
+
+```yaml
+# .anvil/templates/daily-standup.yaml
+name: daily-standup
+schedule: "0 9 * * 1-5"
+priority: 1
+allowed_tools:
+  - Bash
+  - Read
+  - Write
+```
+
+Use a template when creating a task:
+
+```bash
+anvil add -t daily-standup "Morning standup summary"
+```
+
+Template values can be overridden by CLI flags — flags take precedence over template values.
 
 ## Session Continuity
 

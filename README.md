@@ -113,6 +113,40 @@ persistent_budget: 1h        # cumulative budget per daemon lifetime (default: 0
 
 If a persistent task waits more than 5 minutes for a worker slot, it temporarily yields to let higher-priority work through. This prevents low-priority persistent tasks from blocking important cron jobs indefinitely.
 
+### Task Templates
+
+Use templates to create tasks with predefined configurations:
+
+```bash
+# List available templates
+anvil template ls
+
+# Show template details
+anvil template get <name>
+
+# Create a task from a template
+anvil add -s "*/30 * * * *" -t <template-name> "Task description"
+```
+
+Templates are stored in:
+- `.anvil/templates/` — project-specific templates
+- `~/.anvil/templates/` — global templates shared across all projects
+
+A template is a YAML file with task configuration:
+
+```yaml
+# .anvil/templates/daily-standup.yaml
+name: daily-standup
+schedule: "0 9 * * 1-5"
+priority: 1
+allowed_tools:
+  - Bash
+  - Read
+  - Write
+```
+
+Template values can be overridden by CLI flags. For example, `-t daily-standup -s "0 10 * * * *"` uses the template's allowed_tools but overrides the schedule.
+
 ### Priority
 
 Lower number = higher priority. Default is `p1`:
@@ -511,7 +545,9 @@ anvil cleanup -o=24h
 | `anvil watch --install` | Install as system service (auto-start on boot) |
 | `anvil watch --uninstall` | Remove the system service |
 | `anvil watch --status` | Show system service status |
-| `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
+| `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `-t|--template`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
+| `anvil template ls` | List available task templates |
+| `anvil template get <name>` | Show template details |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines, --level, --match, --since, --until) |
 | `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
