@@ -55,6 +55,10 @@ Options:
 - `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
 - `--skip-permissions` — Bypass all tool permission prompts.
+- `--strict` — Fail if the schedule conflicts with existing tasks.
+- `--no-overlap-check` — Skip schedule overlap detection.
+- `--strict` — Fail if the schedule conflicts with existing tasks.
+- `--no-overlap-check` — Skip schedule overlap detection.
 
 **Note:** The `runner` option is available in task frontmatter or project config, but not as a CLI flag.
 
@@ -619,6 +623,7 @@ tick_interval: 10s  # how often to check for work
 input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
 output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
 auto_update: false       # opt-in: auto-update binary on daemon startup
+graceful_shutdown_timeout: 5m  # max wait for running tasks on graceful stop (default: 5m)
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"

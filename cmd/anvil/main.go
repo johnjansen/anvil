@@ -150,6 +150,8 @@ Add options:
       --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read")
       --max-concurrent int    Max parallel instances (default 1)
       --skip-permissions     Bypass all tool permission prompts
+      --strict               Fail if schedule conflicts with existing tasks
+      --no-overlap-check    Skip schedule overlap detection
 
 Task subcommands:
   create [options] <task>   Create a new task
