@@ -26,6 +26,15 @@ type Config struct {
 	AutoUpdate      bool            `yaml:"auto_update"`       // opt-in: auto-update binary on daemon startup
 	Env                      map[string]string `yaml:"env"`                        // global environment variables injected into all task executions
 	GracefulShutdownTimeout  time.Duration     `yaml:"graceful_shutdown_timeout"`   // max wait for running tasks on graceful stop (default: 5m)
+	QuietHours               QuietHoursConfig  `yaml:"quiet_hours"`                // global quiet hours to restrict non-critical task execution
+}
+
+// QuietHoursConfig defines a global time window during which only high-priority tasks may run.
+type QuietHoursConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Start           string `yaml:"start"`            // HH:MM format (24h), e.g. "22:00"
+	End             string `yaml:"end"`              // HH:MM format (24h), e.g. "07:00"
+	ExcludePriority int    `yaml:"exclude_priority"` // tasks with priority <= this value bypass quiet hours (default: 0 = only p0)
 }
 
 // WebhookConfig defines a single webhook endpoint that receives task lifecycle events.

@@ -2837,7 +2837,22 @@ func taskRmCmd(args []string) {
 
 func taskRunCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task run <name>\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task run <name> [--force]\n")
+		os.Exit(1)
+	}
+
+	// Parse --force flag
+	force := false
+	var filtered []string
+	for _, a := range args {
+		if a == "--force" {
+			force = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task run <name> [--force]\n")
 		os.Exit(1)
 	}
 
@@ -2856,9 +2871,9 @@ func taskRunCmd(args []string) {
 		log.Fatalf("failed to load todos: %v", err)
 	}
 
-	todo := findTodo(todos, args[0])
+	todo := findTodo(todos, filtered[0])
 	if todo == nil {
-		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", filtered[0])
 		os.Exit(1)
 	}
 
@@ -2867,12 +2882,16 @@ func taskRunCmd(args []string) {
 		os.Exit(1)
 	}
 
-	if err := daemon.SendRunRequest(abs, todo.ID, todo.Name); err != nil {
+	if err := daemon.SendRunRequest(abs, todo.ID, todo.Name, force); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to run task: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("▶ Dispatched %s for immediate execution\n", todo.Name)
+	msg := "▶ Dispatched %s for immediate execution\n"
+	if force {
+		msg = "▶ Dispatched %s for immediate execution (bypassing time windows)\n"
+	}
+	fmt.Printf(msg, todo.Name)
 }
 
 func taskKillCmd(args []string) {
@@ -4591,12 +4610,15 @@ func taskStopOnIdleCmd(args []string) {
 func taskNextCmd(args []string) {
 	jsonOutput := false
 	allProjects := false
+	verbose := false
 	var taskName string
 
 	for _, a := range args {
 		switch a {
 		case "--json":
 			jsonOutput = true
+		case "--verbose", "-v":
+			verbose = true
 		case "--all":
 			allProjects = true
 		case "-h", "--help":
@@ -4605,9 +4627,10 @@ func taskNextCmd(args []string) {
 			fmt.Println("Show the next scheduled run time for tasks.")
 			fmt.Println("")
 			fmt.Println("Options:")
-			fmt.Println("  --json    Output as JSON")
-			fmt.Println("  --all     Show tasks from all watched projects")
-			fmt.Println("  -h        Show this help")
+			fmt.Println("  --json      Output as JSON")
+			fmt.Println("  --all       Show tasks from all watched projects")
+			fmt.Println("  --verbose   Show time window constraints and quiet hours info")
+			fmt.Println("  -h          Show this help")
 			fmt.Println("")
 			fmt.Println("If task-name is omitted, shows all tasks in the current project.")
 			return
@@ -4723,33 +4746,56 @@ func taskNextCmd(args []string) {
 			return
 		}
 
-		p, err := cron.Parse(todo.Schedule)
+		// Load global config for quiet hours
+		cfg, _ := config.Load()
+
+		// Calculate window-aware next run
+		next, err := daemon.NextAllowedRun(todo.Schedule, todo.Window, cfg.QuietHours, todo.Priority, now)
 		if err != nil {
 			if jsonOutput {
 				data, _ := json.MarshalIndent(map[string]string{
 					"name": todo.Name, "error": err.Error()}, "", "  ")
 				fmt.Println(string(data))
 			} else {
-				fmt.Fprintf(os.Stderr, "invalid schedule '%s': %v\n", todo.Schedule, err)
+				fmt.Fprintf(os.Stderr, "failed to calculate next run: %v\n", err)
 			}
 			os.Exit(1)
 		}
 
-		next, err := p.Next(now)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to calculate next run: %v\n", err)
-			os.Exit(1)
-		}
-
 		if jsonOutput {
-			data, _ := json.MarshalIndent(map[string]string{
+			result := map[string]string{
 				"name":     todo.Name,
 				"schedule": todo.Schedule,
 				"next_run": next.Format(time.RFC3339),
-				"in":      formatDurationShort(time.Until(next))}, "", "  ")
+				"in":       formatDurationShort(time.Until(next)),
+			}
+			if todo.Window.Start != "" {
+				result["window_start"] = todo.Window.Start
+				result["window_end"] = todo.Window.End
+				result["window_days"] = todo.Window.Days
+			}
+			if cfg.QuietHours.Enabled {
+				result["quiet_hours"] = cfg.QuietHours.Start + "-" + cfg.QuietHours.End
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
 			fmt.Println(string(data))
 		} else {
 			fmt.Printf("%s: next run at %s (%s)\n", todo.Name, next.Format("Mon Jan 2 15:04:05 MST"), formatDurationShort(time.Until(next)))
+			if verbose {
+				if todo.Window.Start != "" {
+					days := todo.Window.Days
+					if days == "" {
+						days = "all"
+					}
+					fmt.Printf("  window: %s–%s (days: %s)\n", todo.Window.Start, todo.Window.End, days)
+				}
+				if cfg.QuietHours.Enabled {
+					fmt.Printf("  quiet hours: %s–%s (exempt: p%d and above)\n", cfg.QuietHours.Start, cfg.QuietHours.End, cfg.QuietHours.ExcludePriority)
+				}
+				if todo.Window.Start == "" && !cfg.QuietHours.Enabled {
+					fmt.Println("  no time window constraints active")
+				}
+			}
 		}
 		return
 	}

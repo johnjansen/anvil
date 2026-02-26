@@ -70,6 +70,14 @@ type Project struct {
 	Config Config
 }
 
+// AllowedWindow defines a time window during which a task is allowed to execute.
+// If set, the task will only run when the current time falls within the window.
+type AllowedWindow struct {
+	Start string `yaml:"start"` // HH:MM format (24h), e.g. "09:00"
+	End   string `yaml:"end"`   // HH:MM format (24h), e.g. "18:00"
+	Days  string `yaml:"days"`  // allowed days: range "1-5", list "1,3,5", or combined "1-5,0" (0=Sunday)
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -101,6 +109,8 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
+	Window               AllowedWindow // per-task execution time window (empty = no restriction)
+	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -202,6 +212,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var envVars map[string]string
 			var dependsOn []string
 			checkpoint := false
+			var allowedWindow AllowedWindow
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -238,6 +249,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
+						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -278,6 +290,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
 						checkpoint = fmData.Checkpoint
+						if fmData.AllowedWindow != nil {
+							allowedWindow = *fmData.AllowedWindow
+						}
 					}
 				}
 			}
@@ -319,6 +334,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
+				Window:               allowedWindow,
 			})
 		}
 	}

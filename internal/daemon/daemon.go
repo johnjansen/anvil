@@ -1625,6 +1625,7 @@ type RunRequest struct {
 	ProjectPath string `json:"project_path"`
 	TaskID      string `json:"task_id"`
 	TaskName    string `json:"task_name"`
+	Force       bool   `json:"force,omitempty"`
 }
 
 // DrainTaskRequest is the JSON payload for /drain/task.
@@ -1728,6 +1729,9 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 	// Enqueue for immediate dispatch (bypass cron, skip pre_check by clearing it)
 	todo := *found
 	todo.PreCheck = "" // Skip pre_check for forced runs
+	if req.Force {
+		todo.ForceWindow = true // Bypass time window and quiet hours checks
+	}
 
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, todo.Name)
 
@@ -2015,6 +2019,34 @@ func (d *Daemon) tick(now time.Time) {
 				d.inFlightMu.Unlock()
 				continue
 			}
+		}
+
+		// Skip dispatch if task is outside its allowed time window or in quiet hours
+		if !isTaskInWindow(pt.todo, time.Now()) {
+			dlog.Info("skip %s/%s — outside allowed time window", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "outside time window"
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
+		}
+		if isInQuietHours(time.Now(), d.config.QuietHours, pt.todo.Priority) {
+			dlog.Info("skip %s/%s — quiet hours active", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "quiet hours"
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
 		}
 
 		// Skip dispatch if persistent task has been explicitly stopped
@@ -2559,8 +2591,8 @@ func SendDrainTaskRequest(id string) error {
 }
 
 // SendRunRequest asks the daemon to immediately dispatch a task.
-func SendRunRequest(projectPath, taskID, taskName string) error {
-	data, err := json.Marshal(RunRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName})
+func SendRunRequest(projectPath, taskID, taskName string, force bool) error {
+	data, err := json.Marshal(RunRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName, Force: force})
 	if err != nil {
 		return err
 	}
