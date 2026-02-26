@@ -336,6 +336,50 @@ Hooks run in the project directory with a 60-second timeout. Environment variabl
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
+## Webhook Notifications
+
+Configure HTTP webhooks to receive notifications for task lifecycle events:
+
+```yaml
+webhooks:
+  slack:
+    url: "https://hooks.slack.com/services/xxx"
+    method: "POST"  # default: POST
+    headers:
+      Authorization: "Bearer xxx"
+    events: ["success", "failure", "start", "timeout", "persistent_cycle"]
+    timeout: 10s  # default: 10s
+  teams:
+    url: "https://outlook.office.com/webhook/xxx"
+    events: ["failure", "timeout"]
+```
+
+Supported events:
+- `start` — task execution started
+- `success` — task completed successfully
+- `failure` — task failed
+- `timeout` — task timed out
+- `persistent_cycle` — persistent task completed a cycle
+
+You can use short event names in config (`success` instead of `task_success`). An empty events list means "all events".
+
+The webhook payload includes:
+
+| Field | Description |
+|-------|-------------|
+| `event` | Event type (e.g., `task_success`) |
+| `task_name` | Task filename |
+| `project` | Project directory path |
+| `status` | Status string (`success`, `failure`, `started`, `timeout`, `force_cycled`) |
+| `run_id` | Unique run identifier |
+| `started_at` | RFC 3339 timestamp |
+| `finished_at` | RFC 3339 timestamp |
+| `duration_seconds` | Execution duration |
+| `estimated_cost_usd` | Estimated LLM cost |
+| `error` | Error message (if failure/timeout) |
+
+Webhooks are sent asynchronously with 3 retry attempts and exponential backoff. Failed deliveries are logged but don't affect task outcome.
+
 ## Per-task runner override
 
 Override the global runner chain for a specific task:

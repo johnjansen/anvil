@@ -195,6 +195,57 @@ Hooks run in the project directory with a 60-second timeout. The following envir
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
+### Webhook notifications
+
+Configure HTTP webhook endpoints to receive task lifecycle events:
+
+```yaml
+webhooks:
+  slack:
+    url: "https://hooks.slack.com/services/xxx"
+    method: "POST"
+    headers:
+      Authorization: "Bearer xxx"
+    events: ["success", "failure", "start", "timeout"]
+    timeout: 10s
+  teams:
+    url: "https://outlook.office.com/webhook/xxx"
+    events: ["failure", "timeout"]
+```
+
+**Configuration options:**
+- `url` — webhook endpoint URL (required)
+- `method` — HTTP method (default: POST)
+- `headers` — custom HTTP headers (optional)
+- `events` — list of events to subscribe to (default: all events)
+- `timeout` — request timeout (default: 10s)
+
+**Supported events:**
+- `start` — task has started execution
+- `success` — task completed successfully
+- `failure` — task failed with an error
+- `timeout` — task exceeded its timeout
+- `persistent_cycle` — persistent task completed a cycle
+
+You can use the short form (e.g., `success` instead of `task_success`) in the config.
+
+**Webhook payload:**
+```json
+{
+  "event": "task_success",
+  "task_name": "triage-issues.md",
+  "project": "/path/to/project",
+  "status": "success",
+  "run_id": "uuid",
+  "started_at": "2026-01-15T10:30:00Z",
+  "finished_at": "2026-01-15T10:35:00Z",
+  "duration_seconds": 300.0,
+  "estimated_cost_usd": 0.15
+}
+```
+
+Webhook errors are logged as warnings but do not affect task execution. Retries are attempted up to 3 times with exponential backoff.
+
 ### Pause/Resume tasks
 
 Set `disabled: true` in the frontmatter to pause a task without deleting it:
@@ -275,6 +326,14 @@ retention:
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
+webhooks:
+  slack:
+    url: "https://hooks.slack.com/services/xxx"
+    method: "POST"
+    headers:
+      Authorization: "Bearer xxx"
+    events: ["success", "failure", "start", "timeout"]
+    timeout: 10s
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
@@ -420,6 +479,7 @@ anvil cleanup -o=24h
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
+| `anvil task next [name]` | Show next scheduled run time (--all for all projects) |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 
