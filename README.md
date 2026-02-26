@@ -401,10 +401,25 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
+  max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
+### Per-task Webhook
+
+Override or supplement global webhooks for a specific task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+webhook: "https://hooks.slack.com/services/xxx"
+---
+Triage GitHub issues...
+```
+
+The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
 ### Log Retention
 
@@ -447,7 +462,7 @@ anvil cleanup -o=24h
 | `anvil watch --status` | Show system service status |
 | `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
-| `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
+| `anvil daemon log` | View daemon log (-f to follow, -n for lines, --level, --match, --since, --until) |
 | `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
 | `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
 | `anvil status [--json]` | Show watched projects and daemon status |
@@ -478,6 +493,7 @@ anvil cleanup -o=24h
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task queue` | Show daemon queue status and skip reasons |
 | `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field]` | Edit task schedule, priority, content, or remove a field |
+| `anvil task edit --all [pattern] [-s schedule] [-p priority] [--disabled\|--enabled] [--dry-run]` | Bulk edit tasks matching a pattern |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
@@ -506,6 +522,29 @@ anvil cleanup -o=24h
 | `anvil project ls [-a|--all]` | List watched projects |
 | `anvil project get [path]` | Show project and running tasks |
 | `anvil project rm [path] [--clean]` | Unwatch a project (--clean removes .anvil/ too) |
+
+## Bulk Editing Tasks
+
+Edit multiple tasks at once using `--all`:
+
+```bash
+# Change schedule for all tasks
+anvil task edit --all -s "0 9 * * 1-5"
+
+# Disable all tasks matching a pattern
+anvil task edit --all "triage-*" --disabled
+
+# Re-enable all tasks
+anvil task edit --all --enabled
+
+# Preview changes without applying
+anvil task edit --all -p 2 --dry-run
+
+# Change priority for tasks matching a glob pattern
+anvil task edit --all "check-*" -p 0
+```
+
+Bulk edit supports `-s`/`--schedule`, `-p`/`--priority`, `--disabled`, and `--enabled` flags. Use `--dry-run` to preview changes before applying. Does not support `--content`, `--content-file`, or `--remove`.
 
 ## Task Import/Export
 

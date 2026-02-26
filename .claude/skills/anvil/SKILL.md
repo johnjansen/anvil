@@ -450,6 +450,14 @@ retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
   max_log_size: 50mb  # max size per log file (0 = unlimited)
+webhooks:
+  slack:
+    url: "https://hooks.slack.com/services/xxx"
+    method: "POST"
+    headers:
+      Authorization: "Bearer xxx"
+    events: ["success", "failure", "start", "timeout"]
+    timeout: 10s
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
@@ -476,10 +484,25 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
+  max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
+### Per-task Webhook
+
+Override or supplement global webhooks for a specific task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+webhook: "https://hooks.slack.com/services/xxx"
+---
+Triage GitHub issues...
+```
+
+The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
 ### Log Retention
 
@@ -609,11 +632,19 @@ anvil task edit <name> -p 0                 # change priority
 anvil task edit <name> --content "New task description"  # change content
 anvil task edit <name> --content-file task.md  # change content from file
 anvil task edit <name> --remove pre_check   # remove a frontmatter field
+
+# Bulk edit
+anvil task edit --all -s "0 9 * * 1-5"           # change schedule for all tasks
+anvil task edit --all "triage-*" --disabled        # disable matching tasks
+anvil task edit --all --enabled                     # re-enable all tasks
+anvil task edit --all -p 2 --dry-run               # preview priority change
 ```
 
 Edits the task's frontmatter in place. Moving a task to a different priority moves the file to the corresponding priority directory.
 
 The `--remove` flag (also `--clear`) removes a field from the task's frontmatter. Valid fields: `allowed_tools`, `on_failure`, `on_success`, `persistent_budget`, `persistent_cooldown`, `persistent_max_runtime`, `pre_check`, `schedule`, `timeout`.
+
+Bulk edit (`--all`) supports `-s`/`--schedule`, `-p`/`--priority`, `--disabled`, and `--enabled`. Use `--dry-run` to preview. Does not support `--content`, `--content-file`, or `--remove`.
 
 ## Stopping the Daemon
 
@@ -645,6 +676,7 @@ anvil task next [name]              # show next scheduled run time (--all for al
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)
 anvil task find <pattern>            # find tasks by name pattern (alias for ls --match)
+anvil task edit --all [pattern] [-s|-p|--disabled|--enabled] [--dry-run]  # bulk edit tasks
 anvil task export [names...] [-a|--all] [-o file]  # export tasks to JSON
 anvil task import <file> [--base-path path] [-n|--dry-run] [-f|--force]  # import tasks from JSON
 ```
@@ -685,9 +717,19 @@ Shows the currently installed anvil version.
 anvil daemon log           # view last 50 lines of daemon log
 anvil daemon log -f       # follow daemon log in real-time
 anvil daemon log -n 100   # view last 100 lines
+anvil daemon log --level info     # filter by minimum level (debug, info, warn, error)
+anvil daemon log --match "error"  # filter by text pattern
+anvil daemon log --since "1h"     # show entries since duration ago
+anvil daemon log --until "2pm"   # show entries until specific time
 ```
 
 View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
+
+Filtering options:
+- `--level` — minimum log level to show (debug, info, warn, error)
+- `--match` — text pattern to filter log lines
+- `--since` — show entries since duration ago (e.g., "1h", "30m", "2026-01-15")
+- `--until` — show entries until specific time (e.g., "2pm", "2026-01-15T15:00")
 
 ## Validating Configuration
 
