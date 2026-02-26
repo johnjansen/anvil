@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
@@ -296,11 +298,29 @@ func serveCmd() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Listen for 'd' keypress to detach to background
-	detachCh := make(chan struct{}, 1)
-	go listenForDetach(detachCh)
-
 	go d.Run()
+
+	// Start hot-daemonize listener in background
+	detachCh := make(chan struct{})
+	go func() {
+		// Set stdin to raw mode to read single keypress
+		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			// Not a terminal, skip hot-daemonize
+			return
+		}
+		defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+		buf := make([]byte, 1)
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			return
+		}
+		// 'd' key or Ctrl+D (ASCII 4) triggers detach
+		if buf[0] == 'd' || buf[0] == 4 {
+			close(detachCh)
+		}
+	}()
 
 	select {
 	case sig := <-sigCh:
@@ -309,51 +329,11 @@ func serveCmd() {
 	case <-d.Done():
 		// daemon stopped itself (e.g. stop-on-idle drain completed)
 	case <-detachCh:
-		detachToBackground()
-		// Exit the foreground process; daemon keeps running as orphan
+		// User pressed 'd' or Ctrl+D to hot-daemonize
+		log.Printf("detaching to background...")
+		d.Stop()
+		daemonizeProcess()
 	}
-}
-
-// listenForDetach reads stdin one byte at a time looking for 'd' or Ctrl+D.
-func listenForDetach(ch chan<- struct{}) {
-	// Only try to detach if stdin is a terminal
-	fi, err := os.Stdin.Stat()
-	if err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
-		return
-	}
-
-	buf := make([]byte, 1)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil || n == 0 {
-			return
-		}
-		if buf[0] == 'd' || buf[0] == 4 { // 'd' or Ctrl+D
-			ch <- struct{}{}
-			return
-		}
-	}
-}
-
-// detachToBackground redirects stdout/stderr to the daemon log and detaches
-// from the controlling terminal so the daemon continues as a background process.
-func detachToBackground() {
-	logFile, err := os.OpenFile(config.DaemonLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open daemon log for detach: %v\n", err)
-		return
-	}
-
-	pid := os.Getpid()
-	fmt.Fprintf(os.Stderr, "\nDetached to background (PID %d). Use 'anvil ps' to monitor.\n", pid)
-
-	// Redirect stdout and stderr to the log file
-	syscall.Dup2(int(logFile.Fd()), int(os.Stdout.Fd()))
-	syscall.Dup2(int(logFile.Fd()), int(os.Stderr.Fd()))
-	logFile.Close()
-
-	// Close stdin to fully detach from the terminal
-	os.Stdin.Close()
 }
 
 // watchCmd2 handles "anvil watch" with optional --daemonize/-d, --stop, and --child flags.
@@ -523,6 +503,37 @@ func daemonizeProcess() {
 
 	logFile.Close()
 	fmt.Fprintf(os.Stderr, "daemon started (PID %d)\n", cmd.Process.Pid)
+}
+
+// detachToBackground stops the current foreground daemon and starts a new detached child process.
+// This is triggered when user presses 'd' or Ctrl+D during foreground watch.
+func detachToBackground() {
+	if err := config.EnsureDir(); err != nil {
+		log.Fatalf("failed to create ~/.anvil: %v", err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("failed to find executable path: %v", err)
+	}
+
+	logFile, err := os.OpenFile(config.DaemonLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("failed to open daemon log: %v", err)
+	}
+
+	cmd := exec.Command(exe, "watch", "--child")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		log.Fatalf("failed to start daemon: %v", err)
+	}
+
+	logFile.Close()
+	fmt.Printf("Detached to background (PID %d). Use 'anvil ps' to monitor.\n", cmd.Process.Pid)
 }
 
 // runDaemonChild is the internal entry point for the detached child process.
