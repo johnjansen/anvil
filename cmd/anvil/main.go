@@ -335,26 +335,31 @@ func serveCmd() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Enter raw terminal mode BEFORE starting the daemon so that all output
+	// uses \r\n from the very first line. Raw mode disables OPOST, which means
+	// bare \n no longer returns the cursor to column 0.
+	fd := int(os.Stdin.Fd())
+	oldTermState, termErr := term.MakeRaw(fd)
+	if termErr == nil {
+		origWriter := log.Writer()
+		log.SetOutput(&rawLineWriter{w: origWriter})
+		daemon.SetRawMode(true)
+		defer func() {
+			term.Restore(fd, oldTermState)
+			log.SetOutput(origWriter)
+			daemon.SetRawMode(false)
+		}()
+	}
+
 	go d.Run()
 
 	// Start hot-daemonize listener in background
 	detachCh := make(chan struct{})
 	go func() {
-		// Set stdin to raw mode to read single keypress
-		fd := int(os.Stdin.Fd())
-		oldState, err := term.MakeRaw(fd)
-		if err != nil {
+		if termErr != nil {
 			// Not a terminal, skip hot-daemonize
 			return
 		}
-		// Raw mode disables OPOST (\n → \r\n translation), so wrap
-		// log and stderr output to keep line breaks working.
-		origWriter := log.Writer()
-		log.SetOutput(&rawLineWriter{w: origWriter})
-		defer func() {
-			term.Restore(fd, oldState)
-			log.SetOutput(origWriter)
-		}()
 
 		buf := make([]byte, 1)
 		n, err := os.Stdin.Read(buf)
