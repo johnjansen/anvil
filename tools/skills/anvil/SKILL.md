@@ -742,6 +742,8 @@ anvil task edit <name> -s "*/30 * * * *"  # change schedule
 anvil task edit <name> -p 0                 # change priority
 anvil task edit <name> --content "New task description"  # change content
 anvil task edit <name> --content-file task.md  # change content from file
+anvil task edit <name> --add-label triage     # add a label
+anvil task edit <name> --remove-label old     # remove a label
 anvil task edit <name> --remove pre_check   # remove a frontmatter field
 ```
 
