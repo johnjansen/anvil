@@ -169,6 +169,7 @@ Task subcommands:
   edit <name>               Edit task (schedule, priority, content, labels, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
+  analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1346,6 +1347,7 @@ Options:
   --allowed-tools tools  Comma-separated list of allowed tools
   --max-concurrent n     Max concurrent runs (default: 1)
   --skip-permissions     Skip permission checks
+  --strict               Fail if schedule conflicts with existing tasks
   -f, --file path        Read task content from a file
   -                      Read task content from stdin
 
@@ -1590,6 +1592,8 @@ func taskCmd(args []string) {
 		taskImportCmd(args[1:])
 	case "wait":
 		taskWaitCmd(args[1:])
+	case "analyze":
+		taskAnalyzeCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -1615,6 +1619,7 @@ func taskCreateCmd(args []string) {
 	readStdin := false
 	onceFlag := false
 	dryRun := false
+	strict := false
 
 	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter.
 	prioritySet := false
@@ -1690,6 +1695,8 @@ func taskCreateCmd(args []string) {
 			}
 			i++
 			filePath = args[i]
+		case "--strict":
+			strict = true
 		case "-":
 			readStdin = true
 		default:
@@ -1783,6 +1790,45 @@ func taskCreateCmd(args []string) {
 	proj, err := project.Load(abs)
 	if err != nil {
 		log.Fatalf("failed to load project: %v", err)
+	}
+
+	// --strict: check for scheduling conflicts before creating the task.
+	if strict && schedule != "" {
+		newParser, parseErr := cron.Parse(schedule)
+		if parseErr == nil {
+			todos, _ := proj.LoadTodos()
+			now := time.Now().Truncate(time.Minute)
+			for _, t := range todos {
+				if t.Schedule == "" || t.Schedule == "persistent" || t.Disabled {
+					continue
+				}
+				existParser, err := cron.Parse(t.Schedule)
+				if err != nil {
+					continue
+				}
+				// Check if the new task would run within 1 minute of an existing task
+				for k := 0; k < 30; k++ {
+					newNext, e1 := newParser.Next(now.Add(time.Duration(k) * time.Minute))
+					existNext, e2 := existParser.Next(now.Add(time.Duration(k) * time.Minute))
+					if e1 != nil || e2 != nil {
+						break
+					}
+					diff := newNext.Sub(existNext)
+					if diff < 0 {
+						diff = -diff
+					}
+					if diff <= time.Minute {
+						name := strings.TrimSuffix(t.Name, ".md")
+						fmt.Fprintf(os.Stderr, "Error: Conflicts with existing task %s\n", name)
+						fmt.Fprintf(os.Stderr, "  New task schedule: %s\n", schedule)
+						fmt.Fprintf(os.Stderr, "  %s schedule: %s\n", name, t.Schedule)
+						fmt.Fprintf(os.Stderr, "  Both may run near %s\n", newNext.Format("Mon 15:04"))
+						fmt.Fprintf(os.Stderr, "Run 'anvil task analyze' for full conflict report\n")
+						os.Exit(1)
+					}
+				}
+			}
+		}
 	}
 
 	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "")
@@ -4784,6 +4830,235 @@ func checkTaskResult(taskName string) int {
 		return 0
 	}
 	return 1
+}
+
+func taskAnalyzeCmd(args []string) {
+	allProjects := false
+	for _, a := range args {
+		switch a {
+		case "-a", "--all":
+			allProjects = true
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil task analyze [-a|--all]
+
+Detect scheduling conflicts and overlapping tasks.
+
+Checks for:
+  - Burst conflicts: multiple tasks scheduled at the same minute
+  - High-frequency tasks: tasks running more than 60 times/day
+  - Label overlap: tasks with shared labels running within 1 minute of each other
+
+Options:
+  -a, --all    Check across all watched projects
+`)
+			os.Exit(0)
+		}
+	}
+
+	type analyzedTask struct {
+		name     string
+		project  string
+		schedule string
+		labels   []string
+		parser   *cron.Parser
+		runsDay  int // estimated runs per day
+	}
+
+	var tasks []analyzedTask
+
+	// Load tasks
+	type projectTodos struct {
+		path  string
+		todos []project.Todo
+	}
+	var projects []projectTodos
+
+	if allProjects {
+		watched, err := loadAllWatched()
+		if err != nil {
+			log.Fatalf("failed to read watched: %v", err)
+		}
+		for _, w := range watched {
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				continue
+			}
+			todos, _ := proj.LoadTodos()
+			projects = append(projects, projectTodos{path: w.Path, todos: todos})
+		}
+	} else {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		proj, err := project.Load(abs)
+		if err != nil {
+			log.Fatalf("failed to load project: %v", err)
+		}
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			log.Fatalf("failed to load todos: %v", err)
+		}
+		projects = append(projects, projectTodos{path: abs, todos: todos})
+	}
+
+	// Parse schedules
+	for _, p := range projects {
+		projName := filepath.Base(p.path)
+		for _, t := range p.todos {
+			if t.Schedule == "" || t.Schedule == "persistent" || t.Disabled {
+				continue
+			}
+			parser, err := cron.Parse(t.Schedule)
+			if err != nil {
+				continue
+			}
+			// Count runs per day by iterating next occurrences over 24h
+			start := time.Now().Truncate(24 * time.Hour)
+			end := start.Add(24 * time.Hour)
+			count := 0
+			cur := start
+			for count < 2000 {
+				next, err := parser.Next(cur)
+				if err != nil || next.After(end) {
+					break
+				}
+				count++
+				cur = next
+			}
+			name := strings.TrimSuffix(t.Name, ".md")
+			tasks = append(tasks, analyzedTask{
+				name:     name,
+				project:  projName,
+				schedule: t.Schedule,
+				labels:   t.Labels,
+				parser:   parser,
+				runsDay:  count,
+			})
+		}
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("no scheduled tasks to analyze")
+		return
+	}
+
+	warnings := 0
+
+	// 1. High-frequency detection
+	for _, t := range tasks {
+		if t.runsDay > 60 {
+			fmt.Printf("WARNING: %s runs %d times/day (schedule: %s)\n", t.name, t.runsDay, t.schedule)
+			fmt.Printf("  Consider reducing frequency to save resources\n\n")
+			warnings++
+		}
+	}
+
+	// 2. Burst detection: find tasks with same minute marks
+	// Generate next 60 minutes of run times and group by minute
+	type minuteHit struct {
+		minute time.Time
+		task   string
+	}
+	now := time.Now().Truncate(time.Minute)
+	minuteMap := make(map[time.Time][]string) // minute -> task names
+	for _, t := range tasks {
+		cur := now
+		for i := 0; i < 60; i++ {
+			next, err := t.parser.Next(cur)
+			if err != nil {
+				break
+			}
+			if next.After(now.Add(60 * time.Minute)) {
+				break
+			}
+			key := next.Truncate(time.Minute)
+			minuteMap[key] = append(minuteMap[key], t.name)
+			cur = next
+		}
+	}
+	burstReported := make(map[string]bool)
+	for minute, names := range minuteMap {
+		if len(names) > 1 {
+			key := strings.Join(names, "+")
+			if burstReported[key] {
+				continue
+			}
+			burstReported[key] = true
+			fmt.Printf("WARNING: Burst conflict at %s — %d tasks run simultaneously:\n", minute.Format("15:04"), len(names))
+			for _, n := range names {
+				for _, t := range tasks {
+					if t.name == n {
+						fmt.Printf("  - %s (%s, %d runs/day)\n", t.name, t.schedule, t.runsDay)
+						break
+					}
+				}
+			}
+			fmt.Println()
+			warnings++
+		}
+	}
+
+	// 3. Label overlap: tasks with shared labels that may run close together
+	for i := 0; i < len(tasks); i++ {
+		for j := i + 1; j < len(tasks); j++ {
+			if len(tasks[i].labels) == 0 || len(tasks[j].labels) == 0 {
+				continue
+			}
+			// Find shared labels
+			var shared []string
+			for _, li := range tasks[i].labels {
+				for _, lj := range tasks[j].labels {
+					if strings.EqualFold(li, lj) {
+						shared = append(shared, li)
+					}
+				}
+			}
+			if len(shared) == 0 {
+				continue
+			}
+			// Check if they ever run within 1 minute of each other
+			cur := now
+			overlap := false
+			for k := 0; k < 30; k++ {
+				ni, err1 := tasks[i].parser.Next(cur)
+				nj, err2 := tasks[j].parser.Next(cur)
+				if err1 != nil || err2 != nil {
+					break
+				}
+				diff := ni.Sub(nj)
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff <= time.Minute {
+					overlap = true
+					break
+				}
+				// Advance past both
+				if ni.Before(nj) {
+					cur = ni
+				} else {
+					cur = nj
+				}
+			}
+			if overlap {
+				fmt.Printf("WARNING: %s and %s share labels [%s] and may overlap\n",
+					tasks[i].name, tasks[j].name, strings.Join(shared, ", "))
+				fmt.Printf("  - %s: %s (%d runs/day)\n", tasks[i].name, tasks[i].schedule, tasks[i].runsDay)
+				fmt.Printf("  - %s: %s (%d runs/day)\n", tasks[j].name, tasks[j].schedule, tasks[j].runsDay)
+				fmt.Println()
+				warnings++
+			}
+		}
+	}
+
+	// Summary
+	if warnings == 0 {
+		fmt.Printf("OK: %d task(s) analyzed — no scheduling conflicts detected\n", len(tasks))
+	} else {
+		fmt.Printf("%d warning(s) found across %d task(s)\n", warnings, len(tasks))
+		os.Exit(1)
+	}
 }
 
 // formatDurationShort formats a duration as short human-readable relative time.
