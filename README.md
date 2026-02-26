@@ -324,6 +324,30 @@ Run after dependencies complete...
 
 The task will only be dispatched when all tasks in `depends_on` have completed successfully (exit code 0) in their most recent run. If any dependency failed, the dependent task is skipped silently.
 
+### Task Checkpointing
+
+Enable checkpoint to persist state between runs. Tasks emit checkpoint data via a special stdout prefix, and the daemon injects it as an environment variable on the next run:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+checkpoint: true
+---
+Process items starting from where we left off...
+```
+
+During execution, the task emits state:
+
+```
+##anvil:checkpoint {"last_processed_id": 42, "cursor": "abc123"}
+```
+
+On the next run, the daemon sets `ANVIL_CHECKPOINT_DATA` to the last emitted checkpoint value. The task reads this to resume from where it left off. Checkpoint lines are stripped from log output — they never appear in log files.
+
+- `checkpoint: true` — enable checkpointing for this task (default: false)
+- Multiple `##anvil:checkpoint` lines can be emitted; the last one wins
+- Checkpoint data is stored in the run record and visible via `anvil task get`
+
 ### Webhook Notifications
 
 Configure HTTP webhooks to receive notifications for task lifecycle events:
@@ -431,12 +455,8 @@ defaults:
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
   persistent_budget: 1h
+  max_log_size: 50mb
   runner: "claude -p 'You are a task runner'"
-  env:
-    MY_VAR: "value"
-    TOKEN: "env:EXTERNAL_TOKEN"
-  depends_on:
-    - other-task
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
