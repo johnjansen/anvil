@@ -70,6 +70,14 @@ type Project struct {
 	Config Config
 }
 
+// AllowedWindow defines a time window during which a task is allowed to execute.
+// If set, the task will only run when the current time falls within the window.
+type AllowedWindow struct {
+	Start string `yaml:"start"` // HH:MM format (24h), e.g. "09:00"
+	End   string `yaml:"end"`   // HH:MM format (24h), e.g. "18:00"
+	Days  string `yaml:"days"`  // allowed days: range "1-5", list "1,3,5", or combined "1-5,0" (0=Sunday)
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -101,15 +109,8 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
-	State                *TaskState    // optional state bucket for long-running data processing tasks
-	NotifyOnFailure      *bool         // per-task override: notify on failure (nil = use global config)
-	NotifyOnSuccess      *bool         // per-task override: notify on success (nil = use global config)
-}
-
-// TaskState defines a state bucket for task state management.
-type TaskState struct {
-	Bucket string `yaml:"bucket"` // named bucket for sharing state between tasks
-	Key    string `yaml:"key"`    // key within the bucket (supports template variables like {{ .TaskID }})
+	Window               AllowedWindow // per-task execution time window (empty = no restriction)
+	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -211,9 +212,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var envVars map[string]string
 			var dependsOn []string
 			checkpoint := false
-			var taskState *TaskState
-			var notifyOnFailure *bool
-			var notifyOnSuccess *bool
+			var allowedWindow AllowedWindow
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -250,9 +249,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
-						State                *TaskState        `yaml:"state"`
-						NotifyOnFailure      *bool             `yaml:"notify_on_failure"`
-						NotifyOnSuccess      *bool             `yaml:"notify_on_success"`
+						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -293,9 +290,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
 						checkpoint = fmData.Checkpoint
-						taskState = fmData.State
-						notifyOnFailure = fmData.NotifyOnFailure
-						notifyOnSuccess = fmData.NotifyOnSuccess
+						if fmData.AllowedWindow != nil {
+							allowedWindow = *fmData.AllowedWindow
+						}
 					}
 				}
 			}
@@ -337,9 +334,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
-				State:                taskState,
-				NotifyOnFailure:      notifyOnFailure,
-				NotifyOnSuccess:      notifyOnSuccess,
+				Window:               allowedWindow,
 			})
 		}
 	}
@@ -446,98 +441,21 @@ func RemoveLock(todo Todo) error {
 	return os.Remove(lockPath)
 }
 
-// InitResult describes what Init did.
-type InitResult struct {
-	AlreadyExists bool   // true if .anvil/todos/ already existed
-	TaskCount     int    // number of existing task files found
-	BackupPath    string // path to backup if one was created (force re-init only)
-}
-
 // Init creates the .anvil/ directory structure and writes embedded tools into .claude/.
 // The toolsFS should contain a "skills" directory at its root.
 // Priority subdirectories are created on-demand when tasks are added.
-// If force is false and the project already has tasks, Init still ensures directories
-// exist and updates embedded tools but does not remove any existing files.
-func Init(path string, toolsFS fs.FS, force bool) (InitResult, error) {
-	var result InitResult
+func Init(path string, toolsFS fs.FS) error {
 	todosDir := filepath.Join(path, ".anvil", "todos")
-
-	// Check for existing project with tasks
-	taskCount := countTaskFiles(todosDir)
-	if taskCount > 0 {
-		result.AlreadyExists = true
-		result.TaskCount = taskCount
-
-		if force {
-			// Back up existing tasks before force re-init
-			backupPath, err := backupTodos(path)
-			if err != nil {
-				return result, fmt.Errorf("backing up existing tasks: %w", err)
-			}
-			result.BackupPath = backupPath
-		}
-	}
-
 	if err := os.MkdirAll(todosDir, 0755); err != nil {
-		return result, fmt.Errorf("creating .anvil/todos: %w", err)
+		return fmt.Errorf("creating .anvil/todos: %w", err)
 	}
 
 	claudeDir := filepath.Join(path, ".claude")
 	if err := writeEmbeddedFS(claudeDir, toolsFS); err != nil {
-		return result, fmt.Errorf("writing .claude/ tools: %w", err)
+		return fmt.Errorf("writing .claude/ tools: %w", err)
 	}
 
-	return result, nil
-}
-
-// countTaskFiles counts .md files under the todos directory tree.
-func countTaskFiles(todosDir string) int {
-	count := 0
-	_ = filepath.WalkDir(todosDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
-		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".md") {
-			count++
-		}
-		return nil
-	})
-	return count
-}
-
-// backupTodos copies all task files from .anvil/todos/ into a timestamped backup
-// directory at .anvil/backups/todos-<timestamp>/. Returns the backup path.
-func backupTodos(projectPath string) (string, error) {
-	todosDir := filepath.Join(projectPath, ".anvil", "todos")
-	timestamp := time.Now().Format("20060102-150405")
-	backupDir := filepath.Join(projectPath, ".anvil", "backups", "todos-"+timestamp)
-
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		return "", fmt.Errorf("creating backup directory: %w", err)
-	}
-
-	err := filepath.WalkDir(todosDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil // skip unreadable entries
-		}
-		rel, err := filepath.Rel(todosDir, path)
-		if err != nil {
-			return err
-		}
-		dest := filepath.Join(backupDir, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0755)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", path, err)
-		}
-		return os.WriteFile(dest, data, 0644)
-	})
-	if err != nil {
-		return backupDir, fmt.Errorf("copying tasks to backup: %w", err)
-	}
-	return backupDir, nil
+	return nil
 }
 
 // writeEmbeddedFS walks an fs.FS and writes all files into destDir,
@@ -671,59 +589,6 @@ func SessionPathBySessionID(projectPath string, sessionID string) string {
 // runsDir returns the path to the runs directory for a task.
 func runsDir(projectPath, taskID string) string {
 	return filepath.Join(projectPath, ".anvil", "runs", taskID)
-}
-
-// stateDir returns the path to the state directory.
-func stateDir(projectPath string) string {
-	return filepath.Join(projectPath, ".anvil", "state")
-}
-
-// StatePath returns the path to a state file for a given bucket and key.
-func StatePath(projectPath, bucket, key string) string {
-	return filepath.Join(stateDir(projectPath), bucket, key+".json")
-}
-
-// ReadTaskState reads the state for a given bucket and key.
-func ReadTaskState(projectPath, bucket, key string) (map[string]interface{}, error) {
-	statePath := StatePath(projectPath, bucket, key)
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading state file: %w", err)
-	}
-	var state map[string]interface{}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("unmarshaling state: %w", err)
-	}
-	return state, nil
-}
-
-// WriteTaskState writes the state for a given bucket and key.
-func WriteTaskState(projectPath, bucket, key string, state map[string]interface{}) error {
-	dir := filepath.Join(stateDir(projectPath), bucket)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("creating state dir: %w", err)
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("marshaling state: %w", err)
-	}
-	statePath := filepath.Join(dir, key+".json")
-	if err := os.WriteFile(statePath, data, 0644); err != nil {
-		return fmt.Errorf("writing state file: %w", err)
-	}
-	return nil
-}
-
-// DeleteTaskState deletes the state for a given bucket and key.
-func DeleteTaskState(projectPath, bucket, key string) error {
-	statePath := StatePath(projectPath, bucket, key)
-	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("deleting state file: %w", err)
-	}
-	return nil
 }
 
 // RunPath returns the path to a specific run record JSON file.
@@ -901,8 +766,6 @@ type TemplateSpec struct {
 	Env                  map[string]string `yaml:"env,omitempty"`
 	DependsOn            []string          `yaml:"depends_on,omitempty"`
 	Checkpoint           bool              `yaml:"checkpoint,omitempty"`
-	NotifyOnFailure      *bool             `yaml:"notify_on_failure,omitempty"`
-	NotifyOnSuccess      *bool             `yaml:"notify_on_success,omitempty"`
 }
 
 // Template represents a loaded template with its name and spec.
