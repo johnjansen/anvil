@@ -324,6 +324,34 @@ Run this task with a different runner command than the global default.
 
 The task-level runner is used instead of the global `runners` list for this task only.
 
+### Per-task runner chain
+
+Override the runner chain for a specific task with a custom list of runners tried in sequence:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+runner_chain:
+  - claude -p "You are a helpful assistant"
+  - claude --model haiku -p "You are a fallback assistant"
+---
+Run this task with a custom chain of runners. On failure, the next runner in the chain is tried.
+```
+
+### Runner on timeout
+
+Configure a fallback runner to use when the primary runner times out:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+runner_on_timeout: "claude --model haiku -p 'You are a quick fallback'"
+---
+If the primary runner times out, try this fallback runner instead.
+```
+
+This is useful for long-running tasks that might benefit from a quicker model on timeout.
+
 ### Environment Variables
 
 Set environment variables that will be injected into the task's execution environment:
