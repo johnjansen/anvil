@@ -162,24 +162,55 @@ type RunningTask struct {
 	LogPath   string
 	SessionID string
 	Status    string // dynamic status reported by task via ##anvil:status
+	// Timeout extension state
+	OriginalTimeout   time.Duration        // timeout at task start (before extensions)
+	CurrentDeadline   time.Time            // current effective deadline
+	ExtensionCount    int                  // number of times timeout has been extended
+	TotalExtended     time.Duration        // total time added through extensions
+	AutoExtensions    int                  // how many extensions were automatic
+	TimeoutTimer      *time.Timer          // external timer enforcing deadline
+	WarningTimer      *time.Timer          // timer for on_timeout_warning hook
+	WarningFired      bool                 // whether warning has fired for current deadline
+	LastCheckpointTime time.Time           // when the most recent checkpoint was emitted
+	AutoExtendConfig  project.AutoExtendConfig // auto-extend config copied from Todo
+	OnTimeoutWarning  string                   // hook command for timeout warning
 }
 
 type KillRequest struct {
 	ID string `json:"id"`
 }
 
+// ExtendTimeoutRequest is sent by the CLI to extend a running task's timeout.
+type ExtendTimeoutRequest struct {
+	ID       string `json:"id"`       // task name or ID
+	Duration string `json:"duration"` // duration string (e.g., "30m", "1h")
+	Absolute bool   `json:"absolute"` // if true, set deadline to now+duration instead of adding to remaining
+}
+
+// ExtendTimeoutResponse is the response from the /extend-timeout handler.
+type ExtendTimeoutResponse struct {
+	OK             bool   `json:"ok"`
+	NewDeadline    string `json:"new_deadline"`
+	Remaining      string `json:"remaining"`
+	ExtensionCount int    `json:"extension_count"`
+	Name           string `json:"name"`
+}
+
 type TaskInfo struct {
-	Project     string `json:"project"`
-	Name        string `json:"name"`
-	PID         int    `json:"pid"`
-	Started     string `json:"started"`
-	Elapsed     string `json:"elapsed"`
-	Timeout     string `json:"timeout,omitempty"`
-	TimeRemaining string `json:"time_remaining,omitempty"`
-	PercentUsed float64 `json:"percent_used,omitempty"`
-	LogPath     string `json:"log_path,omitempty"`
-	SessionID   string `json:"session_id,omitempty"`
-	Status      string `json:"status,omitempty"`
+	Project         string  `json:"project"`
+	Name            string  `json:"name"`
+	PID             int     `json:"pid"`
+	Started         string  `json:"started"`
+	Elapsed         string  `json:"elapsed"`
+	Timeout         string  `json:"timeout,omitempty"`
+	TimeRemaining   string  `json:"time_remaining,omitempty"`
+	PercentUsed     float64 `json:"percent_used,omitempty"`
+	LogPath         string  `json:"log_path,omitempty"`
+	SessionID       string  `json:"session_id,omitempty"`
+	Status          string  `json:"status,omitempty"`
+	ExtensionCount  int     `json:"extension_count,omitempty"`
+	OriginalTimeout string  `json:"original_timeout,omitempty"`
+	TotalExtended   string  `json:"total_extended,omitempty"`
 }
 
 // TaskQueueInfo holds information about a task in the queue or its last skip reason.
@@ -608,8 +639,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	} else if t.Timeout > 0 {
 		timeout = t.Timeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Use context.WithCancel + external timer to allow runtime timeout extension.
+	// Go's context.WithTimeout creates an immutable deadline, so we manage the
+	// deadline externally via time.AfterFunc which can be stopped and replaced.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	deadline := time.Now().Add(timeout)
+	timeoutTimer := time.AfterFunc(timeout, func() {
+		cancel()
+	})
 
 	// For persistent tasks, log a warning at 80% of max runtime to signal upcoming cycle
 	if t.IsPersistent() {
@@ -625,21 +664,38 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	runID := newRunID()
 	startTime := time.Now()
 
-	// Track the running task
+	// Track the running task with timeout extension state
 	d.tasksMu.Lock()
-	d.tasks[taskKey] = &RunningTask{
-		Project: proj.Path,
-		Name:    t.Name,
-		TaskID:  t.ID,
-		PID:     os.Getpid(),
-		Started: startTime,
-		Timeout: timeout,
-		Cancel:  cancel,
+	runningTask := &RunningTask{
+		Project:          proj.Path,
+		Name:             t.Name,
+		TaskID:           t.ID,
+		PID:              os.Getpid(),
+		Started:          startTime,
+		Timeout:          timeout,
+		Cancel:           cancel,
+		OriginalTimeout:  timeout,
+		CurrentDeadline:  deadline,
+		TimeoutTimer:     timeoutTimer,
+		AutoExtendConfig: t.AutoExtend,
+		OnTimeoutWarning: t.OnTimeoutWarning,
+	}
+	d.tasks[taskKey] = runningTask
+	// Set up warning timer for on_timeout_warning hook
+	if t.OnTimeoutWarning != "" {
+		d.setupWarningTimer(runningTask, t.OnTimeoutWarning, proj.Path)
 	}
 	d.tasksMu.Unlock()
 
 	defer func() {
+		// Stop timers to prevent leaks
+		timeoutTimer.Stop()
 		d.tasksMu.Lock()
+		if rt, ok := d.tasks[taskKey]; ok {
+			if rt.WarningTimer != nil {
+				rt.WarningTimer.Stop()
+			}
+		}
 		delete(d.tasks, taskKey)
 		d.tasksMu.Unlock()
 	}()
@@ -833,6 +889,37 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 				lastCheckpointData = data
 				checkpointMu.Unlock()
 			}
+			// Update last checkpoint time and check auto-extend
+			d.tasksMu.Lock()
+			if rt, ok := d.tasks[taskKey]; ok {
+				rt.LastCheckpointTime = time.Now()
+				// Auto-extend if enabled and within warning window (5 min before deadline)
+				if rt.AutoExtendConfig.Enabled && !rt.CurrentDeadline.IsZero() {
+					warningWindow := 5 * time.Minute
+					timeUntilDeadline := rt.CurrentDeadline.Sub(time.Now())
+					if timeUntilDeadline <= warningWindow && timeUntilDeadline > 0 {
+						maxExt := rt.AutoExtendConfig.MaxExtensions
+						if maxExt <= 0 {
+							maxExt = 3
+						}
+						if rt.AutoExtensions < maxExt {
+							dur := rt.AutoExtendConfig.ExtensionDuration
+							if dur <= 0 {
+								dur = 15 * time.Minute
+							}
+							if _, _, err := extendTimeout(rt, dur, false); err == nil {
+								rt.AutoExtensions++
+								dlog.Info("auto-extended timeout for %s (%d/%d, +%v)", t.Name, rt.AutoExtensions, maxExt, dur)
+								// Reschedule warning timer for new deadline
+								if rt.OnTimeoutWarning != "" {
+									d.setupWarningTimer(rt, rt.OnTimeoutWarning, rt.Project)
+								}
+							}
+						}
+					}
+				}
+			}
+			d.tasksMu.Unlock()
 		})
 
 		// Success - exit retry loop
@@ -905,6 +992,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	cpData := lastCheckpointData
 	checkpointMu.Unlock()
 
+	// Capture timeout extension state from RunningTask before it's cleaned up
+	var extOriginalTimeout, extFinalTimeout time.Duration
+	var extCount, extAutoExtensions int
+	var extTotalExtended time.Duration
+	d.tasksMu.RLock()
+	if rt, ok := d.tasks[taskKey]; ok {
+		extOriginalTimeout = rt.OriginalTimeout
+		extCount = rt.ExtensionCount
+		extTotalExtended = rt.TotalExtended
+		extAutoExtensions = rt.AutoExtensions
+		if !rt.CurrentDeadline.IsZero() {
+			extFinalTimeout = rt.CurrentDeadline.Sub(rt.Started)
+		}
+	}
+	d.tasksMu.RUnlock()
+
 	runRecord := project.RunRecord{
 		RunID:            runID,
 		TaskID:           t.ID,
@@ -920,6 +1023,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		Attempt:          finalAttempt + 1, // convert 0-based to 1-based
 		MaxRetries:       t.Retry,
 		RetryDelay:       retryDelay.String(),
+		OriginalTimeout:  extOriginalTimeout,
+		FinalTimeout:     extFinalTimeout,
+		ExtensionCount:   extCount,
+		TotalExtended:    extTotalExtended,
+		AutoExtensions:   extAutoExtensions,
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
@@ -1220,6 +1328,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/start", d.handleStartTask)
 	mux.HandleFunc("/budget", d.handleBudget)
 	mux.HandleFunc("/reset-budget", d.handleResetBudget)
+	mux.HandleFunc("/extend-timeout", d.handleExtendTimeout)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -1248,24 +1357,36 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
-		// Use per-task timeout if set, otherwise fall back to global config
+		// Use current deadline for remaining time if extensions have been applied
 		timeout := task.Timeout
 		if timeout == 0 {
 			timeout = d.config.Timeout
 		}
-		result = append(result, TaskInfo{
+		var remaining time.Duration
+		if !task.CurrentDeadline.IsZero() {
+			remaining = task.CurrentDeadline.Sub(now)
+		} else {
+			remaining = timeout - elapsed
+		}
+		info := TaskInfo{
 			Project:       task.Project,
 			Name:          task.Name,
 			PID:           task.PID,
 			Started:       task.Started.Format(time.RFC3339),
 			Elapsed:       elapsed.Round(time.Second).String(),
 			Timeout:       timeout.String(),
-			TimeRemaining: (timeout - elapsed).String(),
+			TimeRemaining: remaining.Round(time.Second).String(),
 			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
 			Status:        task.Status,
-		})
+		}
+		if task.ExtensionCount > 0 {
+			info.ExtensionCount = task.ExtensionCount
+			info.OriginalTimeout = task.OriginalTimeout.String()
+			info.TotalExtended = task.TotalExtended.Round(time.Second).String()
+		}
+		result = append(result, info)
 	}
 
 	// Sort by started time (oldest first)
@@ -1294,23 +1415,34 @@ func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, task := range tasks {
 		elapsed := now.Sub(task.Started)
-		// Use per-task timeout if set, otherwise fall back to global config
 		timeout := task.Timeout
 		if timeout == 0 {
 			timeout = d.config.Timeout
 		}
-		result = append(result, TaskInfo{
+		var remaining time.Duration
+		if !task.CurrentDeadline.IsZero() {
+			remaining = task.CurrentDeadline.Sub(now)
+		} else {
+			remaining = timeout - elapsed
+		}
+		info := TaskInfo{
 			Project:       task.Project,
 			Name:          task.Name,
 			PID:           task.PID,
 			Started:       task.Started.Format(time.RFC3339),
 			Elapsed:       elapsed.Round(time.Second).String(),
 			Timeout:       timeout.String(),
-			TimeRemaining: (timeout - elapsed).String(),
+			TimeRemaining: remaining.Round(time.Second).String(),
 			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
 			LogPath:       task.LogPath,
 			SessionID:     task.SessionID,
-		})
+		}
+		if task.ExtensionCount > 0 {
+			info.ExtensionCount = task.ExtensionCount
+			info.OriginalTimeout = task.OriginalTimeout.String()
+			info.TotalExtended = task.TotalExtended.Round(time.Second).String()
+		}
+		result = append(result, info)
 	}
 
 	// Sort by started time (oldest first)
@@ -1498,6 +1630,70 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 	found.Cancel()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
+}
+
+func (d *Daemon) handleExtendTimeout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ExtendTimeoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Duration == "" {
+		http.Error(w, "duration is required", http.StatusBadRequest)
+		return
+	}
+
+	dur, err := time.ParseDuration(req.Duration)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid duration %q: %v", req.Duration, err), http.StatusBadRequest)
+		return
+	}
+
+	d.tasksMu.Lock()
+	defer d.tasksMu.Unlock()
+
+	var found *RunningTask
+	for _, task := range d.tasks {
+		if task.TaskID == req.ID || task.Name == req.ID {
+			found = task
+			break
+		}
+	}
+
+	if found == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+
+	newDeadline, remaining, err := extendTimeout(found, dur, req.Absolute)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Reschedule warning timer for new deadline
+	if found.OnTimeoutWarning != "" {
+		d.setupWarningTimer(found, found.OnTimeoutWarning, found.Project)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ExtendTimeoutResponse{
+		OK:             true,
+		NewDeadline:    newDeadline.Format(time.RFC3339),
+		Remaining:      remaining.Round(time.Second).String(),
+		ExtensionCount: found.ExtensionCount,
+		Name:           found.Name,
+	})
 }
 
 // DaemonStatus holds runtime state about the daemon.
@@ -2741,6 +2937,35 @@ func SendRunRequest(projectPath, taskID, taskName string, force bool) error {
 	}
 
 	return nil
+}
+
+// SendExtendTimeoutRequest sends a timeout extension request to the daemon.
+func SendExtendTimeoutRequest(taskName, duration string, absolute bool) (*ExtendTimeoutResponse, error) {
+	data, err := json.Marshal(ExtendTimeoutRequest{
+		ID:       taskName,
+		Duration: duration,
+		Absolute: absolute,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := socketClient().Post("http://daemon/extend-timeout", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	}
+
+	var result ExtendTimeoutResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+	return &result, nil
 }
 
 // SendStopRequest tells the daemon to permanently stop a persistent task.

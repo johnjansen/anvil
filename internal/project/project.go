@@ -70,6 +70,26 @@ type Project struct {
 	Config Config
 }
 
+// TaskStateConfig defines per-task persistent state configuration.
+type TaskStateConfig struct {
+	Bucket string `yaml:"bucket"` // state storage bucket name
+	Key    string `yaml:"key"`    // state key (supports {{ .TaskID }} template)
+}
+
+// InitResult contains the outcome of a project initialization.
+type InitResult struct {
+	AlreadyExists bool   // true if the project was already initialized
+	BackupPath    string // path to backup directory (if tasks were backed up)
+	TaskCount     int    // number of existing tasks found
+}
+
+// AutoExtendConfig defines per-task automatic timeout extension configuration.
+type AutoExtendConfig struct {
+	Enabled           bool          // whether auto-extend is active
+	MaxExtensions     int           // maximum number of automatic extensions (default: 3)
+	ExtensionDuration time.Duration // how much time each extension adds
+}
+
 // AllowedWindow defines a time window during which a task is allowed to execute.
 // If set, the task will only run when the current time falls within the window.
 type AllowedWindow struct {
@@ -109,8 +129,13 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
-	Window               AllowedWindow // per-task execution time window (empty = no restriction)
-	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
+	Window               AllowedWindow   // per-task execution time window (empty = no restriction)
+	ForceWindow          bool            // if true, bypass time window and quiet hours checks (set by force-run)
+	AutoExtend           AutoExtendConfig  // automatic timeout extension configuration
+	OnTimeoutWarning     string           // shell command to run when approaching timeout deadline
+	State                *TaskStateConfig // persistent state configuration (nil = no state)
+	NotifyOnFailure      *bool            // per-task notification override for failure (nil = use global)
+	NotifyOnSuccess      *bool            // per-task notification override for success (nil = use global)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -132,6 +157,11 @@ type RunRecord struct {
 	Attempt          int       `json:"attempt,omitempty"`           // final attempt number (1-based), 0 if no retries configured
 	MaxRetries       int       `json:"max_retries,omitempty"`       // configured max retries for this task
 	RetryDelay       string    `json:"retry_delay,omitempty"`       // configured base delay between retries
+	OriginalTimeout  time.Duration `json:"original_timeout,omitempty"`  // timeout at task start (before extensions)
+	FinalTimeout     time.Duration `json:"final_timeout,omitempty"`     // effective timeout at completion
+	ExtensionCount   int           `json:"extension_count,omitempty"`   // total extensions applied during run
+	TotalExtended    time.Duration `json:"total_extended,omitempty"`    // total time added through extensions
+	AutoExtensions   int           `json:"auto_extensions,omitempty"`   // how many extensions were automatic
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -213,6 +243,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var dependsOn []string
 			checkpoint := false
 			var allowedWindow AllowedWindow
+			var autoExtend AutoExtendConfig
+			onTimeoutWarning := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -250,6 +282,12 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
+						AutoExtend           *struct {
+							Enabled           bool   `yaml:"enabled"`
+							MaxExtensions     int    `yaml:"max_extensions"`
+							ExtensionDuration string `yaml:"extension_duration"`
+						} `yaml:"auto_extend"`
+						OnTimeoutWarning     string            `yaml:"on_timeout_warning"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -293,6 +331,19 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						if fmData.AllowedWindow != nil {
 							allowedWindow = *fmData.AllowedWindow
 						}
+						if fmData.AutoExtend != nil && fmData.AutoExtend.Enabled {
+							autoExtend.Enabled = true
+							autoExtend.MaxExtensions = fmData.AutoExtend.MaxExtensions
+							if autoExtend.MaxExtensions <= 0 {
+								autoExtend.MaxExtensions = 3 // default
+							}
+							if fmData.AutoExtend.ExtensionDuration != "" {
+								if d, err := time.ParseDuration(fmData.AutoExtend.ExtensionDuration); err == nil {
+									autoExtend.ExtensionDuration = d
+								}
+							}
+						}
+						onTimeoutWarning = fmData.OnTimeoutWarning
 					}
 				}
 			}
@@ -335,6 +386,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
 				Window:               allowedWindow,
+				AutoExtend:           autoExtend,
+				OnTimeoutWarning:     onTimeoutWarning,
 			})
 		}
 	}
@@ -444,18 +497,39 @@ func RemoveLock(todo Todo) error {
 // Init creates the .anvil/ directory structure and writes embedded tools into .claude/.
 // The toolsFS should contain a "skills" directory at its root.
 // Priority subdirectories are created on-demand when tasks are added.
-func Init(path string, toolsFS fs.FS) error {
+// If force is true, existing tasks may be backed up and overwritten.
+func Init(path string, toolsFS fs.FS, force bool) (InitResult, error) {
+	result := InitResult{}
 	todosDir := filepath.Join(path, ".anvil", "todos")
+
+	// Check if project already exists
+	if _, err := os.Stat(todosDir); err == nil {
+		result.AlreadyExists = true
+		// Count existing tasks
+		for pri := 0; pri <= 9; pri++ {
+			dir := filepath.Join(todosDir, fmt.Sprintf("p%d", pri))
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+					result.TaskCount++
+				}
+			}
+		}
+	}
+
 	if err := os.MkdirAll(todosDir, 0755); err != nil {
-		return fmt.Errorf("creating .anvil/todos: %w", err)
+		return result, fmt.Errorf("creating .anvil/todos: %w", err)
 	}
 
 	claudeDir := filepath.Join(path, ".claude")
 	if err := writeEmbeddedFS(claudeDir, toolsFS); err != nil {
-		return fmt.Errorf("writing .claude/ tools: %w", err)
+		return result, fmt.Errorf("writing .claude/ tools: %w", err)
 	}
 
-	return nil
+	return result, nil
 }
 
 // writeEmbeddedFS walks an fs.FS and writes all files into destDir,
@@ -699,6 +773,47 @@ func LatestCheckpointData(projectPath, taskID string) string {
 		return ""
 	}
 	return rec.CheckpointData
+}
+
+// stateDir returns the path to the state directory for a given bucket.
+func stateDir(projectPath, bucket string) string {
+	return filepath.Join(projectPath, ".anvil", "state", bucket)
+}
+
+// ReadTaskState reads persistent state for a task from the state directory.
+func ReadTaskState(projectPath, bucket, key string) (map[string]interface{}, error) {
+	p := filepath.Join(stateDir(projectPath, bucket), key+".json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("parsing task state: %w", err)
+	}
+	return state, nil
+}
+
+// WriteTaskState writes persistent state for a task to the state directory.
+func WriteTaskState(projectPath, bucket, key string, state map[string]interface{}) error {
+	dir := stateDir(projectPath, bucket)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating state dir: %w", err)
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshaling task state: %w", err)
+	}
+	return os.WriteFile(filepath.Join(dir, key+".json"), data, 0644)
+}
+
+// DeleteTaskState removes persistent state for a task.
+func DeleteTaskState(projectPath, bucket, key string) error {
+	p := filepath.Join(stateDir(projectPath, bucket), key+".json")
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting task state: %w", err)
+	}
+	return nil
 }
 
 var (

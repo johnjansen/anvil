@@ -3,6 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2026-02-25
 
 ## Active Technologies
+- Go 1.24.6 + `internal/daemon` (RunningTask, workItem, handlers), `internal/project` (Todo, RunRecord), `internal/config`, `internal/runner` (checkpoint callback) (005-timeout-extension)
+- In-memory for runtime state (RunningTask), JSON files for persistence (RunRecord) (005-timeout-extension)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -22,6 +24,7 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 005-timeout-extension: Added Go 1.24.6 + `internal/daemon` (RunningTask, workItem, handlers), `internal/project` (Todo, RunRecord), `internal/config`, `internal/runner` (checkpoint callback)
 
 - 002-cli-ecosystem-blog-post: Added Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document)
 

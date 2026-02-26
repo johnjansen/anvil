@@ -27,6 +27,15 @@ type Config struct {
 	Env                      map[string]string `yaml:"env"`                        // global environment variables injected into all task executions
 	GracefulShutdownTimeout  time.Duration     `yaml:"graceful_shutdown_timeout"`   // max wait for running tasks on graceful stop (default: 5m)
 	QuietHours               QuietHoursConfig  `yaml:"quiet_hours"`                // global quiet hours to restrict non-critical task execution
+	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
+}
+
+// NotificationsConfig defines desktop notification settings.
+type NotificationsConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Command        string `yaml:"command"`
+	OnSuccess      bool   `yaml:"on_success"`
+	OnFailure      bool   `yaml:"on_failure"`
 }
 
 // QuietHoursConfig defines a global time window during which only high-priority tasks may run.

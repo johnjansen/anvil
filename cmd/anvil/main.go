@@ -172,6 +172,7 @@ Task subcommands:
   resume <name>             Resume a paused task (sets disabled: false)
   edit <name>               Edit task (schedule, priority, content, labels, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
+  extend-timeout <name> <duration>  Extend a running task's timeout (--absolute for fixed deadline)
   next [name]              Show next scheduled run time (--all for all projects)
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
   analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
@@ -1318,8 +1319,8 @@ func psCmd(args []string) {
 	}
 
 	// Print table header
-	fmt.Printf("%-30s %-20s %-10s %-10s %-30s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STATUS", "STARTED")
-	fmt.Printf("%s\n", strings.Repeat("-", 120))
+	fmt.Printf("%-30s %-20s %-10s %-10s %-20s %-30s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "TIMEOUT", "STATUS", "STARTED")
+	fmt.Printf("%s\n", strings.Repeat("-", 140))
 
 	// Print each task
 	for _, t := range tasks {
@@ -1327,11 +1328,16 @@ func psCmd(args []string) {
 		if t.Status != "" {
 			status = t.Status
 		}
-		fmt.Printf("%-30s %-20s %-10d %-10s %-30s %s\n",
+		timeoutInfo := t.TimeRemaining + " left"
+		if t.ExtensionCount > 0 {
+			timeoutInfo = fmt.Sprintf("%s left (%dx extended)", t.TimeRemaining, t.ExtensionCount)
+		}
+		fmt.Printf("%-30s %-20s %-10d %-10s %-20s %-30s %s\n",
 			truncate(t.Project, 30),
 			truncate(t.Name, 20),
 			t.PID,
 			t.Elapsed,
+			truncate(timeoutInfo, 20),
 			truncate(status, 30),
 			t.Started)
 	}
@@ -1888,6 +1894,8 @@ func taskCmd(args []string) {
 		taskResetBudgetCmd(args[1:])
 	case "state":
 		taskStateCmd(args[1:])
+	case "extend-timeout":
+		taskExtendTimeoutCmd(args[1:])
 	case "pipeline":
 		taskPipelineCmd(args[1:])
 	case "find":
@@ -2568,6 +2576,10 @@ func taskGetCmd(args []string) {
 	runStatus := "idle"
 	var runPID int
 	var runElapsed string
+	var runExtensionCount int
+	var runOriginalTimeout string
+	var runTotalExtended string
+	var runTimeRemaining string
 	if daemon.IsDaemonRunning() {
 		runningTasks, err := daemon.SendPsRequest()
 		if err == nil {
@@ -2577,6 +2589,10 @@ func taskGetCmd(args []string) {
 					runStatus = "running"
 					runPID = t.PID
 					runElapsed = t.Elapsed
+					runExtensionCount = t.ExtensionCount
+					runOriginalTimeout = t.OriginalTimeout
+					runTotalExtended = t.TotalExtended
+					runTimeRemaining = t.TimeRemaining
 					break
 				}
 			}
@@ -2735,6 +2751,12 @@ func taskGetCmd(args []string) {
 	}
 	if runPID > 0 {
 		fmt.Printf("Status:   running (PID %d, elapsed %s)\n", runPID, runElapsed)
+		if runExtensionCount > 0 {
+			fmt.Printf("Timeout:  %s (original: %s, %d extension(s), +%s)\n",
+				runTimeRemaining+" remaining", runOriginalTimeout, runExtensionCount, runTotalExtended)
+		} else if todo.Timeout > 0 {
+			fmt.Printf("Timeout:  %s (%s remaining)\n", todo.Timeout, runTimeRemaining)
+		}
 	} else {
 		fmt.Printf("Status:   %s\n", runStatus)
 	}
@@ -3699,8 +3721,8 @@ func taskTimeoutCmd(args []string) {
 		targetName = args[0]
 	}
 
-	fmt.Printf("%-40s %-15s %-15s %-10s %s\n", "TASK", "ELAPSED", "TIMEOUT", "REMAINING", "PROGRESS")
-	fmt.Printf("%s\n", strings.Repeat("-", 100))
+	fmt.Printf("%-40s %-15s %-15s %-10s %-15s %s\n", "TASK", "ELAPSED", "TIMEOUT", "REMAINING", "EXTENSIONS", "PROGRESS")
+	fmt.Printf("%s\n", strings.Repeat("-", 115))
 
 	for _, t := range tasks {
 		// Filter by target name if specified
@@ -3712,14 +3734,58 @@ func taskTimeoutCmd(args []string) {
 		timeout := t.Timeout
 		remaining := t.TimeRemaining
 		percent := t.PercentUsed
+		extensions := "-"
+		if t.ExtensionCount > 0 {
+			extensions = fmt.Sprintf("%dx +%s", t.ExtensionCount, t.TotalExtended)
+		}
 
-		fmt.Printf("%-40s %-15s %-15s %-10s %.1f%%\n",
+		fmt.Printf("%-40s %-15s %-15s %-10s %-15s %.1f%%\n",
 			truncate(t.Name, 40),
 			elapsed,
 			timeout,
 			remaining,
+			extensions,
 			percent)
 	}
+}
+
+func taskExtendTimeoutCmd(args []string) {
+	absolute := false
+	var filtered []string
+	for _, a := range args {
+		if a == "--absolute" {
+			absolute = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task extend-timeout <name> <duration> [--absolute]\n")
+		fmt.Fprintf(os.Stderr, "\nExtend a running task's timeout.\n")
+		fmt.Fprintf(os.Stderr, "  <duration>   Time to add (e.g., 30m, 1h)\n")
+		fmt.Fprintf(os.Stderr, "  --absolute   Set deadline to now+duration instead of adding to remaining\n")
+		os.Exit(1)
+	}
+
+	taskName := filtered[0]
+	duration := filtered[1]
+
+	// Validate duration format
+	if _, err := time.ParseDuration(duration); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid duration %q: %v\n", duration, err)
+		os.Exit(1)
+	}
+
+	result, err := daemon.SendExtendTimeoutRequest(taskName, duration, absolute)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "extend-timeout failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Extended timeout for %s\n", result.Name)
+	fmt.Printf("  New deadline:    %s\n", result.NewDeadline)
+	fmt.Printf("  Remaining:       %s\n", result.Remaining)
+	fmt.Printf("  Extensions used: %d\n", result.ExtensionCount)
 }
 
 func taskEditCmd(args []string) {
