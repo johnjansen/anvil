@@ -446,21 +446,98 @@ func RemoveLock(todo Todo) error {
 	return os.Remove(lockPath)
 }
 
+// InitResult describes what Init did.
+type InitResult struct {
+	AlreadyExists bool   // true if .anvil/todos/ already existed
+	TaskCount     int    // number of existing task files found
+	BackupPath    string // path to backup if one was created (force re-init only)
+}
+
 // Init creates the .anvil/ directory structure and writes embedded tools into .claude/.
 // The toolsFS should contain a "skills" directory at its root.
 // Priority subdirectories are created on-demand when tasks are added.
-func Init(path string, toolsFS fs.FS) error {
+// If force is false and the project already has tasks, Init still ensures directories
+// exist and updates embedded tools but does not remove any existing files.
+func Init(path string, toolsFS fs.FS, force bool) (InitResult, error) {
+	var result InitResult
 	todosDir := filepath.Join(path, ".anvil", "todos")
+
+	// Check for existing project with tasks
+	taskCount := countTaskFiles(todosDir)
+	if taskCount > 0 {
+		result.AlreadyExists = true
+		result.TaskCount = taskCount
+
+		if force {
+			// Back up existing tasks before force re-init
+			backupPath, err := backupTodos(path)
+			if err != nil {
+				return result, fmt.Errorf("backing up existing tasks: %w", err)
+			}
+			result.BackupPath = backupPath
+		}
+	}
+
 	if err := os.MkdirAll(todosDir, 0755); err != nil {
-		return fmt.Errorf("creating .anvil/todos: %w", err)
+		return result, fmt.Errorf("creating .anvil/todos: %w", err)
 	}
 
 	claudeDir := filepath.Join(path, ".claude")
 	if err := writeEmbeddedFS(claudeDir, toolsFS); err != nil {
-		return fmt.Errorf("writing .claude/ tools: %w", err)
+		return result, fmt.Errorf("writing .claude/ tools: %w", err)
 	}
 
-	return nil
+	return result, nil
+}
+
+// countTaskFiles counts .md files under the todos directory tree.
+func countTaskFiles(todosDir string) int {
+	count := 0
+	_ = filepath.WalkDir(todosDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".md") {
+			count++
+		}
+		return nil
+	})
+	return count
+}
+
+// backupTodos copies all task files from .anvil/todos/ into a timestamped backup
+// directory at .anvil/backups/todos-<timestamp>/. Returns the backup path.
+func backupTodos(projectPath string) (string, error) {
+	todosDir := filepath.Join(projectPath, ".anvil", "todos")
+	timestamp := time.Now().Format("20060102-150405")
+	backupDir := filepath.Join(projectPath, ".anvil", "backups", "todos-"+timestamp)
+
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return "", fmt.Errorf("creating backup directory: %w", err)
+	}
+
+	err := filepath.WalkDir(todosDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil // skip unreadable entries
+		}
+		rel, err := filepath.Rel(todosDir, path)
+		if err != nil {
+			return err
+		}
+		dest := filepath.Join(backupDir, rel)
+		if d.IsDir() {
+			return os.MkdirAll(dest, 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		return os.WriteFile(dest, data, 0644)
+	})
+	if err != nil {
+		return backupDir, fmt.Errorf("copying tasks to backup: %w", err)
+	}
+	return backupDir, nil
 }
 
 // writeEmbeddedFS walks an fs.FS and writes all files into destDir,

@@ -122,7 +122,7 @@ Usage:
   anvil <command> [options]
 
 Commands:
-  init [path]              Initialize a project and register it for watching
+  init [--force] [path]    Initialize a project and register it for watching
   register [path]          Register a project for watching (without full init)
   watch [-d|--daemonize]   Start the daemon (press 'd' to detach to background)
   watch --install          Install as system service (auto-start on boot)
@@ -200,8 +200,17 @@ Configuration:
 
 func initCmd(args []string) {
 	path := "."
-	if len(args) > 0 {
-		path = args[0]
+	force := false
+	var filtered []string
+	for _, a := range args {
+		if a == "--force" || a == "-f" {
+			force = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) > 0 {
+		path = filtered[0]
 	}
 
 	abs, err := filepath.Abs(path)
@@ -209,8 +218,17 @@ func initCmd(args []string) {
 		log.Fatalf("bad path: %v", err)
 	}
 
-	if err := project.Init(abs, tools.FS); err != nil {
+	result, err := project.Init(abs, tools.FS, force)
+	if err != nil {
 		log.Fatalf("failed to init project: %v", err)
+	}
+
+	if result.AlreadyExists {
+		if result.BackupPath != "" {
+			fmt.Printf("backed up %d existing task(s) to %s\n", result.TaskCount, result.BackupPath)
+		} else {
+			fmt.Printf("existing project with %d task(s) preserved\n", result.TaskCount)
+		}
 	}
 
 	created, err := config.EnsureConfig()
@@ -798,7 +816,7 @@ func watchCmd(args []string) {
 
 	// Initialize project .anvil/ if it doesn't exist
 	if _, err := os.Stat(filepath.Join(abs, ".anvil", "todos")); os.IsNotExist(err) {
-		if err := project.Init(abs, tools.FS); err != nil {
+		if _, err := project.Init(abs, tools.FS, false); err != nil {
 			log.Fatalf("failed to init project: %v", err)
 		}
 		fmt.Printf("initialized %s/.anvil/\n", abs)
@@ -2098,7 +2116,7 @@ func taskCreateCmd(args []string) {
 	}
 
 	if _, err := os.Stat(filepath.Join(abs, ".anvil", "todos")); os.IsNotExist(err) {
-		if err := project.Init(abs, tools.FS); err != nil {
+		if _, err := project.Init(abs, tools.FS, false); err != nil {
 			log.Fatalf("failed to init project: %v", err)
 		}
 	}
@@ -6469,9 +6487,13 @@ func projectCreateCmd(args []string) {
 		log.Fatalf("bad path: %v", err)
 	}
 
-	// Initialize project .anvil/ structure
-	if err := project.Init(abs, tools.FS); err != nil {
+	// Initialize project .anvil/ structure (preserves existing tasks)
+	result, err := project.Init(abs, tools.FS, false)
+	if err != nil {
 		log.Fatalf("failed to init project: %v", err)
+	}
+	if result.AlreadyExists {
+		fmt.Printf("existing project with %d task(s) preserved\n", result.TaskCount)
 	}
 
 	fmt.Printf("created %s\n", abs)
