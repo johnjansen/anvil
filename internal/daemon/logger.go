@@ -37,7 +37,8 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 const maxLogSize = 1 << 20 // 1 MB
 
 type daemonLogger struct {
-	isTTY bool
+	isTTY   bool
+	rawMode bool // when true, println writes \r\n instead of \n for raw terminal mode
 
 	mu      sync.Mutex
 	logFile *os.File
@@ -131,12 +132,26 @@ func (l *daemonLogger) ts() string {
 	return time.Now().Format("15:04:05")
 }
 
+// SetRawMode toggles raw terminal mode output. When enabled, println writes
+// \r\n instead of bare \n so that lines start at column 0 when OPOST is disabled.
+func SetRawMode(enabled bool) {
+	dlog.mu.Lock()
+	dlog.rawMode = enabled
+	dlog.mu.Unlock()
+}
+
 func (l *daemonLogger) println(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	// Serialize stdout writes to prevent interleaved output from concurrent workers.
-	fmt.Fprintln(os.Stdout, line)
+	// In raw terminal mode, \n alone only moves the cursor down without returning
+	// to column 0, so we must write \r\n explicitly.
+	if l.rawMode {
+		fmt.Fprint(os.Stdout, line+"\r\n")
+	} else {
+		fmt.Fprintln(os.Stdout, line)
+	}
 
 	// Write a plain (no ANSI) copy to the log file.
 	if l.logFile != nil {
