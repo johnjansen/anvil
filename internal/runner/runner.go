@@ -203,6 +203,80 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 	return "", logPath, lastRunnerIndex, lastStderr, fmt.Errorf("all runners failed: last exit error: %w\nstderr: %s", lastErr, lastStderr)
 }
 
+// runSingleRunner executes a single runner command (used for runner_on_timeout fallback).
+// It runs the given command with content as an argument.
+func runSingleRunner(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logFile *os.File, cmdStr string, extraEnv map[string]string) (usedSessionID string, logPath string, runnerIndex int, stderrOutput string, err error) {
+	actualSessionID := sessionID
+
+	// Append --dangerously-skip-permissions if needed
+	if skipPermissions && !strings.Contains(cmdStr, "--dangerously-skip-permissions") {
+		cmdStr += " --dangerously-skip-permissions"
+	}
+	if len(allowedTools) > 0 {
+		quoted := make([]string, len(allowedTools))
+		for i, t := range allowedTools {
+			quoted[i] = shellEscape(t)
+		}
+		cmdStr += " --allowedTools " + strings.Join(quoted, " ")
+	}
+	if resume {
+		cmdStr += " --resume " + sessionID
+	} else {
+		var b [16]byte
+		rand.Read(b[:])
+		freshID := fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+		actualSessionID = freshID
+		cmdStr += " --session-id " + freshID
+	}
+
+	escaped := shellEscape(content)
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr+" "+escaped)
+	cmd.Dir = dir
+	cmd.Env = cleanEnv()
+	for k, v := range extraEnv {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	var stdout, stderr bytes.Buffer
+	var sw *statusWriter
+	var stderrSw *statusWriter
+	if logFile != nil {
+		stdoutBase := io.MultiWriter(&stdout, logFile)
+		sw = newStatusWriter(stdoutBase, nil, nil)
+		cmd.Stdout = sw
+		stderrBase := io.MultiWriter(&stderr, logFile)
+		stderrSw = newStatusWriter(stderrBase, nil, nil)
+		cmd.Stderr = stderrSw
+	} else {
+		sw = newStatusWriter(&stdout, nil, nil)
+		cmd.Stdout = sw
+		stderrSw = newStatusWriter(&stderr, nil, nil)
+		cmd.Stderr = stderrSw
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", "", 0, err.Error(), err
+	}
+
+	if err := cmd.Wait(); err != nil {
+		if sw != nil {
+			sw.Flush()
+		}
+		if stderrSw != nil {
+			stderrSw.Flush()
+		}
+		return "", "", 0, stderr.String(), err
+	}
+
+	if sw != nil {
+		sw.Flush()
+	}
+	if stderrSw != nil {
+		stderrSw.Flush()
+	}
+	return actualSessionID, "", 0, stderr.String(), nil
+}
+
 // cleanEnv returns the current environment with Claude-nesting guard vars removed.
 // Strips all CLAUDE* and ANTHROPIC* prefixed vars to prevent recursive invocation
 // detection, but preserves ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL which are
