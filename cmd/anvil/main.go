@@ -58,7 +58,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "'anvil unwatch' has been removed. Did you mean 'anvil project rm [path]'?")
 		os.Exit(1)
 	case "status":
-		statusCmd()
+		statusCmd(os.Args[2:])
 	case "cleanup":
 		cleanupCmd(os.Args[2:])
 	case "ps":
@@ -124,13 +124,6 @@ Commands:
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
-  ps [--json]              Show running tasks
-  status                   Show watched projects
-  reload                   Reload daemon configuration (SIGHUP)
-  usage [options]           Show LLM token usage and estimated costs
-  stop-on-idle             Drain running tasks then exit the daemon
-  cleanup [--older-than=<duration>] [--dry-run]    Prune old logs and run history
-  task <subcommand>        Task management commands
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
@@ -160,7 +153,7 @@ Task subcommands:
   start <name>              Start a stopped persistent task (dispatches on next tick)
   stop-on-idle <name>       Finish current run then stop rescheduling task
   unlock <name>             Remove stale lock file to allow retry
-  queue                     Show daemon queue status and skip reasons
+  queue [--json]             Show daemon queue status and skip reasons
   pause <name>              Pause a task (sets disabled: true)
   resume <name>             Resume a paused task (sets disabled: false)
   edit <name>                Edit task schedule or priority
@@ -584,17 +577,69 @@ func unwatchCmd(args []string) {
 	fmt.Printf("unwatched %s\n", abs)
 }
 
-func statusCmd() {
+func statusCmd(args []string) {
+	jsonOutput := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOutput = true
+		}
+	}
+
 	watched, err := loadAllWatched()
 	if err != nil {
 		log.Fatalf("failed to read watched: %v", err)
 	}
 
-	// Show daemon drain state if running
-	if daemon.IsDaemonRunning() {
+	daemonRunning := daemon.IsDaemonRunning()
+	draining := false
+	if daemonRunning {
 		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
-			fmt.Println("daemon: draining (stop-on-idle active)")
+			draining = true
 		}
+	}
+
+	if jsonOutput {
+		type projectStatusJSON struct {
+			Path  string `json:"path"`
+			Tasks int    `json:"tasks"`
+			Error string `json:"error,omitempty"`
+		}
+		type statusJSON struct {
+			DaemonRunning bool                `json:"daemon_running"`
+			Draining      bool                `json:"draining"`
+			Projects      []projectStatusJSON `json:"projects"`
+		}
+		st := statusJSON{
+			DaemonRunning: daemonRunning,
+			Draining:      draining,
+			Projects:      []projectStatusJSON{},
+		}
+		for _, w := range watched {
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				st.Projects = append(st.Projects, projectStatusJSON{
+					Path:  w.Path,
+					Error: err.Error(),
+				})
+				continue
+			}
+			todos, _ := proj.LoadTodos()
+			st.Projects = append(st.Projects, projectStatusJSON{
+				Path:  w.Path,
+				Tasks: len(todos),
+			})
+		}
+		data, err := json.MarshalIndent(st, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+
+	// Show daemon drain state if running
+	if draining {
+		fmt.Println("daemon: draining (stop-on-idle active)")
 	}
 
 	if len(watched) == 0 {
@@ -2192,20 +2237,48 @@ func taskUnlockCmd(args []string) {
 	fmt.Printf("unlocked: %s\n", todo.Name)
 }
 
-func taskQueueCmd(_ []string) {
+func taskQueueCmd(args []string) {
+	jsonOutput := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOutput = true
+		}
+	}
+
 	if !daemon.IsDaemonRunning() {
-		fmt.Println("daemon not running")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("daemon not running")
+		}
 		return
 	}
 
 	tasks, err := daemon.SendQueueRequest()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get queue status: %v\n", err)
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Fprintf(os.Stderr, "failed to get queue status: %v\n", err)
+		}
 		os.Exit(1)
 	}
 
 	if len(tasks) == 0 {
-		fmt.Println("no tasks in queue")
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("no tasks in queue")
+		}
+		return
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(tasks, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
 		return
 	}
 
