@@ -150,7 +150,7 @@ Add options:
 
 Task subcommands:
   create [options] <task>   Create a new task
-  ls [-a|--all] [--json]    List tasks (--all for all watched projects)
+  ls [-a|--all] [--json] [--label L]  List tasks (--all for all projects, --label to filter)
   find <pattern>            Find tasks by name pattern (alias for ls --match)
   get <name> [--json]       Show task details including run status
   log [-f] <name>           Show execution log (-f to follow)
@@ -165,7 +165,7 @@ Task subcommands:
   queue [--json]            Show daemon queue status and skip reasons
   pause <name>              Pause a task (sets disabled: true)
   resume <name>             Resume a paused task (sets disabled: false)
-  edit <name>               Edit task (schedule, priority, content, or --remove field)
+  edit <name>               Edit task (schedule, priority, content, labels, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
@@ -1869,8 +1869,9 @@ func taskLsCmd(args []string) {
 	allProjects := false
 	jsonOutput := false
 	matchPattern := ""
+	labelFilter := ""
 
-	// Parse flags: --match/-m for pattern, --all/-a for all projects, --json for JSON output
+	// Parse flags: --match/-m for pattern, --all/-a for all projects, --json for JSON output, --label/-l for label filter
 	var filteredArgs []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -1886,6 +1887,14 @@ func taskLsCmd(args []string) {
 			matchPattern = args[i]
 		} else if strings.HasPrefix(a, "--match=") || strings.HasPrefix(a, "-m=") {
 			matchPattern = strings.TrimPrefix(strings.TrimPrefix(a, "--match="), "-m=")
+		} else if a == "--label" || a == "-l" {
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --label/-l")
+			}
+			i++
+			labelFilter = strings.ToLower(args[i])
+		} else if strings.HasPrefix(a, "--label=") || strings.HasPrefix(a, "-l=") {
+			labelFilter = strings.ToLower(strings.TrimPrefix(strings.TrimPrefix(a, "--label="), "-l="))
 		} else {
 			filteredArgs = append(filteredArgs, a)
 		}
@@ -1955,6 +1964,26 @@ func taskLsCmd(args []string) {
 		projects = filtered
 	}
 
+	// Filter by label if specified (case-insensitive match)
+	if labelFilter != "" {
+		var filtered []projectTodos
+		for _, p := range projects {
+			var projectFiltered []project.Todo
+			for _, t := range p.todos {
+				for _, lbl := range t.Labels {
+					if strings.ToLower(lbl) == labelFilter {
+						projectFiltered = append(projectFiltered, t)
+						break
+					}
+				}
+			}
+			if len(projectFiltered) > 0 {
+				filtered = append(filtered, projectTodos{path: p.path, todos: projectFiltered})
+			}
+		}
+		projects = filtered
+	}
+
 	total := 0
 	for _, p := range projects {
 		total += len(p.todos)
@@ -1962,12 +1991,10 @@ func taskLsCmd(args []string) {
 	if total == 0 {
 		if jsonOutput {
 			fmt.Println("[]")
-		} else if matchPattern != "" {
-			fmt.Println("no tasks")
 		} else {
 			fmt.Println("no tasks")
 		}
-		if matchPattern != "" {
+		if matchPattern != "" || labelFilter != "" {
 			os.Exit(1)
 		}
 		return
@@ -1975,14 +2002,15 @@ func taskLsCmd(args []string) {
 
 	if jsonOutput {
 		type taskJSON struct {
-			Project  string `json:"project"`
-			Name     string `json:"name"`
-			Priority int    `json:"priority"`
-			Schedule string `json:"schedule"`
-			Status   string `json:"status"`
-			Disabled bool   `json:"disabled"`
-			Content  string `json:"content"`
-			ID       string `json:"id,omitempty"`
+			Project  string   `json:"project"`
+			Name     string   `json:"name"`
+			Priority int      `json:"priority"`
+			Schedule string   `json:"schedule"`
+			Status   string   `json:"status"`
+			Disabled bool     `json:"disabled"`
+			Content  string   `json:"content"`
+			ID       string   `json:"id,omitempty"`
+			Labels   []string `json:"labels,omitempty"`
 		}
 		var items []taskJSON
 		for _, p := range projects {
@@ -2009,6 +2037,7 @@ func taskLsCmd(args []string) {
 					Disabled: t.Disabled,
 					Content:  strings.TrimSpace(t.Content),
 					ID:       t.ID,
+					Labels:   t.Labels,
 				})
 			}
 		}
@@ -2043,7 +2072,11 @@ func taskLsCmd(args []string) {
 			if len(preview) > 50 {
 				preview = preview[:50] + "..."
 			}
-			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s\n", t.Priority, t.Schedule, status, t.Name, preview)
+			labelStr := ""
+			if len(t.Labels) > 0 {
+				labelStr = "  [" + strings.Join(t.Labels, ", ") + "]"
+			}
+			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr)
 		}
 	}
 }
@@ -2818,6 +2851,8 @@ func taskEditCmd(args []string) {
 	var bulkPattern string
 	var dryRun bool
 	var setDisabled *bool
+	var addLabel string
+	var removeLabel string
 
 	// Fields that can be cleared with --remove
 	removableFields := map[string]bool{
@@ -2890,6 +2925,18 @@ func taskEditCmd(args []string) {
 			}
 			i++
 			removeField = &args[i]
+		case "--add-label":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --add-label")
+			}
+			i++
+			addLabel = args[i]
+		case "--remove-label":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --remove-label")
+			}
+			i++
+			removeLabel = args[i]
 		default:
 			nameArgs = append(nameArgs, args[i])
 		}
@@ -3003,7 +3050,7 @@ func taskEditCmd(args []string) {
 	}
 
 	if len(nameArgs) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--remove field] [--add-label L] [--remove-label L]\n")
 		fmt.Fprintf(os.Stderr, "       anvil task edit --all [pattern] [-s schedule] [-p priority] [--disabled|--enabled] [--dry-run]\n")
 		os.Exit(1)
 	}
@@ -3040,6 +3087,98 @@ func taskEditCmd(args []string) {
 	if todo == nil {
 		fmt.Fprintf(os.Stderr, "task not found: %s\n", nameArgs[0])
 		os.Exit(1)
+	}
+
+	// Handle --add-label / --remove-label
+	if addLabel != "" || removeLabel != "" {
+		raw, err := os.ReadFile(todo.Path)
+		if err != nil {
+			log.Fatalf("failed to read task file: %v", err)
+		}
+		contentStr := string(raw)
+		var fmMap map[string]interface{}
+		body := contentStr
+
+		if strings.HasPrefix(contentStr, "---\n") {
+			parts := strings.SplitN(contentStr[4:], "\n---\n", 2)
+			if len(parts) == 2 {
+				body = parts[1]
+				if err := yaml.Unmarshal([]byte(parts[0]), &fmMap); err != nil {
+					log.Fatalf("failed to parse front-matter: %v", err)
+				}
+			}
+		}
+		if fmMap == nil {
+			fmMap = make(map[string]interface{})
+		}
+
+		// Get current labels
+		var labels []string
+		if raw, ok := fmMap["labels"]; ok {
+			if arr, ok := raw.([]interface{}); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						labels = append(labels, s)
+					}
+				}
+			}
+		}
+
+		if addLabel != "" {
+			// Check for duplicate (case-insensitive)
+			found := false
+			for _, l := range labels {
+				if strings.EqualFold(l, addLabel) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				labels = append(labels, addLabel)
+				fmt.Printf("added label %q to %s\n", addLabel, nameArgs[0])
+			} else {
+				fmt.Printf("task %s already has label %q\n", nameArgs[0], addLabel)
+				return
+			}
+		}
+
+		if removeLabel != "" {
+			var newLabels []string
+			found := false
+			for _, l := range labels {
+				if strings.EqualFold(l, removeLabel) {
+					found = true
+				} else {
+					newLabels = append(newLabels, l)
+				}
+			}
+			if !found {
+				fmt.Printf("task %s does not have label %q\n", nameArgs[0], removeLabel)
+				return
+			}
+			labels = newLabels
+			fmt.Printf("removed label %q from %s\n", removeLabel, nameArgs[0])
+		}
+
+		if len(labels) > 0 {
+			fmMap["labels"] = labels
+		} else {
+			delete(fmMap, "labels")
+		}
+
+		fmBytes, err := yaml.Marshal(fmMap)
+		if err != nil {
+			log.Fatalf("failed to marshal front-matter: %v", err)
+		}
+		var sb strings.Builder
+		sb.WriteString("---\n")
+		sb.WriteString(string(fmBytes))
+		sb.WriteString("---\n")
+		sb.WriteString(body)
+		if err := os.WriteFile(todo.Path, []byte(sb.String()), 0644); err != nil {
+			log.Fatalf("failed to write task file: %v", err)
+		}
+		return
 	}
 
 	// Handle --remove flag: clear a field from frontmatter
