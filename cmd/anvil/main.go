@@ -182,6 +182,7 @@ Task subcommands:
   reset-budget <name>        Reset persistent task budget consumption
   state <name>              View, export, import, or clear task state
   dry-run <name> [options]   Validate and preview task config without executing
+  sla [--verbose] [--reset] [--json]  Show SLA violations (--verbose for all, --reset to clear)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1894,6 +1895,8 @@ func taskCmd(args []string) {
 		taskStateCmd(args[1:])
 	case "pipeline":
 		taskPipelineCmd(args[1:])
+	case "sla":
+		taskSlaCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -2626,6 +2629,10 @@ func taskGetCmd(args []string) {
 			BudgetRemaining string          `json:"budget_remaining,omitempty"`
 			BudgetPercent   float64         `json:"budget_percent,omitempty"`
 			BudgetExhausted bool            `json:"budget_exhausted,omitempty"`
+			SLAMaxDelay     string          `json:"sla_max_delay,omitempty"`
+			SLAStrict       bool            `json:"sla_strict,omitempty"`
+			SLALastDelay    string          `json:"sla_last_delay,omitempty"`
+			SLALastViolation bool           `json:"sla_last_violation,omitempty"`
 		}
 		detail := taskDetailJSON{
 			File:            todo.Path,
@@ -2716,6 +2723,16 @@ func taskGetCmd(args []string) {
 			detail.BudgetRemaining = remaining.Round(time.Second).String()
 			detail.BudgetPercent = pct
 			detail.BudgetExhausted = budgetUsed >= todo.PersistentBudget
+		}
+		// Add SLA info
+		if todo.SLA.MaxDelay > 0 {
+			detail.SLAMaxDelay = todo.SLA.MaxDelay.String()
+			detail.SLAStrict = todo.SLA.Strict
+			rec, recErr := project.ReadCurrentRunRecord(abs, todo.ID)
+			if recErr == nil && rec.SLAMaxDelay > 0 {
+				detail.SLALastDelay = rec.DispatchDelay.String()
+				detail.SLALastViolation = rec.SLAViolation
+			}
 		}
 		data, err := json.MarshalIndent(detail, "", "  ")
 		if err != nil {
@@ -2817,6 +2834,22 @@ func taskGetCmd(args []string) {
 			fmt.Printf("          EXHAUSTED\n")
 		}
 	}
+	// Show SLA configuration and last run status
+	if todo.SLA.MaxDelay > 0 {
+		strictStr := ""
+		if todo.SLA.Strict {
+			strictStr = " (strict)"
+		}
+		fmt.Printf("SLA:      %v max delay%s\n", todo.SLA.MaxDelay, strictStr)
+		rec, err := project.ReadCurrentRunRecord(abs, todo.ID)
+		if err == nil && rec.SLAMaxDelay > 0 {
+			if rec.SLAViolation {
+				fmt.Printf("          last run: %v late — SLA VIOLATION\n", rec.DispatchDelay.Round(time.Second))
+			} else {
+				fmt.Printf("          last run: on time (%v delay)\n", rec.DispatchDelay.Round(time.Second))
+			}
+		}
+	}
 	fmt.Printf("\n%s", todo.Content)
 }
 
@@ -2863,6 +2896,131 @@ func taskResetBudgetCmd(args []string) {
 	}
 
 	fmt.Printf("Budget reset for %s\n", todo.Name)
+}
+
+func taskSlaCmd(args []string) {
+	verbose := false
+	reset := false
+	jsonOutput := false
+	for _, a := range args {
+		switch a {
+		case "--verbose", "-v":
+			verbose = true
+		case "--reset":
+			reset = true
+		case "--json":
+			jsonOutput = true
+		}
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Filter tasks with SLA configured
+	type slaEntry struct {
+		Name         string `json:"name"`
+		MaxDelay     string `json:"max_delay"`
+		Strict       bool   `json:"strict,omitempty"`
+		LastDelay    string `json:"last_delay,omitempty"`
+		Violation    bool   `json:"violation"`
+		ScheduledAt  string `json:"scheduled_at,omitempty"`
+		DispatchedAt string `json:"dispatched_at,omitempty"`
+	}
+
+	var entries []slaEntry
+	for _, t := range todos {
+		if t.SLA.MaxDelay <= 0 {
+			continue
+		}
+
+		entry := slaEntry{
+			Name:     t.Name,
+			MaxDelay: t.SLA.MaxDelay.String(),
+			Strict:   t.SLA.Strict,
+		}
+
+		rec, recErr := project.ReadCurrentRunRecord(abs, t.ID)
+		if recErr == nil && rec.SLAMaxDelay > 0 {
+			entry.LastDelay = rec.DispatchDelay.String()
+			entry.Violation = rec.SLAViolation
+			if !rec.ScheduledTime.IsZero() {
+				entry.ScheduledAt = rec.ScheduledTime.Format(time.RFC3339)
+			}
+			if !rec.Started.IsZero() {
+				entry.DispatchedAt = rec.Started.Format(time.RFC3339)
+			}
+		}
+
+		if verbose || entry.Violation {
+			entries = append(entries, entry)
+		}
+	}
+
+	if reset {
+		resetCount := 0
+		for _, t := range todos {
+			if t.SLA.MaxDelay <= 0 {
+				continue
+			}
+			records, err := project.ReadAllRunRecords(abs, t.ID)
+			if err != nil {
+				continue
+			}
+			for _, rec := range records {
+				if rec.SLAViolation {
+					rec.SLAViolation = false
+					if writeErr := project.WriteRunRecord(abs, rec); writeErr == nil {
+						resetCount++
+					}
+				}
+			}
+		}
+		fmt.Printf("Reset %d SLA violation(s)\n", resetCount)
+		return
+	}
+
+	if len(entries) == 0 {
+		if verbose {
+			fmt.Println("No tasks have SLA tracking enabled.")
+		} else {
+			fmt.Println("No SLA violations found.")
+		}
+		return
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+
+	// Human-readable output
+	for _, e := range entries {
+		status := "OK"
+		if e.Violation {
+			status = "VIOLATION"
+		}
+		fmt.Printf("%-30s  SLA: %s max delay  %s", e.Name, e.MaxDelay, status)
+		if e.LastDelay != "" {
+			fmt.Printf("  (last: %s delay)", e.LastDelay)
+		}
+		fmt.Println()
+	}
 }
 
 func taskStateCmd(args []string) {

@@ -27,6 +27,21 @@ type Config struct {
 	Env                      map[string]string `yaml:"env"`                        // global environment variables injected into all task executions
 	GracefulShutdownTimeout  time.Duration     `yaml:"graceful_shutdown_timeout"`   // max wait for running tasks on graceful stop (default: 5m)
 	QuietHours               QuietHoursConfig  `yaml:"quiet_hours"`                // global quiet hours to restrict non-critical task execution
+	SLA                      SLAGlobalConfig   `yaml:"sla"`                        // global SLA defaults for task delay tracking
+	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
+}
+
+// SLAGlobalConfig defines global SLA defaults for task delay tracking.
+type SLAGlobalConfig struct {
+	DefaultMaxDelay string `yaml:"default_max_delay"` // default max_delay for tasks without per-task SLA (e.g., "30m")
+}
+
+// NotificationsConfig defines desktop notification settings.
+type NotificationsConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Command        string `yaml:"command"`          // custom notification command
+	OnSuccess      bool   `yaml:"on_success"`       // notify on task success
+	OnFailure      bool   `yaml:"on_failure"`       // notify on task failure
 }
 
 // QuietHoursConfig defines a global time window during which only high-priority tasks may run.

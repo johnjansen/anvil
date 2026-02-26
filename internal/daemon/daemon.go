@@ -86,6 +86,7 @@ func removePIDFile() {
 type workItem struct {
 	project *project.Project
 	todo    project.Todo
+	sla     slaResult // SLA check result from dispatch time
 }
 
 type Daemon struct {
@@ -490,7 +491,7 @@ func (d *Daemon) worker(id int) {
 			}
 			projName := filepath.Base(item.project.Path)
 			dlog.WorkerPickup(id, projName, item.todo.Name, item.todo.Priority)
-			d.runTask(id, item.project, item.todo)
+			d.runTask(id, item.project, item.todo, item.sla)
 			// Release rate limit slot
 			if d.rateLimitSemaphore != nil {
 				<-d.rateLimitSemaphore
@@ -564,7 +565,7 @@ func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, inf
 }
 
 // runTask executes a single todo task and handles all bookkeeping.
-func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
+func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sla slaResult) {
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
 
 	// Drain completion check: registered first so it runs LAST (LIFO).
@@ -920,6 +921,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		Attempt:          finalAttempt + 1, // convert 0-based to 1-based
 		MaxRetries:       t.Retry,
 		RetryDelay:       retryDelay.String(),
+		ScheduledTime:    sla.ScheduledTime,
+		DispatchDelay:    sla.Delay,
+		SLAViolation:     sla.Violation,
+		SLAMaxDelay:      sla.MaxDelay,
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
@@ -1125,6 +1130,31 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 		dlog.Warn("%s hook failed for %s: %v", hookName, t.Name, hookErr)
 	} else {
 		dlog.Info("%s hook completed for %s", hookName, t.Name)
+	}
+}
+
+// runSLAViolationHook executes an on_sla_violation hook as a shell command.
+// Hook errors are logged as warnings but do not affect task dispatch.
+func (d *Daemon) runSLAViolationHook(t project.Todo, projectPath string, sla slaResult) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	hookCmd := exec.CommandContext(ctx, "sh", "-c", t.OnSLAViolation)
+	hookCmd.Dir = projectPath
+
+	hookCmd.Env = append(os.Environ(),
+		"ANVIL_TASK_NAME="+t.Name,
+		"ANVIL_PROJECT="+projectPath,
+		"ANVIL_SLA_SCHEDULED_TIME="+sla.ScheduledTime.Format(time.RFC3339),
+		"ANVIL_SLA_ACTUAL_TIME="+time.Now().Format(time.RFC3339),
+		"ANVIL_SLA_DELAY="+sla.Delay.String(),
+		"ANVIL_SLA_MAX_DELAY="+sla.MaxDelay.String(),
+	)
+
+	if hookErr := hookCmd.Run(); hookErr != nil {
+		dlog.Warn("on_sla_violation hook failed for %s: %v", t.Name, hookErr)
+	} else {
+		dlog.Info("on_sla_violation hook completed for %s", t.Name)
 	}
 }
 
@@ -2181,6 +2211,32 @@ func (d *Daemon) tick(now time.Time) {
 			continue
 		}
 
+		// Check SLA: detect if task dispatch is delayed beyond threshold
+		slaCheck := checkSLA(pt.todo, d.config.SLA, time.Now())
+		if slaCheck.HasSLA && slaCheck.Violation && slaCheck.Strict {
+			dlog.Info("skip %s/%s — SLA strict: %v late (max %v)", projName, pt.todo.Name, slaCheck.Delay.Round(time.Second), slaCheck.MaxDelay)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = fmt.Sprintf("SLA strict: %v late", slaCheck.Delay.Round(time.Second))
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			// Fire SLA violation hook even for strict-skipped tasks
+			if pt.todo.OnSLAViolation != "" {
+				go d.runSLAViolationHook(pt.todo, pt.proj.Path, slaCheck)
+			}
+			continue
+		}
+		if slaCheck.HasSLA && slaCheck.Violation {
+			dlog.Info("SLA violation %s/%s — %v late (max %v)", projName, pt.todo.Name, slaCheck.Delay.Round(time.Second), slaCheck.MaxDelay)
+			if pt.todo.OnSLAViolation != "" {
+				go d.runSLAViolationHook(pt.todo, pt.proj.Path, slaCheck)
+			}
+		}
+
 		// Skip dispatch if persistent task has been explicitly stopped
 		d.stoppedMu.Lock()
 		taskStopped := d.stoppedTasks[pt.todo.ID]
@@ -2358,7 +2414,7 @@ func (d *Daemon) tick(now time.Time) {
 
 		// Non-blocking send; if queue is full, clear in-flight and warn
 		select {
-		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo}:
+		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo, sla: slaCheck}:
 			dispatched++
 			// Clear starvation tracker for persistent tasks when dispatched
 			if pt.todo.IsPersistent() {
