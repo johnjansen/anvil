@@ -28,6 +28,7 @@ import (
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
 	"github.com/johnjansen/anvil/internal/updater"
+	"github.com/johnjansen/anvil/internal/webhook"
 
 	"gopkg.in/yaml.v3"
 )
@@ -135,6 +136,7 @@ type Daemon struct {
 	// persistent task during this daemon lifetime.  Resets on daemon restart.
 	persistentBudgetUsed   map[string]time.Duration
 	persistentBudgetUsedMu sync.Mutex
+	webhooks *webhook.Sender
 }
 
 type RunningTask struct {
@@ -201,6 +203,7 @@ func New(cfg *config.Config) *Daemon {
 		pendingTasks:  make(map[string]string),
 		stoppedTasks:         make(map[string]bool),
 		persistentBudgetUsed: make(map[string]time.Duration),
+		webhooks:             webhook.New(cfg.Webhooks),
 	}
 }
 
@@ -356,6 +359,15 @@ func (d *Daemon) reloadConfig() {
 		oldVal := d.config.TickInterval
 		d.config.TickInterval = newConfig.TickInterval
 		changes = append(changes, fmt.Sprintf("tick_interval %v->%v", oldVal, newConfig.TickInterval))
+	}
+
+	// webhooks: update sender config
+	d.config.Webhooks = newConfig.Webhooks
+	if d.webhooks != nil {
+		d.webhooks.UpdateConfig(newConfig.Webhooks)
+	} else if len(newConfig.Webhooks) > 0 {
+		d.webhooks = webhook.New(newConfig.Webhooks)
+		changes = append(changes, "webhooks configured")
 	}
 
 	if len(changes) > 0 {
@@ -568,6 +580,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 				task.SessionID = sid
 			}
 			d.tasksMu.Unlock()
+			// Fire task_start webhook
+			d.webhooks.Fire(webhook.EventStart, webhook.BuildPayload(t.Name, proj.Path, runID, startTime, time.Time{}, 0, ""))
+			if t.Webhook != "" {
+				d.webhooks.FireURL(t.Webhook, webhook.EventStart, webhook.BuildPayload(t.Name, proj.Path, runID, startTime, time.Time{}, 0, ""))
+			}
 		}, func(status string) {
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {
@@ -680,6 +697,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	elapsed := time.Since(startTime)
 	// Detect force-cycle: persistent task hit its max runtime (context deadline exceeded)
 	forceCycled := t.IsPersistent() && err != nil && ctx.Err() == context.DeadlineExceeded
+	whPayload := webhook.BuildPayload(t.Name, proj.Path, runID, startTime, runRecord.Finished, runRecord.EstimatedCostUSD, runRecord.Error)
 	if forceCycled {
 		// Force-cycle is a normal lifecycle event, not a failure.
 		// Log it clearly and skip failure backoff/runner cooldown.
@@ -691,6 +709,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		// Mark success in run record since this is expected behavior
 		runRecord.Success = true
 		runRecord.Error = ""
+		d.webhooks.Fire(webhook.EventPersistentCycle, whPayload)
+		if t.Webhook != "" {
+			d.webhooks.FireURL(t.Webhook, webhook.EventPersistentCycle, whPayload)
+		}
 	} else if err != nil {
 		dlog.WorkerFail(workerID, projName, t.Name, err)
 		// If the runner failed, set a 5-minute cooldown to avoid retrying it immediately
@@ -703,6 +725,15 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		// Run on_failure hook if defined
 		if t.OnFailure != "" {
 			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+		}
+		// Fire failure webhook (use timeout event if deadline exceeded)
+		whEvent := webhook.EventFailure
+		if ctx.Err() == context.DeadlineExceeded {
+			whEvent = webhook.EventTimeout
+		}
+		d.webhooks.Fire(whEvent, whPayload)
+		if t.Webhook != "" {
+			d.webhooks.FireURL(t.Webhook, whEvent, whPayload)
 		}
 		// For persistent tasks, track failures and apply exponential backoff
 		if t.IsPersistent() {
@@ -729,6 +760,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		// Run on_success hook if defined
 		if t.OnSuccess != "" {
 			d.runHook("on_success", t.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+		}
+		d.webhooks.Fire(webhook.EventSuccess, whPayload)
+		if t.Webhook != "" {
+			d.webhooks.FireURL(t.Webhook, webhook.EventSuccess, whPayload)
 		}
 		// Remove the todo file after successful execution (one-shot only)
 		if t.Schedule == "" {
