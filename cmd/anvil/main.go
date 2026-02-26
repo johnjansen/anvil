@@ -333,9 +333,11 @@ func serveCmd() {
 		// log and stderr output to keep line breaks working.
 		origWriter := log.Writer()
 		log.SetOutput(&rawLineWriter{w: origWriter})
+		daemon.SetRawMode(true)
 		defer func() {
 			term.Restore(fd, oldState)
 			log.SetOutput(origWriter)
+			daemon.SetRawMode(false)
 		}()
 
 		buf := make([]byte, 1)
