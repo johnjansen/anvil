@@ -117,7 +117,7 @@ Usage:
 Commands:
   init [path]              Initialize a project and register it for watching
   register [path]          Register a project for watching (without full init)
-  watch [-d|--daemonize]   Start the daemon (once per machine)
+  watch [-d|--daemonize]   Start the daemon (press 'd' to detach to background)
   watch --install          Install as system service (auto-start on boot)
   watch --uninstall        Remove the system service
   watch --status           Show system service status
@@ -296,6 +296,10 @@ func serveCmd() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Listen for 'd' keypress to detach to background
+	detachCh := make(chan struct{}, 1)
+	go listenForDetach(detachCh)
+
 	go d.Run()
 
 	select {
@@ -304,7 +308,52 @@ func serveCmd() {
 		d.Stop()
 	case <-d.Done():
 		// daemon stopped itself (e.g. stop-on-idle drain completed)
+	case <-detachCh:
+		detachToBackground()
+		// Exit the foreground process; daemon keeps running as orphan
 	}
+}
+
+// listenForDetach reads stdin one byte at a time looking for 'd' or Ctrl+D.
+func listenForDetach(ch chan<- struct{}) {
+	// Only try to detach if stdin is a terminal
+	fi, err := os.Stdin.Stat()
+	if err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+		return
+	}
+
+	buf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			return
+		}
+		if buf[0] == 'd' || buf[0] == 4 { // 'd' or Ctrl+D
+			ch <- struct{}{}
+			return
+		}
+	}
+}
+
+// detachToBackground redirects stdout/stderr to the daemon log and detaches
+// from the controlling terminal so the daemon continues as a background process.
+func detachToBackground() {
+	logFile, err := os.OpenFile(config.DaemonLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open daemon log for detach: %v\n", err)
+		return
+	}
+
+	pid := os.Getpid()
+	fmt.Fprintf(os.Stderr, "\nDetached to background (PID %d). Use 'anvil ps' to monitor.\n", pid)
+
+	// Redirect stdout and stderr to the log file
+	syscall.Dup2(int(logFile.Fd()), int(os.Stdout.Fd()))
+	syscall.Dup2(int(logFile.Fd()), int(os.Stderr.Fd()))
+	logFile.Close()
+
+	// Close stdin to fully detach from the terminal
+	os.Stdin.Close()
 }
 
 // watchCmd2 handles "anvil watch" with optional --daemonize/-d, --stop, and --child flags.
