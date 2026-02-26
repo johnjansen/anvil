@@ -482,11 +482,9 @@ func runDaemonChild() {
 		log.Fatalf("failed to create ~/.anvil: %v", err)
 	}
 
-	pid := os.Getpid()
-	if err := os.WriteFile(config.PidFile(), []byte(strconv.Itoa(pid)), 0644); err != nil {
-		log.Fatalf("failed to write PID file: %v", err)
-	}
-	defer os.Remove(config.PidFile())
+	// PID file is written by daemon.Run() via checkAndWritePID().
+	// Do NOT write it here — that causes Run() to detect our own PID
+	// as an already-running daemon and exit without starting the socket server.
 
 	cfg, err := config.Load()
 	if err != nil {
