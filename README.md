@@ -518,6 +518,8 @@ anvil cleanup -o=24h
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
 | `anvil task next [name]` | Show next scheduled run time (--all for all projects) |
 | `anvil task wait <name> [--timeout D] [--match PAT]` | Block until a running task completes (exit 0=ok, 1=fail, 2=timeout) |
+| `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
+| `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 | `anvil task find <pattern>` | Find tasks by name pattern |

@@ -614,6 +614,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var stderrOutput string
 	var err error
 
+	// Track checkpoint data emitted by the task (last one wins)
+	var checkpointMu sync.Mutex
+	var lastCheckpointData string
+
 	for attempt := 0; ; attempt++ {
 		// Check if context is already cancelled before attempting
 		if ctx.Err() != nil {
@@ -623,6 +627,17 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 
 		// Merge global config env with task-specific env (task overrides global)
 		mergedEnv := mergeEnv(d.config.Env, t.Env)
+
+		// If checkpoint is enabled, inject the latest checkpoint data as an env var
+		if t.Checkpoint {
+			cpData := project.LatestCheckpointData(proj.Path, t.ID)
+			if cpData != "" {
+				if mergedEnv == nil {
+					mergedEnv = make(map[string]string)
+				}
+				mergedEnv["ANVIL_CHECKPOINT_DATA"] = cpData
+			}
+		}
 
 		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, func(pid int, lp string, sid string) {
 			childPID = pid
@@ -644,6 +659,12 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 				task.Status = status
 			}
 			d.tasksMu.Unlock()
+		}, func(data string) {
+			if t.Checkpoint {
+				checkpointMu.Lock()
+				lastCheckpointData = data
+				checkpointMu.Unlock()
+			}
 		})
 
 		// Success - exit retry loop
@@ -712,6 +733,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		float64(tokenUsage.OutputTokens)/1_000_000*outputRate
 
 	// Write run record after completion with outcome data
+	checkpointMu.Lock()
+	cpData := lastCheckpointData
+	checkpointMu.Unlock()
+
 	runRecord := project.RunRecord{
 		RunID:            runID,
 		TaskID:           t.ID,
@@ -723,6 +748,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		InputTokens:      tokenUsage.InputTokens,
 		OutputTokens:     tokenUsage.OutputTokens,
 		EstimatedCostUSD: estimatedCost,
+		CheckpointData:   cpData,
 	}
 	if err != nil {
 		runRecord.Error = err.Error()

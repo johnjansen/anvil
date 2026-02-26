@@ -100,6 +100,7 @@ type Todo struct {
 	Labels               []string      // user-defined labels for organizing and filtering tasks
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
+	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -117,6 +118,7 @@ type RunRecord struct {
 	InputTokens      int       `json:"input_tokens,omitempty"`    // tokens sent to the model
 	OutputTokens     int       `json:"output_tokens,omitempty"`   // tokens received from the model
 	EstimatedCostUSD float64   `json:"estimated_cost_usd,omitempty"` // estimated cost in USD
+	CheckpointData   string    `json:"checkpoint_data,omitempty"`   // last checkpoint data emitted by the task
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -196,6 +198,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var labels []string
 			var envVars map[string]string
 			var dependsOn []string
+			checkpoint := false
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -231,6 +234,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Labels               []string          `yaml:"labels"`
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
+						Checkpoint           bool              `yaml:"checkpoint"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -270,6 +274,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						labels = fmData.Labels
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
+						checkpoint = fmData.Checkpoint
 					}
 				}
 			}
@@ -310,6 +315,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Labels:               labels,
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
+				Checkpoint:           checkpoint,
 			})
 		}
 	}
@@ -664,6 +670,16 @@ func LatestSessionID(projectPath, taskID string) (string, error) {
 		return rec.SessionID, nil
 	}
 	return "", fmt.Errorf("no run record found for task %s", taskID)
+}
+
+// LatestCheckpointData returns the most recent checkpoint data for a task.
+// Returns empty string if no checkpoint data exists.
+func LatestCheckpointData(projectPath, taskID string) string {
+	rec, err := ReadCurrentRunRecord(projectPath, taskID)
+	if err != nil {
+		return ""
+	}
+	return rec.CheckpointData
 }
 
 var (

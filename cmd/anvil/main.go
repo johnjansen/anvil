@@ -168,7 +168,9 @@ Task subcommands:
   resume <name>             Resume a paused task (sets disabled: false)
   edit <name>               Edit task (schedule, priority, content, labels, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
+  next [name]              Show next scheduled run time (--all for all projects)
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
+  analyze [--all]          Analyze task schedules for potential conflicts
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1590,6 +1592,8 @@ func taskCmd(args []string) {
 		taskImportCmd(args[1:])
 	case "wait":
 		taskWaitCmd(args[1:])
+	case "analyze":
+		taskAnalyzeCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -2640,6 +2644,15 @@ func taskHistoryCmd(args []string) {
 			for _, line := range summaryLines {
 				fmt.Printf("  %s\n", line)
 			}
+		}
+
+		// Print checkpoint data if available
+		if rec.CheckpointData != "" {
+			cpPreview := rec.CheckpointData
+			if len(cpPreview) > 80 {
+				cpPreview = cpPreview[:80] + "..."
+			}
+			fmt.Printf("  checkpoint: %s\n", cpPreview)
 		}
 	}
 }
@@ -4611,6 +4624,150 @@ func taskImportCmd(args []string) {
 		fmt.Printf("\nDry run: would import %d task(s), skip %d\n", importCount, skipCount)
 	} else {
 		fmt.Printf("\nImported %d task(s) from %s\n", importCount, inputFile)
+	}
+}
+
+// Conflict represents a scheduling conflict between two tasks
+type Conflict struct {
+	Task1    string
+	Task2    string
+	Schedule1 string
+	Schedule2 string
+	Reason   string
+}
+
+// detectConflicts analyzes tasks for scheduling conflicts
+func detectConflicts(todos []project.Todo) []Conflict {
+	var conflicts []Conflict
+
+	// Build a map of task name to schedule
+	taskSchedules := make(map[string]string)
+	for _, t := range todos {
+		if t.Schedule != "" {
+			taskSchedules[t.Name] = t.Schedule
+		}
+	}
+
+	// Check for frequency-based conflicts
+	for i := range todos {
+		for j := i + 1; j < len(todos); j++ {
+			t1, t2 := todos[i], todos[j]
+			if t1.Schedule == "" || t2.Schedule == "" {
+				continue
+			}
+
+			// Both have schedules - check for conflicts
+			// High frequency: both run every minute
+			if t1.Schedule == "*/1 * * * *" && t2.Schedule == "*/1 * * * *" {
+				conflicts = append(conflicts, Conflict{
+					Task1: t1.Name, Task2: t2.Name,
+					Schedule1: t1.Schedule, Schedule2: t2.Schedule,
+					Reason: "Both tasks run every minute - may compete for resources",
+				})
+				continue
+			}
+
+			// Check for same minute patterns that could overlap
+			// e.g., */5 and */10 at minute 0
+			if strings.Contains(t1.Schedule, "*/5") && strings.Contains(t2.Schedule, "*/") {
+				conflicts = append(conflicts, Conflict{
+					Task1: t1.Name, Task2: t2.Name,
+					Schedule1: t1.Schedule, Schedule2: t2.Schedule,
+					Reason: "Tasks may run at the same time - check schedules",
+				})
+			}
+		}
+	}
+
+	return conflicts
+}
+
+func taskAnalyzeCmd(args []string) {
+	var allProjects bool
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil task analyze [--all]
+
+Analyze task schedules for potential conflicts and overlaps.
+
+Options:
+  --all    Analyze all watched projects
+
+Examples:
+  anvil task analyze
+  anvil task analyze --all
+`)
+			os.Exit(0)
+		case "--all":
+			allProjects = true
+		}
+	}
+
+	// Load projects to analyze
+	var projects []*project.Project
+	if allProjects {
+		watched, err := loadAllWatched()
+		if err != nil {
+			log.Fatalf("failed to load watched projects: %v", err)
+		}
+		if len(watched) == 0 {
+			fmt.Println("No watched projects")
+			return
+		}
+		fmt.Printf("Analyzing %d watched project(s)...\n\n", len(watched))
+		for _, w := range watched {
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				continue
+			}
+			projects = append(projects, proj)
+		}
+	} else {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		proj, err := project.Load(abs)
+		if err != nil {
+			log.Fatalf("failed to load project: %v", err)
+		}
+		projects = append(projects, proj)
+	}
+
+	conflictCount := 0
+	for _, proj := range projects {
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			log.Printf("failed to load todos from %s: %v", proj.Path, err)
+			continue
+		}
+
+		// Check for conflicts
+		conflicts := detectConflicts(todos)
+		fmt.Printf("Checking %s...\n", proj.Path)
+		if len(conflicts) > 0 {
+			for _, c := range conflicts {
+				conflictCount++
+				fmt.Printf("WARNING: %s and %s may overlap\n", c.Task1, c.Task2)
+				fmt.Printf("  - %s: %s\n", c.Task1, c.Schedule1)
+				fmt.Printf("  - %s: %s\n", c.Task2, c.Schedule2)
+				if c.Reason != "" {
+					fmt.Printf("  %s\n", c.Reason)
+				}
+				fmt.Println()
+			}
+		} else {
+			fmt.Println("OK: No schedule conflicts detected")
+			fmt.Println()
+		}
+	}
+
+	if conflictCount == 0 {
+		fmt.Println("All schedules look good!")
+	} else {
+		log.Fatalf("Found %d scheduling conflict(s)", conflictCount)
 	}
 }
 

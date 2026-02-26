@@ -101,7 +101,7 @@ func TestStatusWriter_DetectsStatusOnStdout(t *testing.T) {
 		mu.Lock()
 		captured = status
 		mu.Unlock()
-	})
+	}, nil)
 
 	sw.Write([]byte("normal output\n##anvil:status working on tests\nmore output\n"))
 	sw.Flush()
@@ -135,7 +135,7 @@ func TestStatusWriter_MultipleStatusUpdates(t *testing.T) {
 		mu.Lock()
 		statuses = append(statuses, status)
 		mu.Unlock()
-	})
+	}, nil)
 
 	sw.Write([]byte("##anvil:status step 1\n"))
 	sw.Write([]byte("##anvil:status step 2\n"))
@@ -160,7 +160,7 @@ func TestStatusWriter_PartialLineBuffering(t *testing.T) {
 		mu.Lock()
 		captured = status
 		mu.Unlock()
-	})
+	}, nil)
 
 	// Write status prefix split across two Write calls
 	sw.Write([]byte("##anvil:sta"))
@@ -182,7 +182,7 @@ func TestStatusWriter_FlushPartialLine(t *testing.T) {
 		mu.Lock()
 		captured = status
 		mu.Unlock()
-	})
+	}, nil)
 
 	// Write without trailing newline, then flush
 	sw.Write([]byte("##anvil:status final status"))
@@ -201,7 +201,7 @@ func TestStatusWriter_EmptyStatusIgnored(t *testing.T) {
 
 	sw := newStatusWriter(&downstream, func(status string) {
 		callCount++
-	})
+	}, nil)
 
 	sw.Write([]byte("##anvil:status \n"))
 
