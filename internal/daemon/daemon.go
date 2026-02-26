@@ -138,6 +138,8 @@ type Daemon struct {
 	persistentBudgetUsed   map[string]time.Duration
 	persistentBudgetUsedMu sync.Mutex
 	webhooks *webhook.Sender
+	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
+	rateLimitSemaphore chan struct{}
 	// Metrics counters for Prometheus endpoint
 	metricsSuccessCount int64 // atomic: total successful task runs
 	metricsFailureCount int64 // atomic: total failed task runs
@@ -466,13 +468,36 @@ func (d *Daemon) reloadConfig() {
 // worker pulls work items from the queue and executes them one at a time.
 func (d *Daemon) worker(id int) {
 	dlog.WorkerStarted(id)
-	for item := range d.workQueue {
-		projName := filepath.Base(item.project.Path)
-		dlog.WorkerPickup(id, projName, item.todo.Name, item.todo.Priority)
-		d.runTask(id, item.project, item.todo)
-		dlog.WorkerIdle(id)
+	for {
+		select {
+		case <-d.stop:
+			dlog.WorkerStopped(id)
+			return
+		case item, ok := <-d.workQueue:
+			if !ok {
+				dlog.WorkerStopped(id)
+				return
+			}
+			// Acquire rate limit slot if configured
+			if d.rateLimitSemaphore != nil {
+				select {
+				case <-d.stop:
+					dlog.WorkerStopped(id)
+					return
+				case d.rateLimitSemaphore <- struct{}{}:
+					// Slot acquired, proceed with task
+				}
+			}
+			projName := filepath.Base(item.project.Path)
+			dlog.WorkerPickup(id, projName, item.todo.Name, item.todo.Priority)
+			d.runTask(id, item.project, item.todo)
+			// Release rate limit slot
+			if d.rateLimitSemaphore != nil {
+				<-d.rateLimitSemaphore
+			}
+			dlog.WorkerIdle(id)
+		}
 	}
-	dlog.WorkerStopped(id)
 }
 
 // mergeEnv merges global and task-specific environment variable maps.
@@ -1477,7 +1502,10 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 
 // DaemonStatus holds runtime state about the daemon.
 type DaemonStatus struct {
-	Draining bool `json:"draining"`
+	Draining       bool `json:"draining"`
+	RateLimited    bool `json:"rate_limited"`   // true if rate limiting is configured
+	RateLimitSlots int  `json:"rate_limit_slots"` // total slots configured (0 if not limited)
+	RateInUse      int  `json:"rate_in_use"`    // current slots in use
 }
 
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -1487,6 +1515,13 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status := DaemonStatus{
 		Draining: atomic.LoadInt32(&d.draining) == 1,
+	}
+	// Populate rate limit status if configured
+	if d.rateLimitSemaphore != nil {
+		status.RateLimited = true
+		status.RateLimitSlots = cap(d.rateLimitSemaphore)
+		// Count slots currently in use (len of channel)
+		status.RateInUse = len(d.rateLimitSemaphore)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)

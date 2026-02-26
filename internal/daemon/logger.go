@@ -204,6 +204,11 @@ func (l *daemonLogger) WorkerIdle(id int) {
 		l.ts(), l.workerStr(id), l.c(ansiDim, "—")))
 }
 
+func (l *daemonLogger) WorkerWait(id int, projName, name, reason string) {
+	l.println(fmt.Sprintf("%s %s  wait %s/%s (%s)",
+		l.ts(), l.workerStr(id), projName, l.c(ansiBold, name), reason))
+}
+
 // --- Scheduler/tick ---
 
 func (l *daemonLogger) Dispatch(projName, name string, priority int, schedule string) {

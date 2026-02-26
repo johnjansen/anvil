@@ -1249,8 +1249,21 @@ func psCmd(args []string) {
 
 	// Show drain status header if applicable (text mode only)
 	if !jsonOutput {
-		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
-			fmt.Println("(draining — no new tasks will be dispatched)")
+		if status, err := daemon.SendStatusRequest(); err == nil {
+			if status.Draining {
+				fmt.Println("(draining — no new tasks will be dispatched)")
+			}
+			// Show rate limit status if configured
+			if status.RateLimited {
+				slots := status.RateLimitSlots
+				inUse := status.RateInUse
+				pct := 0
+				if slots > 0 {
+					pct = (inUse * 100) / slots
+				}
+				bar := strings.Repeat("█", pct/5) + strings.Repeat("░", 20-pct/5)
+				fmt.Printf("Rate limit: [%s] %d/%d\n", bar, inUse, slots)
+			}
 		}
 	}
 
