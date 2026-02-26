@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -3108,12 +3109,15 @@ func daemonCmd(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: anvil daemon <subcommand>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Subcommands:")
-		fmt.Fprintln(os.Stderr, "  log [-f] [-n lines]   View daemon log (-f to follow, -n for last N lines)")
+		fmt.Fprintln(os.Stderr, "  log [-f] [-n lines]      View daemon log (-f to follow, -n for last N lines)")
+		fmt.Fprintln(os.Stderr, "  config-validate           Validate config file")
 		os.Exit(1)
 	}
 	switch args[0] {
 	case "log":
 		daemonLogCmd(args[1:])
+	case "config-validate":
+		daemonConfigValidateCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -3230,6 +3234,99 @@ Options:
 
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// daemonConfigValidateCmd validates the config file.
+func daemonConfigValidateCmd(args []string) {
+	showConfig := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--show" {
+			showConfig = true
+		} else if arg == "-h" || arg == "--help" {
+			fmt.Println("Usage: anvil daemon config-validate [options]")
+			fmt.Println("")
+			fmt.Println("Validate the daemon config file (~/.anvil/config.yaml).")
+			fmt.Println("")
+			fmt.Println("Options:")
+			fmt.Println("  --show    Show parsed config in YAML format")
+			fmt.Println("  -h        Show this help")
+			return
+		}
+	}
+
+	// Load config (validates YAML syntax)
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Validate durations
+	if cfg.Timeout <= 0 {
+		fmt.Fprintf(os.Stderr, "Error: invalid timeout %v (must be > 0)\n", cfg.Timeout)
+		os.Exit(1)
+	}
+	if cfg.TickInterval <= 0 {
+		fmt.Fprintf(os.Stderr, "Error: invalid tick_interval %v (must be > 0)\n", cfg.TickInterval)
+		os.Exit(1)
+	}
+
+	// Validate runners
+	if len(cfg.Runners) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no runners configured (must have at least one)\n")
+		os.Exit(1)
+	}
+
+	// Validate webhooks if present
+	if cfg.Webhooks != nil {
+		for name, webhook := range cfg.Webhooks {
+			if webhook.URL != "" {
+				u, err := url.Parse(webhook.URL)
+				if err != nil || !u.IsAbs() {
+					fmt.Fprintf(os.Stderr, "Error: invalid webhook URL for %s: %s\n", name, webhook.URL)
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
+	// Show warnings for deprecated fields
+	// (currently no deprecated fields in config, but structure is here)
+
+	// If --show, output config
+	if showConfig {
+		fmt.Println("tick_interval:", cfg.TickInterval)
+		fmt.Println("max_workers:", cfg.MaxWorkers)
+		fmt.Println("timeout:", cfg.Timeout)
+		fmt.Println("runners:")
+		for _, r := range cfg.Runners {
+			fmt.Println("  -", r)
+		}
+		if cfg.Hooks.OnSuccess != "" || cfg.Hooks.OnFailure != "" {
+			fmt.Println("hooks:")
+			fmt.Println("  on_success:", cfg.Hooks.OnSuccess)
+			fmt.Println("  on_failure:", cfg.Hooks.OnFailure)
+		}
+		if cfg.Webhooks != nil {
+			fmt.Println("webhooks:")
+			for name, wh := range cfg.Webhooks {
+				fmt.Printf("  %s:\n", name)
+				fmt.Printf("    url: %s\n", wh.URL)
+				if len(wh.Events) > 0 {
+					fmt.Printf("    events:\n")
+					for _, e := range wh.Events {
+						fmt.Printf("      - %s\n", e)
+					}
+				}
+			}
+		}
+		return
+	}
+
+	// Config is valid
+	fmt.Println("✓ Config is valid")
 }
 
 func stopOnIdleCmd() {
