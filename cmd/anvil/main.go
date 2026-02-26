@@ -1229,8 +1229,10 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 }
 
 
-// truncate shortens a string to the specified length
+// truncate shortens a string to the specified length, collapsing any
+// embedded newlines/whitespace runs into single spaces for table display.
 func truncate(s string, maxLen int) string {
+	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= maxLen {
 		return s
 	}
@@ -1302,6 +1304,7 @@ func listCmd() {
 
 	for _, t := range todos {
 		preview := strings.TrimSpace(t.Content)
+		preview = strings.Join(strings.Fields(preview), " ")
 		if len(preview) > 60 {
 			preview = preview[:60] + "..."
 		}
@@ -1901,6 +1904,7 @@ func taskLsCmd(args []string) {
 				}
 			}
 			preview := strings.TrimSpace(t.Content)
+			preview = strings.Join(strings.Fields(preview), " ")
 			if len(preview) > 50 {
 				preview = preview[:50] + "..."
 			}
@@ -2434,8 +2438,8 @@ func taskHistoryCmd(args []string) {
 		if !rec.Success {
 			status = "failed"
 			if rec.Error != "" {
-				// Truncate error for display
-				errMsg := rec.Error
+				// Truncate error for display, collapse newlines
+				errMsg := strings.Join(strings.Fields(rec.Error), " ")
 				if len(errMsg) > 20 {
 					errMsg = errMsg[:20] + "..."
 				}
