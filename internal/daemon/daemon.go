@@ -134,6 +134,10 @@ type Daemon struct {
 	// persistent task during this daemon lifetime.  Resets on daemon restart.
 	persistentBudgetUsed   map[string]time.Duration
 	persistentBudgetUsedMu sync.Mutex
+	// Dashboard counters
+	startedAt      time.Time
+	completedCount int64 // atomic
+	failedCount    int64 // atomic
 }
 
 type RunningTask struct {
@@ -205,6 +209,7 @@ func New(cfg *config.Config) *Daemon {
 
 func (d *Daemon) Run() {
 	defer close(d.done)
+	d.startedAt = time.Now()
 
 	// Write PID file on startup
 	if err := checkAndWritePID(); err != nil {
@@ -679,6 +684,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	if forceCycled {
 		// Force-cycle is a normal lifecycle event, not a failure.
 		// Log it clearly and skip failure backoff/runner cooldown.
+		atomic.AddInt64(&d.completedCount, 1)
 		dlog.Info("persistent task %s force-cycled after %v — will restart on next tick", t.Name, elapsed.Round(time.Second))
 		// Clear failure count since force-cycle is not a real failure
 		d.persistentFailuresMu.Lock()
@@ -688,6 +694,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		runRecord.Success = true
 		runRecord.Error = ""
 	} else if err != nil {
+		atomic.AddInt64(&d.failedCount, 1)
 		dlog.WorkerFail(workerID, projName, t.Name, err)
 		// If the runner failed, set a 5-minute cooldown to avoid retrying it immediately
 		if usedRunnerIdx >= 0 {
@@ -721,6 +728,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v", t.Name, failCount, backoffDuration)
 		}
 	} else {
+		atomic.AddInt64(&d.completedCount, 1)
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
 		// Run on_success hook if defined
 		if t.OnSuccess != "" {
@@ -877,6 +885,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/reload", d.handleReload)
 	mux.HandleFunc("/stop", d.handleStopTask)
 	mux.HandleFunc("/start", d.handleStartTask)
+	mux.HandleFunc("/health", d.handleHealth)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -1094,7 +1103,14 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 
 // DaemonStatus holds runtime state about the daemon.
 type DaemonStatus struct {
-	Draining bool `json:"draining"`
+	Draining  bool   `json:"draining"`
+	PID       int    `json:"pid"`
+	Uptime    string `json:"uptime"`
+	StartedAt string `json:"started_at"`
+	Workers   int    `json:"workers"`
+	Running   int    `json:"running"`
+	Completed int64  `json:"completed"`
+	Failed    int64  `json:"failed"`
 }
 
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -1102,11 +1118,79 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	d.tasksMu.RLock()
+	running := len(d.tasks)
+	d.tasksMu.RUnlock()
+
 	status := DaemonStatus{
-		Draining: atomic.LoadInt32(&d.draining) == 1,
+		Draining:  atomic.LoadInt32(&d.draining) == 1,
+		PID:       os.Getpid(),
+		Uptime:    time.Since(d.startedAt).Round(time.Second).String(),
+		StartedAt: d.startedAt.Format(time.RFC3339),
+		Workers:   d.config.MaxWorkers,
+		Running:   running,
+		Completed: atomic.LoadInt64(&d.completedCount),
+		Failed:    atomic.LoadInt64(&d.failedCount),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+// HealthResponse is returned by the /health endpoint.
+type HealthResponse struct {
+	Healthy         bool                `json:"healthy"`
+	WorkersTotal    int                 `json:"workers_total"`
+	WorkersAvail    int                 `json:"workers_available"`
+	WatchedProjects int                 `json:"watched_projects"`
+	TasksRunning    int                 `json:"tasks_running"`
+	DaemonUptime    string              `json:"daemon_uptime,omitempty"`
+	Components      map[string]string   `json:"components,omitempty"`
+}
+
+func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	d.tasksMu.RLock()
+	running := len(d.tasks)
+	d.tasksMu.RUnlock()
+
+	draining := atomic.LoadInt32(&d.draining) == 1
+	projects := loadWatchedPaths()
+	avail := d.config.MaxWorkers - running
+	if avail < 0 {
+		avail = 0
+	}
+
+	healthy := !draining
+	resp := HealthResponse{
+		Healthy:         healthy,
+		WorkersTotal:    d.config.MaxWorkers,
+		WorkersAvail:    avail,
+		WatchedProjects: len(projects),
+		TasksRunning:    running,
+	}
+
+	// Detailed mode includes component status and uptime
+	if r.URL.Query().Get("detailed") == "true" {
+		resp.DaemonUptime = time.Since(d.startedAt).Round(time.Second).String()
+		resp.Components = map[string]string{
+			"socket_server":    "ok",
+			"config_loaded":    "ok",
+			"watched_projects": "ok",
+		}
+		if len(projects) == 0 {
+			resp.Components["watched_projects"] = "warn: no projects watched"
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if !healthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (d *Daemon) handleDrain(w http.ResponseWriter, r *http.Request) {
@@ -2125,4 +2209,22 @@ func SendReloadRequest() error {
 	}
 
 	return nil
+}
+
+func SendHealthRequest(detailed bool) (*HealthResponse, error) {
+	url := "http://daemon/health"
+	if detailed {
+		url += "?detailed=true"
+	}
+	resp, err := socketClient().Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var health HealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return nil, err
+	}
+	return &health, nil
 }

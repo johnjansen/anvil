@@ -97,6 +97,8 @@ func main() {
 		updateCmd(os.Args[2:])
 	case "reload":
 		reloadCmd(os.Args[2:])
+	case "health":
+		healthCmd(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("anvil %s\n", version)
 	case "help", "-h", "--help":
@@ -128,6 +130,7 @@ Commands:
   status [--json]          Show watched projects and daemon status
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
+  health [--json] [-d]     Check daemon health (exits 1 if unhealthy)
   update [--check]         Update anvil to the latest release
   version                  Show version
 
@@ -739,6 +742,68 @@ func reloadCmd(args []string) {
 	}
 
 	fmt.Println("config reload triggered")
+}
+
+func healthCmd(args []string) {
+	jsonOutput := false
+	detailed := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOutput = true
+		}
+		if a == "--detailed" || a == "-d" {
+			detailed = true
+		}
+	}
+
+	if !daemon.IsDaemonRunning() {
+		if jsonOutput {
+			fmt.Println(`{"healthy":false,"error":"daemon not running"}`)
+		} else {
+			fmt.Println("unhealthy: daemon not running")
+		}
+		os.Exit(1)
+	}
+
+	health, err := daemon.SendHealthRequest(detailed)
+	if err != nil {
+		if jsonOutput {
+			fmt.Printf(`{"healthy":false,"error":%q}`+"\n", err.Error())
+		} else {
+			fmt.Printf("unhealthy: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	if jsonOutput {
+		data, _ := json.MarshalIndent(health, "", "  ")
+		fmt.Println(string(data))
+		if !health.Healthy {
+			os.Exit(1)
+		}
+		return
+	}
+
+	if health.Healthy {
+		fmt.Println("healthy")
+	} else {
+		fmt.Println("unhealthy: daemon is draining")
+	}
+	fmt.Printf("  workers: %d/%d available\n", health.WorkersAvail, health.WorkersTotal)
+	fmt.Printf("  projects: %d watched\n", health.WatchedProjects)
+	fmt.Printf("  tasks: %d running\n", health.TasksRunning)
+	if health.DaemonUptime != "" {
+		fmt.Printf("  uptime: %s\n", health.DaemonUptime)
+	}
+	if health.Components != nil {
+		fmt.Println("  components:")
+		for k, v := range health.Components {
+			fmt.Printf("    %s: %s\n", k, v)
+		}
+	}
+	if !health.Healthy {
+		os.Exit(1)
+	}
 }
 
 func cleanupCmd(args []string) {
