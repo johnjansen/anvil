@@ -772,6 +772,7 @@ anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
+anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes (exit 0=ok, 1=fail, 2=timeout)
 anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)
