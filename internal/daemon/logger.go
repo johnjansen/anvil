@@ -132,11 +132,13 @@ func (l *daemonLogger) ts() string {
 }
 
 func (l *daemonLogger) println(line string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Serialize stdout writes to prevent interleaved output from concurrent workers.
 	fmt.Fprintln(os.Stdout, line)
 
 	// Write a plain (no ANSI) copy to the log file.
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.logFile != nil {
 		plain := ansiPattern.ReplaceAllString(line, "") + "\n"
 		n, _ := l.logFile.WriteString(plain)
