@@ -134,7 +134,7 @@ Commands:
   project <subcommand>     Project management commands
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
-  reload                   Reload daemon configuration
+  reload [--graceful]       Reload daemon configuration (--graceful waits for tasks)
   version                  Show version
 
 Add options:
@@ -765,14 +765,41 @@ func statusCmd(args []string) {
 }
 
 func reloadCmd(args []string) {
-	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
-		fmt.Println("Usage: anvil reload")
-		fmt.Println("")
-		fmt.Println("Reload the daemon configuration without restarting.")
-		fmt.Println("")
-		fmt.Println("Sends SIGHUP to the daemon to reload ~/.anvil/config.yaml.")
-		fmt.Println("New tasks will use the updated config; running tasks are unaffected.")
-		return
+	graceful := false
+	timeoutStr := ""
+
+	for _, a := range args {
+		switch a {
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil reload [--graceful] [--timeout duration]
+
+Reload the daemon configuration without restarting.
+
+Sends SIGHUP to the daemon to reload ~/.anvil/config.yaml.
+New tasks will use the updated config; running tasks are unaffected.
+
+Options:
+  --graceful           Wait for running tasks to complete before reloading
+  --timeout duration   Max time to wait for tasks (default: 5m). Forces reload after timeout.
+`)
+			return
+		case "--graceful":
+			graceful = true
+		default:
+			if strings.HasPrefix(a, "--timeout=") {
+				timeoutStr = strings.TrimPrefix(a, "--timeout=")
+			} else if strings.HasPrefix(a, "--timeout") {
+				// handled below with next arg
+			}
+		}
+	}
+
+	// Parse --timeout value (may be space-separated)
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--timeout" && i+1 < len(args) {
+			timeoutStr = args[i+1]
+			break
+		}
 	}
 
 	if !daemon.IsDaemonRunning() {
@@ -780,12 +807,86 @@ func reloadCmd(args []string) {
 		return
 	}
 
-	if err := daemon.SendReloadRequest(); err != nil {
-		fmt.Printf("failed to reload config: %v\n", err)
+	if !graceful {
+		// Immediate reload (original behavior)
+		if err := daemon.SendReloadRequest(); err != nil {
+			fmt.Printf("failed to reload config: %v\n", err)
+			return
+		}
+		fmt.Println("config reload triggered")
 		return
 	}
 
-	fmt.Println("config reload triggered")
+	// Graceful reload: wait for running tasks to complete first
+	timeoutDur := 5 * time.Minute
+	if timeoutStr != "" {
+		d, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			log.Fatalf("invalid timeout duration: %s (use format like 5m, 30s, 1h)", timeoutStr)
+		}
+		timeoutDur = d
+	}
+
+	// Check for running tasks
+	tasks, err := daemon.SendPsRequest()
+	if err != nil {
+		log.Fatalf("failed to check running tasks: %v", err)
+	}
+
+	if len(tasks) == 0 {
+		// No running tasks, reload immediately
+		if err := daemon.SendReloadRequest(); err != nil {
+			fmt.Printf("failed to reload config: %v\n", err)
+			return
+		}
+		fmt.Println("no running tasks — config reload triggered")
+		return
+	}
+
+	fmt.Printf("Waiting for %d running task(s) to complete (timeout: %s)...\n", len(tasks), timeoutDur)
+	for _, t := range tasks {
+		fmt.Printf("  - %s/%s (running %s)\n", t.Project, t.Name, t.Elapsed)
+	}
+
+	deadline := time.After(timeoutDur)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	startTime := time.Now()
+
+	for {
+		select {
+		case <-deadline:
+			fmt.Fprintf(os.Stderr, "\nTimeout reached (%s). Force-reloading daemon...\n", timeoutDur)
+			if err := daemon.SendReloadRequest(); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to reload config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("config reload triggered (forced after timeout)")
+			return
+		case <-ticker.C:
+			tasks, err := daemon.SendPsRequest()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "daemon unreachable: %v\n", err)
+				os.Exit(1)
+			}
+			if len(tasks) == 0 {
+				// All tasks finished
+				if err := daemon.SendReloadRequest(); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to reload config: %v\n", err)
+					os.Exit(1)
+				}
+				elapsed := time.Since(startTime).Round(time.Second)
+				fmt.Printf("\nAll tasks completed (%s). Config reload triggered.\n", elapsed)
+				return
+			}
+			elapsed := time.Since(startTime).Round(time.Second)
+			remaining := timeoutDur - time.Since(startTime)
+			if remaining < 0 {
+				remaining = 0
+			}
+			fmt.Printf("\r  %d task(s) still running... (%s elapsed, %s remaining)  ", len(tasks), elapsed, remaining.Round(time.Second))
+		}
+	}
 }
 
 func cleanupCmd(args []string) {
