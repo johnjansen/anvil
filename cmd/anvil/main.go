@@ -355,10 +355,11 @@ func serveCmd() {
 	}
 }
 
-// watchCmd2 handles "anvil watch" with optional --daemonize/-d, --stop, and --child flags.
+// watchCmd2 handles "anvil watch" with optional --daemonize/-d, --stop, --restart, and --child flags.
 func watchCmd2(args []string) {
 	daemonize := false
 	stop := false
+	restart := false
 	child := false
 	install := false
 	uninstall := false
@@ -372,6 +373,8 @@ func watchCmd2(args []string) {
 			daemonize = true
 		case "--stop":
 			stop = true
+		case "--restart":
+			restart = true
 		case "--child":
 			child = true
 		case "--install":
@@ -420,6 +423,11 @@ func watchCmd2(args []string) {
 		} else {
 			stopDaemon(force)
 		}
+		return
+	}
+
+	if restart {
+		restartDaemon(gracefulTimeout)
 		return
 	}
 
@@ -745,6 +753,27 @@ func stopDaemonGraceful(timeoutStr string) {
 			}
 		}
 	}
+}
+
+func restartDaemon(timeoutStr string) {
+	pid := readDaemonPID()
+	if pid == 0 {
+		fmt.Fprintln(os.Stderr, "no daemon running, starting fresh...")
+		daemonizeProcess()
+		return
+	}
+
+	fmt.Println("Restarting daemon...")
+
+	// Use graceful stop if daemon is running
+	stopDaemonGraceful(timeoutStr)
+
+	// Small delay to ensure clean shutdown
+	time.Sleep(500 * time.Millisecond)
+
+	// Start the daemon again
+	fmt.Println("Starting daemon...")
+	daemonizeProcess()
 }
 
 // watchCmd is the legacy "register a project" command, now superseded by
