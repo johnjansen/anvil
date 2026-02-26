@@ -484,6 +484,7 @@ The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`
 anvil task ls           # list tasks in current project
 anvil task ls --all     # list tasks across all watched projects
 anvil task ls -a        # short form
+anvil task ls --json    # output in JSON format
 ```
 
 Output columns: priority, schedule, status (running/idle/disabled/locked), name, content preview. A `disabled` status means the task is paused (set `disabled: true` in frontmatter) — use `anvil task resume <name>` to re-enable. A `locked` status means a stale lock file was found — this typically indicates the daemon crashed mid-execution. Use `anvil task unlock <name>` to remove the stale lock and allow the task to run again.
@@ -492,6 +493,7 @@ Output columns: priority, schedule, status (running/idle/disabled/locked), name,
 
 ```bash
 anvil task get <name>
+anvil task get <name> --json
 ```
 
 Shows full details: file path, ID, schedule, priority, session path (if exists), run status, and full content. The name can be with or without the `.md` extension.

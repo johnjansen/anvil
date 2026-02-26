@@ -359,14 +359,15 @@ anvil cleanup -o=24h
 
 | Command | Description |
 |---------|-------------|
+| `anvil init [path]` | Initialize a project |
+| `anvil register [path]` | Register a project for watching (without full init) |
 | `anvil watch` | Start the daemon |
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil watch --stop` | Stop the running daemon |
 | `anvil watch --install` | Install as system service (auto-start on boot) |
 | `anvil watch --uninstall` | Remove the system service |
 | `anvil watch --status` | Show system service status |
-| `anvil init [path]` | Initialize a project |
-| `anvil add [opts] <task>` | Add a task (`-s` schedule, `-p` priority 0-9, `-f` file, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
+| `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
 | `anvil ps` | Show running tasks |
@@ -383,9 +384,9 @@ anvil cleanup -o=24h
 | Command | Description |
 |---------|-------------|
 | `anvil task ls` | List tasks in current project |
+| `anvil task ls [-a|--all] [--json]` | List tasks across all projects |
+| `anvil task get <name> [--json]` | Show task details |
 | `anvil task run <name>` | Trigger immediate execution (bypass cron) |
-| `anvil task ls [-a|--all]` | List tasks across all projects |
-| `anvil task get <name>` | Show task details |
 | `anvil task log <name>` | Show execution log |
 | `anvil task log -f <name>` | Follow live log output |
 | `anvil task rm <name>` | Remove a task |
