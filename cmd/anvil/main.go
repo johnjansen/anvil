@@ -1875,6 +1875,8 @@ func taskCmd(args []string) {
 		taskQueueCmd(args[1:])
 	case "timeout":
 		taskTimeoutCmd(args[1:])
+	case "extend-timeout":
+		taskExtendTimeoutCmd(args[1:])
 	case "start":
 		taskStartCmd(args[1:])
 	case "stop":
