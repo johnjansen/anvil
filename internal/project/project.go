@@ -209,6 +209,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var persistentBudget time.Duration
 			var maxLogSize int64
 			runnerOverride := ""
+			var runnerChain []string
+			runnerOnTimeout := ""
 			webhookURL := ""
 			var labels []string
 			var envVars map[string]string
@@ -289,6 +291,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							maxLogSize, _ = config.ParseByteSize(fmData.MaxLogSize)
 						}
 						runnerOverride = fmData.Runner
+						runnerChain = fmData.RunnerChain
+						runnerOnTimeout = fmData.RunnerOnTimeout
 						webhookURL = fmData.Webhook
 						labels = fmData.Labels
 						envVars = fmData.Env
