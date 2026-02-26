@@ -545,7 +545,7 @@ anvil cleanup -o=24h
 | `anvil watch --install` | Install as system service (auto-start on boot) |
 | `anvil watch --uninstall` | Remove the system service |
 | `anvil watch --status` | Show system service status |
-| `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `-t|--template`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
+| `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `-t|--template`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`, `--strict`, `--no-overlap-check`) |
 | `anvil template ls` | List available task templates |
 | `anvil template get <name>` | Show template details |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
