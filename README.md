@@ -271,6 +271,7 @@ auto_update: false       # opt-in: auto-update binary on daemon startup
 retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
+  max_log_size: 50mb  # max size per log file (0 = unlimited)
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
@@ -337,6 +338,7 @@ Configure automatic cleanup of old logs and session data in `~/.anvil/config.yam
 retention:
   max_age: 7d    # delete logs older than 7 days
   max_runs: 50   # keep only last 50 runs per task
+  max_log_size: 50mb  # max size per log file (0 = unlimited)
 ```
 
 Or run cleanup manually:

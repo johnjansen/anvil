@@ -129,7 +129,6 @@ Commands:
   ps [--json] [-w|--watch] Show running tasks (--watch for live updates)
   status [--json]          Show watched projects and daemon status
   project <subcommand>     Project management commands
-  ps [--watch|-f] [--json] Show running tasks (--watch for live dashboard)
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
   version                  Show version

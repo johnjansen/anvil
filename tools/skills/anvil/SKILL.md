@@ -405,6 +405,7 @@ hooks:
 retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
+  max_log_size: 50mb  # max size per log file (0 = unlimited)
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
@@ -444,6 +445,7 @@ Configure automatic cleanup of old logs and session data in `~/.anvil/config.yam
 retention:
   max_age: 7d    # delete logs older than 7 days
   max_runs: 50   # keep only last 50 runs per task
+  max_log_size: 50mb  # max size per log file (0 = unlimited)
 ```
 
 Or run cleanup manually:
