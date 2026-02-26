@@ -555,6 +555,31 @@ On the next run, the daemon sets `ANVIL_CHECKPOINT_DATA` to the last emitted che
 - Multiple `##anvil:checkpoint` lines can be emitted; the last one wins
 - Checkpoint data is stored in the run record and visible via `anvil task get`
 
+## Pipeline Visualization
+
+Visualize task dependency pipelines to understand how tasks are connected:
+
+```bash
+anvil task pipeline                    # show pipeline for current project
+anvil task pipeline --verbose          # show detailed pipeline info
+anvil task pipeline --dot             # output in GraphViz DOT format
+anvil task pipeline --all             # show pipelines across all watched projects
+```
+
+Output formats:
+- **Default** — ASCII tree showing task dependencies
+- `--verbose` — detailed view with schedule and last run status for each task
+- `--dot` — GraphViz DOT format for rendering with tools like `dot`
+
+```bash
+# Export to DOT and render with GraphViz
+anvil task pipeline --dot > pipeline.dot
+dot -Tpng pipeline.dot -o pipeline.png
+
+# Show all project pipelines
+anvil task pipeline --all --verbose
+```
+
 ## Runtime Status Reporting
 
 Tasks can report their current status to the daemon by printing a special line to stdout:
@@ -899,6 +924,7 @@ anvil task resume <name>             # resume a paused task (sets disabled: fals
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
 anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes (exit 0=ok, 1=fail, 2=timeout)
 anvil task analyze [--all]         # analyze task schedules for potential conflicts
+anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
 anvil task reset-budget <name>    # reset persistent task budget consumption
 anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
