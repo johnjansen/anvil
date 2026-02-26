@@ -101,6 +101,8 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
+	StateBucket          string        // named state bucket for structured state persistence
+	StateKey             string        // key within bucket (default: task ID)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -202,6 +204,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var envVars map[string]string
 			var dependsOn []string
 			checkpoint := false
+			stateBucket := ""
+			stateKey := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -238,6 +242,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
+						StateBucket          string            `yaml:"state_bucket"`
+						StateKey             string            `yaml:"state_key"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -278,6 +284,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
 						checkpoint = fmData.Checkpoint
+						stateBucket = fmData.StateBucket
+						stateKey = fmData.StateKey
 					}
 				}
 			}
@@ -319,6 +327,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
+				StateBucket:          stateBucket,
+				StateKey:             stateKey,
 			})
 		}
 	}
@@ -824,4 +834,57 @@ func ListTemplates(projectPath string) ([]Template, error) {
 		}
 	}
 	return templates, nil
+}
+
+// StatePath returns the file path for a task's state file.
+// State is stored at ~/.anvil/state/<bucket>/<key>.json
+func StatePath(bucket, key string) string {
+	return filepath.Join(config.StateDir(), bucket, key+".json")
+}
+
+// ReadState reads the JSON state for a given bucket/key.
+// Returns empty string if no state exists.
+func ReadState(bucket, key string) (string, error) {
+	p := StatePath(bucket, key)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// WriteState writes JSON state for a given bucket/key.
+func WriteState(bucket, key, data string) error {
+	p := StatePath(bucket, key)
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(data), 0644)
+}
+
+// ClearState removes the state file for a given bucket/key.
+func ClearState(bucket, key string) error {
+	p := StatePath(bucket, key)
+	err := os.Remove(p)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// ResolveStateBucketKey returns the effective bucket and key for a task.
+// If bucket is empty, returns empty strings (no state configured).
+// If key is empty, defaults to the task ID.
+func ResolveStateBucketKey(t Todo) (string, string) {
+	if t.StateBucket == "" {
+		return "", ""
+	}
+	key := t.StateKey
+	if key == "" {
+		key = t.ID
+	}
+	return t.StateBucket, key
 }

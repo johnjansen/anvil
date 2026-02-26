@@ -176,6 +176,7 @@ Task subcommands:
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
   analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
   pipeline [--dot|--verbose] [--all]  Visualize task dependency pipelines
+  state <name> [--export|--import|--clear]  View or manage task state
   reset-budget <name>        Reset persistent task budget consumption
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
@@ -1847,6 +1848,8 @@ func taskCmd(args []string) {
 		taskWaitCmd(args[1:])
 	case "analyze":
 		taskAnalyzeCmd(args[1:])
+	case "state":
+		taskStateCmd(args[1:])
 	case "reset-budget":
 		taskResetBudgetCmd(args[1:])
 	case "pipeline":
@@ -6056,6 +6059,119 @@ Options:
 
 	fmt.Printf("\n%d overlap(s) across %d time group(s). Consider staggering schedules or increasing max_workers.\n", totalConflicts, len(groupList))
 	os.Exit(1)
+}
+
+func taskStateCmd(args []string) {
+	exportPath := ""
+	importPath := ""
+	clear := false
+
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil task state <name> [--export file] [--import file] [--clear]
+
+View or manage structured task state.
+
+Options:
+  --export file    Export state to a JSON file
+  --import file    Import state from a JSON file
+  --clear          Clear the task's state
+`)
+			os.Exit(0)
+		case "--export":
+			if i+1 < len(args) {
+				i++
+				exportPath = args[i]
+			}
+		case "--import":
+			if i+1 < len(args) {
+				i++
+				importPath = args[i]
+			}
+		case "--clear":
+			clear = true
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+
+	if len(positional) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task state <name> [--export file] [--import file] [--clear]\n")
+		os.Exit(1)
+	}
+
+	taskName := positional[0]
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	bucket, key := project.ResolveStateBucketKey(*todo)
+	if bucket == "" {
+		fmt.Fprintf(os.Stderr, "task %s has no state_bucket configured\n", taskName)
+		fmt.Fprintf(os.Stderr, "Add 'state_bucket: <name>' to the task frontmatter to enable state management\n")
+		os.Exit(1)
+	}
+
+	if clear {
+		if err := project.ClearState(bucket, key); err != nil {
+			log.Fatalf("failed to clear state: %v", err)
+		}
+		fmt.Printf("state cleared for %s (bucket: %s, key: %s)\n", taskName, bucket, key)
+		return
+	}
+
+	if importPath != "" {
+		data, err := os.ReadFile(importPath)
+		if err != nil {
+			log.Fatalf("failed to read %s: %v", importPath, err)
+		}
+		if err := project.WriteState(bucket, key, string(data)); err != nil {
+			log.Fatalf("failed to write state: %v", err)
+		}
+		fmt.Printf("state imported from %s (bucket: %s, key: %s)\n", importPath, bucket, key)
+		return
+	}
+
+	// Read current state
+	data, err := project.ReadState(bucket, key)
+	if err != nil {
+		log.Fatalf("failed to read state: %v", err)
+	}
+
+	if data == "" {
+		fmt.Printf("no state for %s (bucket: %s, key: %s)\n", taskName, bucket, key)
+		return
+	}
+
+	if exportPath != "" {
+		if err := os.WriteFile(exportPath, []byte(data), 0644); err != nil {
+			log.Fatalf("failed to write %s: %v", exportPath, err)
+		}
+		fmt.Printf("state exported to %s\n", exportPath)
+		return
+	}
+
+	// Display state
+	fmt.Printf("State for %s (bucket: %s, key: %s):\n", taskName, bucket, key)
+	fmt.Println(data)
 }
 
 // formatDurationShort formats a duration as short human-readable relative time.

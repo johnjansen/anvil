@@ -146,8 +146,15 @@ func DaemonLogPath() string {
 	return filepath.Join(Dir(), "daemon.log")
 }
 
+func StateDir() string {
+	return filepath.Join(Dir(), "state")
+}
+
 func EnsureDir() error {
 	if err := os.MkdirAll(Dir(), 0755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(StateDir(), 0755); err != nil {
 		return err
 	}
 	return os.MkdirAll(WatchedDir(), 0755)

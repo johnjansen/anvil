@@ -718,6 +718,23 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			}
 		}
 
+		// If state bucket is configured, set up state file for the task
+		if bucket, key := project.ResolveStateBucketKey(t); bucket != "" {
+			if mergedEnv == nil {
+				mergedEnv = make(map[string]string)
+			}
+			stateFile := project.StatePath(bucket, key)
+			// Ensure the state directory exists
+			os.MkdirAll(filepath.Dir(stateFile), 0755)
+			// Create empty state file if it doesn't exist
+			if _, err := os.Stat(stateFile); os.IsNotExist(err) {
+				os.WriteFile(stateFile, []byte("{}"), 0644)
+			}
+			mergedEnv["ANVIL_STATE_FILE"] = stateFile
+			mergedEnv["ANVIL_STATE_BUCKET"] = bucket
+			mergedEnv["ANVIL_STATE_KEY"] = key
+		}
+
 		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
