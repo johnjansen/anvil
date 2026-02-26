@@ -64,7 +64,7 @@ func main() {
 	case "cleanup":
 		cleanupCmd(os.Args[2:])
 	case "ps":
-		psCmd()
+		psCmd(os.Args[2:])
 	case "init":
 		initCmd(os.Args[2:])
 	case "register":
@@ -129,6 +129,7 @@ Commands:
   ps [--json] [-w|--watch] Show running tasks (--watch for live updates)
   status [--json]          Show watched projects and daemon status
   project <subcommand>     Project management commands
+  ps [--watch|-f] [--json] Show running tasks (--watch for live dashboard)
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
   version                  Show version
@@ -503,37 +504,6 @@ func daemonizeProcess() {
 
 	logFile.Close()
 	fmt.Fprintf(os.Stderr, "daemon started (PID %d)\n", cmd.Process.Pid)
-}
-
-// detachToBackground stops the current foreground daemon and starts a new detached child process.
-// This is triggered when user presses 'd' or Ctrl+D during foreground watch.
-func detachToBackground() {
-	if err := config.EnsureDir(); err != nil {
-		log.Fatalf("failed to create ~/.anvil: %v", err)
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		log.Fatalf("failed to find executable path: %v", err)
-	}
-
-	logFile, err := os.OpenFile(config.DaemonLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		log.Fatalf("failed to open daemon log: %v", err)
-	}
-
-	cmd := exec.Command(exe, "watch", "--child")
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		log.Fatalf("failed to start daemon: %v", err)
-	}
-
-	logFile.Close()
-	fmt.Printf("Detached to background (PID %d). Use 'anvil ps' to monitor.\n", cmd.Process.Pid)
 }
 
 // runDaemonChild is the internal entry point for the detached child process.
@@ -932,28 +902,24 @@ func pruneDir(dir string, maxAge time.Duration, maxRuns int, dryRun bool) (int, 
 	return deleted, freed
 }
 
-func psCmd() {
+func psCmd(args []string) {
 	jsonOutput := false
 	watchMode := false
-	for _, a := range os.Args[2:] {
+	for _, a := range args {
 		switch a {
 		case "--json":
 			jsonOutput = true
-		case "--watch", "-w":
+		case "--watch", "-f":
 			watchMode = true
 		}
 	}
 
 	if watchMode {
-		psWatch(jsonOutput)
+		psWatch()
 		return
 	}
 
-	psOnce(jsonOutput)
-}
 
-// psOnce prints the current running tasks once and returns.
-func psOnce(jsonOutput bool) {
 	if !daemon.IsDaemonRunning() {
 		if jsonOutput {
 			fmt.Println("[]")
@@ -1018,93 +984,250 @@ func psOnce(jsonOutput bool) {
 	}
 }
 
-// psWatch continuously refreshes the running tasks display every 2 seconds.
-func psWatch(jsonOutput bool) {
+// psWatch runs a live-updating dashboard that refreshes every 3 seconds.
+// Press q or Ctrl+C to exit.
+func psWatch() {
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	// Read daemon PID
+	daemonPID := 0
+	if data, err := os.ReadFile(config.PidFile()); err == nil {
+		pidStr := strings.TrimSpace(string(data))
+		daemonPID, _ = strconv.Atoi(pidStr)
+	}
+
+	// Load config for max_workers
+	cfg, _ := config.Load()
+	maxWorkers := 4
+	if cfg != nil && cfg.MaxWorkers > 0 {
+		maxWorkers = cfg.MaxWorkers
+	}
+
+	// Set up terminal raw mode for key detection
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		// Fall back to non-interactive mode
+		psWatchLoop(daemonPID, maxWorkers, nil)
+		return
+	}
+	defer term.Restore(fd, oldState)
+
+	// Channel for quit signal
+	quit := make(chan struct{})
+
+	// Read keypresses in background
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				close(quit)
+				return
+			}
+			if buf[0] == 'q' || buf[0] == 'Q' || buf[0] == 3 { // q, Q, or Ctrl+C
+				close(quit)
+				return
+			}
+		}
+	}()
+
+	psWatchLoop(daemonPID, maxWorkers, quit)
+}
+
+func psWatchLoop(daemonPID, maxWorkers int, quit <-chan struct{}) {
+	// Handle Ctrl+C via signal if no quit channel
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
-	first := true
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	// Render immediately, then on each tick
 	for {
+		psRenderDashboard(daemonPID, maxWorkers)
+
 		select {
+		case <-ticker.C:
+			continue
 		case <-sigCh:
+			fmt.Print("\033[?25h") // show cursor
 			return
-		default:
-		}
-
-		if !first {
-			time.Sleep(2 * time.Second)
-		}
-		first = false
-
-		if jsonOutput {
-			// In JSON watch mode, output one JSON array per cycle
-			if !daemon.IsDaemonRunning() {
-				fmt.Println("[]")
-				continue
-			}
-			tasks, err := daemon.SendPsRequest()
-			if err != nil {
-				fmt.Println("[]")
-				continue
-			}
-			if len(tasks) == 0 {
-				fmt.Println("[]")
-				continue
-			}
-			data, err := json.MarshalIndent(tasks, "", "  ")
-			if err != nil {
-				fmt.Println("[]")
-				continue
-			}
-			fmt.Println(string(data))
-			continue
-		}
-
-		// Text mode: clear screen and redraw
-		fmt.Print("\033[2J\033[H") // ANSI: clear screen and move cursor to top-left
-
-		now := time.Now().Format("15:04:05")
-		fmt.Printf("Every 2s: anvil ps --watch                                  %s\n\n", now)
-
-		if !daemon.IsDaemonRunning() {
-			fmt.Println("daemon not running")
-			continue
-		}
-
-		if status, err := daemon.SendStatusRequest(); err == nil && status.Draining {
-			fmt.Println("(draining — no new tasks will be dispatched)")
-		}
-
-		tasks, err := daemon.SendPsRequest()
-		if err != nil {
-			fmt.Printf("failed to get tasks: %v\n", err)
-			continue
-		}
-
-		if len(tasks) == 0 {
-			fmt.Println("no running tasks")
-			continue
-		}
-
-		fmt.Printf("%-30s %-20s %-10s %-10s %-30s %s\n", "PROJECT", "TASK", "PID", "ELAPSED", "STATUS", "STARTED")
-		fmt.Printf("%s\n", strings.Repeat("-", 120))
-
-		for _, t := range tasks {
-			status := ""
-			if t.Status != "" {
-				status = t.Status
-			}
-			fmt.Printf("%-30s %-20s %-10d %-10s %-30s %s\n",
-				truncate(t.Project, 30),
-				truncate(t.Name, 20),
-				t.PID,
-				t.Elapsed,
-				truncate(status, 30),
-				t.Started)
+		case <-quit:
+			fmt.Print("\033[?25h") // show cursor
+			return
 		}
 	}
 }
+
+func psRenderDashboard(daemonPID, maxWorkers int) {
+	// Clear screen and move to top
+	fmt.Print("\033[2J\033[H")
+	fmt.Print("\033[?25l") // hide cursor
+
+	// Check daemon is still running
+	if !daemon.IsDaemonRunning() {
+		fmt.Println("daemon not running")
+		return
+	}
+
+	// Gather data
+	tasks, _ := daemon.SendPsRequest()
+	queue, _ := daemon.SendQueueRequest()
+	status, _ := daemon.SendStatusRequest()
+	watched, _ := loadAllWatched()
+
+	// Count total todos across projects
+	totalTasks := 0
+	for _, w := range watched {
+		proj, err := project.Load(w.Path)
+		if err != nil {
+			continue
+		}
+		todos, _ := proj.LoadTodos()
+		totalTasks += len(todos)
+	}
+
+	// Header line
+	drainNote := ""
+	if status != nil && status.Draining {
+		drainNote = " (draining)"
+	}
+	fmt.Printf("anvil daemon (PID %d), %d projects, %d tasks — %d workers%s\n",
+		daemonPID, len(watched), totalTasks, maxWorkers, drainNote)
+	fmt.Println()
+
+	// RUNNING section
+	runningTasks := tasks
+	fmt.Printf("RUNNING (%d)\n", len(runningTasks))
+	if len(runningTasks) == 0 {
+		fmt.Println("  (none)")
+	}
+	for _, t := range runningTasks {
+		projectName := filepath.Base(t.Project)
+		statusStr := ""
+		if t.Status != "" {
+			statusStr = "  " + t.Status
+		}
+		fmt.Printf("  %-40s %8s%s\n",
+			truncate(projectName+"/"+t.Name, 40),
+			t.Elapsed,
+			statusStr)
+	}
+	fmt.Println()
+
+	// IDLE workers
+	idleCount := maxWorkers - len(runningTasks)
+	if idleCount < 0 {
+		idleCount = 0
+	}
+	fmt.Printf("IDLE (%d)\n", idleCount)
+	fmt.Println()
+
+	// PENDING / SKIPPED from queue
+	var pending []daemon.TaskQueueInfo
+	var skipped []daemon.TaskQueueInfo
+	for _, q := range queue {
+		switch q.Status {
+		case "pending":
+			pending = append(pending, q)
+		case "skipped":
+			skipped = append(skipped, q)
+		}
+	}
+
+	if len(pending) > 0 {
+		fmt.Printf("PENDING (%d)\n", len(pending))
+		for _, q := range pending {
+			projectName := filepath.Base(q.Project)
+			fmt.Printf("  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), q.Schedule)
+		}
+		fmt.Println()
+	}
+
+	if len(skipped) > 0 {
+		fmt.Printf("SKIPPED (%d)\n", len(skipped))
+		for _, q := range skipped {
+			projectName := filepath.Base(q.Project)
+			reason := q.SkipReason
+			if reason == "" {
+				reason = "unknown"
+			}
+			fmt.Printf("  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), reason)
+		}
+		fmt.Println()
+	}
+
+	// NEXT SCHEDULED — compute from watched projects
+	type nextTask struct {
+		project  string
+		name     string
+		schedule string
+		nextRun  time.Time
+	}
+	var upcoming []nextTask
+	now := time.Now()
+	for _, w := range watched {
+		proj, err := project.Load(w.Path)
+		if err != nil {
+			continue
+		}
+		todos, _ := proj.LoadTodos()
+		for _, t := range todos {
+			if t.Schedule == "" || t.Schedule == "once" {
+				continue
+			}
+			p, err := cron.Parse(t.Schedule)
+			if err != nil {
+				continue
+			}
+			next, err := p.Next(now)
+			if err != nil {
+				continue
+			}
+			upcoming = append(upcoming, nextTask{
+				project:  filepath.Base(w.Path),
+				name:     t.Name,
+				schedule: t.Schedule,
+				nextRun:  next,
+			})
+		}
+	}
+	// Sort by next run time
+	sort.Slice(upcoming, func(i, j int) bool {
+		return upcoming[i].nextRun.Before(upcoming[j].nextRun)
+	})
+	// Show up to 5
+	if len(upcoming) > 5 {
+		upcoming = upcoming[:5]
+	}
+	if len(upcoming) > 0 {
+		fmt.Printf("NEXT SCHEDULED\n")
+		for _, u := range upcoming {
+			until := time.Until(u.nextRun)
+			var untilStr string
+			if until < time.Minute {
+				untilStr = fmt.Sprintf("in %ds", int(until.Seconds()))
+			} else if until < time.Hour {
+				untilStr = fmt.Sprintf("in %dm%ds", int(until.Minutes()), int(until.Seconds())%60)
+			} else {
+				untilStr = fmt.Sprintf("in %dh%dm", int(until.Hours()), int(until.Minutes())%60)
+			}
+			fmt.Printf("  %-6s %-34s %s\n",
+				u.schedule,
+				truncate(u.project+"/"+u.name, 34),
+				untilStr)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("Press q to quit")
+}
+
 
 // truncate shortens a string to the specified length
 func truncate(s string, maxLen int) string {
