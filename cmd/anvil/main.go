@@ -177,6 +177,8 @@ Task subcommands:
   analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
   pipeline [--dot|--verbose] [--all]  Visualize task dependency pipelines
   reset-budget <name>        Reset persistent task budget consumption
+  state <name>              View, export, import, or clear task state
+  state <name>              View, export, import, or clear task state
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1849,6 +1851,8 @@ func taskCmd(args []string) {
 		taskAnalyzeCmd(args[1:])
 	case "reset-budget":
 		taskResetBudgetCmd(args[1:])
+	case "state":
+		taskStateCmd(args[1:])
 	case "pipeline":
 		taskPipelineCmd(args[1:])
 	case "find":
@@ -2571,6 +2575,11 @@ func taskGetCmd(args []string) {
 			Runner          string          `json:"runner,omitempty"`
 			DependsOn       []string        `json:"depends_on,omitempty"`
 			Dependencies    []depStatusJSON `json:"dependencies,omitempty"`
+			Retry           int             `json:"retry,omitempty"`
+			RetryDelay      string          `json:"retry_delay,omitempty"`
+			LastAttempt     int             `json:"last_attempt,omitempty"`
+			LastMaxRetries  int             `json:"last_max_retries,omitempty"`
+			LastAttemptStatus string        `json:"last_attempt_status,omitempty"`
 			BudgetTotal     string          `json:"budget_total,omitempty"`
 			BudgetUsed      string          `json:"budget_used,omitempty"`
 			BudgetRemaining string          `json:"budget_remaining,omitempty"`
@@ -2617,6 +2626,31 @@ func taskGetCmd(args []string) {
 					}
 				}
 				detail.Dependencies = append(detail.Dependencies, ds)
+			}
+		}
+		// Add retry configuration and last run attempt info
+		if todo.Retry > 0 {
+			detail.Retry = todo.Retry
+			delayStr := todo.RetryDelay.String()
+			if todo.RetryDelay <= 0 {
+				delayStr = "1m0s"
+			}
+			detail.RetryDelay = delayStr
+			rec, recErr := project.ReadCurrentRunRecord(abs, todo.ID)
+			if recErr == nil && rec.MaxRetries > 0 {
+				detail.LastAttempt = rec.Attempt
+				detail.LastMaxRetries = rec.MaxRetries
+				if !rec.Success {
+					if rec.Attempt >= rec.MaxRetries {
+						detail.LastAttemptStatus = "failed (retries exhausted)"
+					} else {
+						detail.LastAttemptStatus = "failed"
+					}
+				} else if rec.Attempt > 1 {
+					detail.LastAttemptStatus = "succeeded (after retry)"
+				} else {
+					detail.LastAttemptStatus = "succeeded"
+				}
 			}
 		}
 		// Add budget info for persistent tasks
@@ -2695,6 +2729,29 @@ func taskGetCmd(args []string) {
 			}
 		}
 	}
+	// Show retry configuration and last run attempt info
+	if todo.Retry > 0 {
+		delayStr := todo.RetryDelay.String()
+		if todo.RetryDelay <= 0 {
+			delayStr = "1m0s (default)"
+		}
+		fmt.Printf("Retry:    %d retries, delay %s\n", todo.Retry, delayStr)
+		// Show last run attempt info
+		rec, err := project.ReadCurrentRunRecord(abs, todo.ID)
+		if err == nil && rec.MaxRetries > 0 {
+			attemptStatus := "succeeded"
+			if !rec.Success {
+				if rec.Attempt >= rec.MaxRetries {
+					attemptStatus = "failed (retries exhausted)"
+				} else {
+					attemptStatus = "failed"
+				}
+			} else if rec.Attempt > 1 {
+				attemptStatus = "succeeded (after retry)"
+			}
+			fmt.Printf("          last run: attempt %d/%d — %s\n", rec.Attempt, rec.MaxRetries, attemptStatus)
+		}
+	}
 	// Show budget info for persistent tasks with a budget
 	if todo.IsPersistent() && todo.PersistentBudget > 0 {
 		budgetUsed := time.Duration(0)
@@ -2765,6 +2822,148 @@ func taskResetBudgetCmd(args []string) {
 	}
 
 	fmt.Printf("Budget reset for %s\n", todo.Name)
+}
+
+func taskStateCmd(args []string) {
+	// Handle subcommands: get, export, import, clear
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task state <name> [subcommand]\n")
+		fmt.Fprintf(os.Stderr, "Subcommands:\n")
+		fmt.Fprintf(os.Stderr, "  (none)       Show current state\n")
+		fmt.Fprintf(os.Stderr, "  --export FILE  Export state to file\n")
+		fmt.Fprintf(os.Stderr, "  --import FILE  Import state from file\n")
+		fmt.Fprintf(os.Stderr, "  --clear        Clear state\n")
+		os.Exit(1)
+	}
+
+	// Check for flags first
+	var exportFile, importFile string
+	var clearState bool
+	var taskName string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--export":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "error: --export requires a file argument\n")
+				os.Exit(1)
+			}
+			exportFile = args[i+1]
+			i++
+		case "--import":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "error: --import requires a file argument\n")
+				os.Exit(1)
+			}
+			importFile = args[i+1]
+			i++
+		case "--clear":
+			clearState = true
+		default:
+			if taskName == "" {
+				taskName = args[i]
+			}
+		}
+	}
+
+	if taskName == "" {
+		fmt.Fprintf(os.Stderr, "error: task name required\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	// Check if task has state configured
+	if todo.State == nil {
+		fmt.Fprintf(os.Stderr, "task %s does not have state configured\n", taskName)
+		fmt.Fprintf(os.Stderr, "Add 'state' configuration to task frontmatter:\n")
+		fmt.Fprintf(os.Stderr, "  state:\n")
+		fmt.Fprintf(os.Stderr, "    bucket: \"my-bucket\"\n")
+		fmt.Fprintf(os.Stderr, "    key: \"{{ .TaskID }}\"\n")
+		os.Exit(1)
+	}
+
+	// Resolve the key template
+	stateKey := strings.ReplaceAll(todo.State.Key, "{{ .TaskID }}", todo.ID)
+
+	if importFile != "" {
+		// Import state from file
+		data, err := os.ReadFile(importFile)
+		if err != nil {
+			log.Fatalf("failed to read import file: %v", err)
+		}
+		var state map[string]interface{}
+		if err := json.Unmarshal(data, &state); err != nil {
+			log.Fatalf("failed to parse import file: %v", err)
+		}
+		if err := project.WriteTaskState(abs, todo.State.Bucket, stateKey, state); err != nil {
+			log.Fatalf("failed to write state: %v", err)
+		}
+		fmt.Printf("State imported from %s\n", importFile)
+		return
+	}
+
+	if clearState {
+		if err := project.DeleteTaskState(abs, todo.State.Bucket, stateKey); err != nil {
+			log.Fatalf("failed to clear state: %v", err)
+		}
+		fmt.Printf("State cleared for %s\n", taskName)
+		return
+	}
+
+	if exportFile != "" {
+		// Export state to file
+		state, err := project.ReadTaskState(abs, todo.State.Bucket, stateKey)
+		if err != nil {
+			log.Fatalf("failed to read state: %v", err)
+		}
+		if state == nil {
+			state = map[string]interface{}{}
+		}
+		data, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal state: %v", err)
+		}
+		if err := os.WriteFile(exportFile, data, 0644); err != nil {
+			log.Fatalf("failed to write export file: %v", err)
+		}
+		fmt.Printf("State exported to %s\n", exportFile)
+		return
+	}
+
+	// Default: show current state
+	state, err := project.ReadTaskState(abs, todo.State.Bucket, stateKey)
+	if err != nil {
+		log.Fatalf("failed to read state: %v", err)
+	}
+	if state == nil {
+		fmt.Printf("No state found for %s (bucket: %s, key: %s)\n", taskName, todo.State.Bucket, stateKey)
+		return
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		log.Fatalf("failed to marshal state: %v", err)
+	}
+	fmt.Print(string(data))
 }
 
 func taskLogCmd(args []string) {
@@ -3217,6 +3416,13 @@ func taskHistoryCmd(args []string) {
 				}
 				status = errMsg
 			}
+			// Annotate if all retries were exhausted
+			if rec.MaxRetries > 0 && rec.Attempt >= rec.MaxRetries {
+				status += " (retries exhausted)"
+			}
+		} else if rec.Attempt > 1 {
+			// Succeeded after retries
+			status = "ok (retry succeeded)"
 		}
 
 		// Format attempts column (e.g., "1/3" or "-" if no retries configured)
