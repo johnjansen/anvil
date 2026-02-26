@@ -734,7 +734,7 @@ rate_limit:
   requests_per_minute: 60    # max API requests per minute (default: unlimited)
   requests_per_hour: 1000    # max API requests per hour (default: unlimited)
   burst: 20                  # allow short bursts above rate (default: 10)
-  provider:
+  provider_limits:
     claude:
       requests_per_minute: 50
 hooks:
@@ -839,7 +839,7 @@ rate_limit:
   requests_per_minute: 60    # max API requests per minute (default: unlimited)
   requests_per_hour: 1000    # max API requests per hour (default: unlimited)
   burst: 20                  # allow short bursts above rate (default: 10)
-  provider:
+  provider_limits:
     claude:
       requests_per_minute: 50
     openai:
@@ -850,7 +850,7 @@ rate_limit:
 - `requests_per_minute` — Maximum API requests allowed per minute across all tasks
 - `requests_per_hour` — Maximum API requests allowed per hour across all tasks
 - `burst` — Allows short bursts above the configured rate (default: 10)
-- `provider` — Set different limits per LLM provider (uses the first word of the runner command)
+- `provider_limits` — Set different limits per LLM provider (uses the first word of the runner command)
 
 When rate limited, tasks are skipped and re-queued on the next tick. The skip reason is visible in `anvil task queue`.
 
