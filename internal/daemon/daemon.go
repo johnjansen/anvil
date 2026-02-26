@@ -137,6 +137,15 @@ type Daemon struct {
 	persistentBudgetUsed   map[string]time.Duration
 	persistentBudgetUsedMu sync.Mutex
 	webhooks *webhook.Sender
+	// Metrics counters for Prometheus endpoint
+	metricsSuccessCount int64 // atomic: total successful task runs
+	metricsFailureCount int64 // atomic: total failed task runs
+	// Histogram buckets for task duration (60s, 300s, 900s, +Inf)
+	metricsDurBucket60   int64 // atomic: tasks completing in ≤60s
+	metricsDurBucket300  int64 // atomic: tasks completing in ≤300s
+	metricsDurBucket900  int64 // atomic: tasks completing in ≤900s
+	metricsDurBucketInf  int64 // atomic: all completed tasks (≤+Inf)
+	metricsDurSum        int64 // atomic: sum of all durations in milliseconds
 }
 
 type RunningTask struct {
@@ -733,6 +742,8 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.webhooks.FireURL(t.Webhook, webhook.EventPersistentCycle, whPayload)
 		}
 	} else if err != nil {
+		atomic.AddInt64(&d.metricsFailureCount, 1)
+		d.recordDurationMetric(elapsed)
 		dlog.WorkerFail(workerID, projName, t.Name, err)
 		// If the runner failed, set a 5-minute cooldown to avoid retrying it immediately
 		if usedRunnerIdx >= 0 {
@@ -775,6 +786,8 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v", t.Name, failCount, backoffDuration)
 		}
 	} else {
+		atomic.AddInt64(&d.metricsSuccessCount, 1)
+		d.recordDurationMetric(elapsed)
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
 		// Run on_success hook if defined
 		if t.OnSuccess != "" {
@@ -931,6 +944,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/run", d.handleRun)
 	mux.HandleFunc("/status", d.handleStatus)
 	mux.HandleFunc("/health", d.handleHealth)
+	mux.HandleFunc("/metrics", d.handleMetrics)
 	mux.HandleFunc("/timeout", d.handleTimeout)
 	mux.HandleFunc("/queue", d.handleQueue)
 	mux.HandleFunc("/reload", d.handleReload)
@@ -1255,6 +1269,105 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// recordDurationMetric updates histogram buckets and sum for a task duration.
+func (d *Daemon) recordDurationMetric(elapsed time.Duration) {
+	secs := elapsed.Seconds()
+	if secs <= 60 {
+		atomic.AddInt64(&d.metricsDurBucket60, 1)
+	}
+	if secs <= 300 {
+		atomic.AddInt64(&d.metricsDurBucket300, 1)
+	}
+	if secs <= 900 {
+		atomic.AddInt64(&d.metricsDurBucket900, 1)
+	}
+	atomic.AddInt64(&d.metricsDurBucketInf, 1)
+	atomic.AddInt64(&d.metricsDurSum, int64(elapsed/time.Millisecond))
+}
+
+func (d *Daemon) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Gather gauge metrics
+	maxWorkers := d.config.MaxWorkers
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
+
+	d.tasksMu.RLock()
+	tasksRunning := len(d.tasks)
+	d.tasksMu.RUnlock()
+
+	d.inFlightMu.Lock()
+	inFlight := len(d.inFlight)
+	d.inFlightMu.Unlock()
+
+	workersAvailable := maxWorkers - inFlight
+	if workersAvailable < 0 {
+		workersAvailable = 0
+	}
+
+	d.pendingTasksMu.RLock()
+	tasksPending := len(d.pendingTasks)
+	d.pendingTasksMu.RUnlock()
+
+	watchedProjects := len(loadWatchedPaths())
+
+	var uptimeSeconds float64
+	if !d.startedAt.IsZero() {
+		uptimeSeconds = time.Since(d.startedAt).Seconds()
+	}
+
+	// Read counters atomically
+	successCount := atomic.LoadInt64(&d.metricsSuccessCount)
+	failureCount := atomic.LoadInt64(&d.metricsFailureCount)
+	bucket60 := atomic.LoadInt64(&d.metricsDurBucket60)
+	bucket300 := atomic.LoadInt64(&d.metricsDurBucket300)
+	bucket900 := atomic.LoadInt64(&d.metricsDurBucket900)
+	bucketInf := atomic.LoadInt64(&d.metricsDurBucketInf)
+	durSumMs := atomic.LoadInt64(&d.metricsDurSum)
+	durSumSec := float64(durSumMs) / 1000.0
+
+	// Write Prometheus text format
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	fmt.Fprintf(w, "# HELP anvil_tasks_running Number of currently running tasks\n")
+	fmt.Fprintf(w, "# TYPE anvil_tasks_running gauge\n")
+	fmt.Fprintf(w, "anvil_tasks_running %d\n", tasksRunning)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "# HELP anvil_tasks_pending Number of pending tasks in queue\n")
+	fmt.Fprintf(w, "# TYPE anvil_tasks_pending gauge\n")
+	fmt.Fprintf(w, "anvil_tasks_pending %d\n", tasksPending)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "# HELP anvil_worker_slots_available Number of available worker slots\n")
+	fmt.Fprintf(w, "# TYPE anvil_worker_slots_available gauge\n")
+	fmt.Fprintf(w, "anvil_worker_slots_available %d\n", workersAvailable)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "# HELP anvil_projects_watched Number of watched projects\n")
+	fmt.Fprintf(w, "# TYPE anvil_projects_watched gauge\n")
+	fmt.Fprintf(w, "anvil_projects_watched %d\n", watchedProjects)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "# HELP anvil_daemon_uptime_seconds Daemon uptime in seconds\n")
+	fmt.Fprintf(w, "# TYPE anvil_daemon_uptime_seconds gauge\n")
+	fmt.Fprintf(w, "anvil_daemon_uptime_seconds %.0f\n", uptimeSeconds)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "# HELP anvil_task_runs_total Total number of task runs since daemon start\n")
+	fmt.Fprintf(w, "# TYPE anvil_task_runs_total counter\n")
+	fmt.Fprintf(w, "anvil_task_runs_total{status=\"success\"} %d\n", successCount)
+	fmt.Fprintf(w, "anvil_task_runs_total{status=\"failure\"} %d\n", failureCount)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "# HELP anvil_task_duration_seconds Task execution duration\n")
+	fmt.Fprintf(w, "# TYPE anvil_task_duration_seconds histogram\n")
+	fmt.Fprintf(w, "anvil_task_duration_seconds_bucket{le=\"60\"} %d\n", bucket60)
+	fmt.Fprintf(w, "anvil_task_duration_seconds_bucket{le=\"300\"} %d\n", bucket300)
+	fmt.Fprintf(w, "anvil_task_duration_seconds_bucket{le=\"900\"} %d\n", bucket900)
+	fmt.Fprintf(w, "anvil_task_duration_seconds_bucket{le=\"+Inf\"} %d\n", bucketInf)
+	fmt.Fprintf(w, "anvil_task_duration_seconds_sum %.3f\n", durSumSec)
+	fmt.Fprintf(w, "anvil_task_duration_seconds_count %d\n", bucketInf)
 }
 
 func (d *Daemon) handleDrain(w http.ResponseWriter, r *http.Request) {
