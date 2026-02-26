@@ -96,6 +96,7 @@ type Todo struct {
 	PersistentBudget     time.Duration // cumulative wall-clock budget per daemon lifetime (0 = unlimited)
 	MaxLogSize           int64         // max log file size in bytes (0 = use global default)
 	Runner               string        // per-task runner command override (empty = use global runner chain)
+	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -188,6 +189,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var persistentBudget time.Duration
 			var maxLogSize int64
 			runnerOverride := ""
+			webhookURL := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -219,6 +221,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						PersistentBudget     string   `yaml:"persistent_budget"`
 						MaxLogSize           string   `yaml:"max_log_size"`
 						Runner               string   `yaml:"runner"`
+						Webhook              string   `yaml:"webhook"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -254,6 +257,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							maxLogSize, _ = config.ParseByteSize(fmData.MaxLogSize)
 						}
 						runnerOverride = fmData.Runner
+						webhookURL = fmData.Webhook
 					}
 				}
 			}
@@ -287,6 +291,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				PersistentBudget:     persistentBudget,
 				MaxLogSize:           maxLogSize,
 				Runner:               runnerOverride,
+				Webhook:              webhookURL,
 			})
 		}
 	}
