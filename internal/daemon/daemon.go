@@ -898,6 +898,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		if t.Webhook != "" {
 			d.webhooks.FireURL(t.Webhook, whEvent, whPayload)
 		}
+		// Send desktop notification on failure
+		if shouldNotifyFailure(d.config.Notifications, t.NotifyOnFailure) {
+			go sendNotification(d.config.Notifications, "anvil: task failed", fmt.Sprintf("%s/%s failed after %s", projName, t.Name, elapsed.Round(time.Second)))
+		}
 		// For persistent tasks, track failures and apply exponential backoff
 		if t.IsPersistent() {
 			d.persistentFailuresMu.Lock()
@@ -929,6 +933,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		d.webhooks.Fire(webhook.EventSuccess, whPayload)
 		if t.Webhook != "" {
 			d.webhooks.FireURL(t.Webhook, webhook.EventSuccess, whPayload)
+		}
+		// Send desktop notification on success
+		if shouldNotifySuccess(d.config.Notifications, t.NotifyOnSuccess) {
+			go sendNotification(d.config.Notifications, "anvil: task completed", fmt.Sprintf("%s/%s completed in %s", projName, t.Name, elapsed.Round(time.Second)))
 		}
 		// Remove the todo file after successful execution (one-shot only)
 		if t.Schedule == "" {
