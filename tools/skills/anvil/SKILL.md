@@ -42,6 +42,8 @@ anvil task create [options] <task text>
 Options:
 - `-p, --priority <0-9>` — Priority level (default: 1). Lower = higher priority.
 - `-s, --schedule <cron>` — Cron expression for when to run.
+- `-o, --once` — Create a one-shot task (no schedule).
+- `-n, --dry-run` — Validate schedule without creating the task.
 - `-f, --file <path>` — Read task content from a file.
 - `-` — Read task content from stdin.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).

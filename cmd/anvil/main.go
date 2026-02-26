@@ -133,6 +133,7 @@ Add options:
   -p, --priority int          Task priority 0-9 (default 1)
   -s, --schedule string      Cron schedule (e.g., "*/15 * * * *"), "" for one-shot
   -o, --once                 Create a one-shot task (no schedule)
+  -n, --dry-run              Validate schedule without creating task
   -f, --file path            Read task content from a file
   -                          Read task content from stdin
       --pre-check string    Shell command to skip task if non-zero exit
@@ -966,6 +967,7 @@ Options:
   -p, --priority n        Priority 0-9 (default: 1)
   -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
   -o, --once              Create a one-shot task (no schedule)
+  -n, --dry-run          Validate schedule without creating task
   --pre-check cmd        Command to run before task execution
   --allowed-tools tools  Comma-separated list of allowed tools
   --max-concurrent n     Max concurrent runs (default: 1)
@@ -1222,6 +1224,7 @@ func taskCreateCmd(args []string) {
 	filePath := ""
 	readStdin := false
 	onceFlag := false
+	dryRun := false
 
 	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter.
 	prioritySet := false
@@ -1259,6 +1262,8 @@ func taskCreateCmd(args []string) {
 			scheduleSet = true
 		case "-o", "--once":
 			onceFlag = true
+		case "-n", "--dry-run":
+			dryRun = true
 		case "--pre-check":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for --pre-check")
@@ -1311,6 +1316,25 @@ func taskCreateCmd(args []string) {
 	if onceFlag {
 		schedule = ""
 		scheduleSet = true
+	}
+
+	// Handle --dry-run: validate schedule without creating task.
+	if dryRun {
+		if schedule != "" {
+			if _, err := cron.Parse(schedule); err != nil {
+				log.Fatalf("invalid cron expression: %s (%v)", schedule, err)
+			}
+			// Show next run time
+			if p, err := cron.Parse(schedule); err == nil {
+				if next, err := p.Next(time.Now()); err == nil {
+					until := time.Until(next).Round(time.Minute)
+					fmt.Printf("Schedule is valid. Next run: %s (%s from now)\n", next.Format("Mon Jan 2 15:04:05"), until)
+				}
+			}
+		} else {
+			fmt.Println("No schedule specified (one-shot task)")
+		}
+		return
 	}
 
 	var taskText string
