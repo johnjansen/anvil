@@ -119,6 +119,9 @@ type RunRecord struct {
 	OutputTokens     int       `json:"output_tokens,omitempty"`   // tokens received from the model
 	EstimatedCostUSD float64   `json:"estimated_cost_usd,omitempty"` // estimated cost in USD
 	CheckpointData   string    `json:"checkpoint_data,omitempty"`   // last checkpoint data emitted by the task
+	Attempt          int       `json:"attempt,omitempty"`           // final attempt number (1-based), 0 if no retries configured
+	MaxRetries       int       `json:"max_retries,omitempty"`       // configured max retries for this task
+	RetryDelay       string    `json:"retry_delay,omitempty"`       // configured base delay between retries
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.

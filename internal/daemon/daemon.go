@@ -690,12 +690,14 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var usedRunnerIdx int
 	var stderrOutput string
 	var err error
+	var finalAttempt int // tracks which attempt we ended on (0-based)
 
 	// Track checkpoint data emitted by the task (last one wins)
 	var checkpointMu sync.Mutex
 	var lastCheckpointData string
 
 	for attempt := 0; ; attempt++ {
+		finalAttempt = attempt
 		// Check if context is already cancelled before attempting
 		if ctx.Err() != nil {
 			err = ctx.Err()
@@ -826,6 +828,9 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		OutputTokens:     tokenUsage.OutputTokens,
 		EstimatedCostUSD: estimatedCost,
 		CheckpointData:   cpData,
+		Attempt:          finalAttempt + 1, // convert 0-based to 1-based
+		MaxRetries:       t.Retry,
+		RetryDelay:       retryDelay.String(),
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
@@ -882,7 +887,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 		// Run on_failure hook if defined
 		if t.OnFailure != "" {
-			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed, finalAttempt+1, t.Retry, retryDelay)
 		}
 		// Fire failure webhook (use timeout event if deadline exceeded)
 		whEvent := webhook.EventFailure
@@ -919,7 +924,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		dlog.WorkerDone(workerID, projName, t.Name, elapsed)
 		// Run on_success hook if defined
 		if t.OnSuccess != "" {
-			d.runHook("on_success", t.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed)
+			d.runHook("on_success", t.OnSuccess, proj.Path, t, logPath, usedSessionID, startTime, elapsed, finalAttempt+1, t.Retry, retryDelay)
 		}
 		d.webhooks.Fire(webhook.EventSuccess, whPayload)
 		if t.Webhook != "" {
@@ -974,7 +979,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 
 // runHook executes a lifecycle hook (on_success or on_failure) as a shell command.
 // Hook errors are logged as warnings but do not affect the task outcome.
-func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, logPath, sessionID string, startTime time.Time, elapsed time.Duration) {
+func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, logPath, sessionID string, startTime time.Time, elapsed time.Duration, attempt, maxRetries int, retryDelay time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -986,6 +991,12 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 		exitCode = "1"
 	}
 
+	// Determine if the task will retry after this failure
+	willRetry := "false"
+	if hookName == "on_failure" && maxRetries > 0 && attempt < maxRetries {
+		willRetry = "true"
+	}
+
 	hookCmd.Env = append(os.Environ(),
 		"ANVIL_TASK_NAME="+t.Name,
 		"ANVIL_EXIT_CODE="+exitCode,
@@ -995,6 +1006,10 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 		"ANVIL_START_TIME="+startTime.Format(time.RFC3339),
 		"ANVIL_END_TIME="+time.Now().Format(time.RFC3339),
 		fmt.Sprintf("ANVIL_ELAPSED_MS=%d", elapsed.Milliseconds()),
+		fmt.Sprintf("ANVIL_RETRY_ATTEMPT=%d", attempt),
+		fmt.Sprintf("ANVIL_RETRY_MAX=%d", maxRetries),
+		"ANVIL_RETRY_DELAY="+retryDelay.String(),
+		"ANVIL_WILL_RETRY="+willRetry,
 	)
 
 	if hookErr := hookCmd.Run(); hookErr != nil {

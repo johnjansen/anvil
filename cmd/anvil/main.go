@@ -2950,6 +2950,8 @@ func taskStartCmd(args []string) {
 func taskHistoryCmd(args []string) {
 	limit := 10
 	showFailuresOnly := false
+	showRetriedOnly := false
+	showStats := false
 	jsonOutput := false
 	followMode := false
 	i := 0
@@ -2957,7 +2959,7 @@ func taskHistoryCmd(args []string) {
 		switch args[i] {
 		case "-n", "--limit":
 			if i+1 >= len(args) {
-				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--json]\n")
+				fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--retried] [--stats] [--json]\n")
 				os.Exit(1)
 			}
 			if _, err := fmt.Sscanf(args[i+1], "%d", &limit); err != nil {
@@ -2971,6 +2973,12 @@ func taskHistoryCmd(args []string) {
 		case "--failures", "--show-failures-only":
 			showFailuresOnly = true
 			i++
+		case "--retried":
+			showRetriedOnly = true
+			i++
+		case "--stats":
+			showStats = true
+			i++
 		case "--json":
 			jsonOutput = true
 			i++
@@ -2980,7 +2988,7 @@ func taskHistoryCmd(args []string) {
 	}
 	taskName := strings.Join(args[i:], " ")
 	if taskName == "" {
-		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--json]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--retried] [--stats] [--json]\n")
 		os.Exit(1)
 	}
 
@@ -3032,6 +3040,41 @@ func taskHistoryCmd(args []string) {
 		records = filtered
 	}
 
+	// Filter to only retried runs (attempt > 1)
+	if showRetriedOnly {
+		var filtered []project.RunRecord
+		for _, rec := range records {
+			if rec.Attempt > 1 {
+				filtered = append(filtered, rec)
+			}
+		}
+		records = filtered
+	}
+
+	// Show retry statistics
+	if showStats {
+		total := len(records)
+		succeeded := 0
+		failed := 0
+		retried := 0
+		for _, rec := range records {
+			if rec.Success {
+				succeeded++
+			} else {
+				failed++
+			}
+			if rec.Attempt > 1 {
+				retried++
+			}
+		}
+		retriedPct := 0.0
+		if total > 0 {
+			retriedPct = float64(retried) / float64(total) * 100
+		}
+		fmt.Printf("Total: %d, Succeeded: %d, Failed: %d, Retried: %d (%.0f%%)\n", total, succeeded, failed, retried, retriedPct)
+		return
+	}
+
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
 	}
@@ -3046,7 +3089,7 @@ func taskHistoryCmd(args []string) {
 	}
 
 	// Print header
-	fmt.Printf("%-20s %10s %10s\n", "STARTED", "DURATION", "STATUS")
+	fmt.Printf("%-20s %10s %10s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "STATUS")
 	for _, rec := range records {
 		duration := ""
 		if !rec.Finished.IsZero() {
@@ -3071,7 +3114,15 @@ func taskHistoryCmd(args []string) {
 			}
 		}
 
-		fmt.Printf("%-20s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, status)
+		// Format attempts column (e.g., "1/3" or "-" if no retries configured)
+		attempts := "-"
+		if rec.MaxRetries > 0 {
+			attempts = fmt.Sprintf("%d/%d", rec.Attempt, rec.MaxRetries)
+		} else if rec.Attempt > 0 {
+			attempts = fmt.Sprintf("%d", rec.Attempt)
+		}
+
+		fmt.Printf("%-20s %10s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, status)
 
 		// Print output summary if available
 		if rec.OutputSummary != "" {
