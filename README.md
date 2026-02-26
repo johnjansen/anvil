@@ -477,7 +477,8 @@ anvil cleanup -o=24h
 | `anvil watch --status` | Show system service status |
 | `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
-| `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
+| `anvil daemon log` | View daemon log (-f to follow, -n for lines, --level, --match, --since, --until) |
+| `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
 | `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
