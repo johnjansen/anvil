@@ -807,7 +807,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			}
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, func(pid int, lp string, sid string) {
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, t.RunnerChain, t.RunnerOnTimeout, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {

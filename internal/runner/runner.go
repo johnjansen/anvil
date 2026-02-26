@@ -88,7 +88,13 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		}
 	}
 
-	for i, command := range r.Commands {
+	// Use task-specific runner chain if provided, otherwise fall back to default
+	commands := r.Commands
+	if len(runnerChainOverride) > 0 {
+		commands = runnerChainOverride
+	}
+
+	for i, command := range commands {
 		lastRunnerIndex = i
 		// Skip runners that are in cooldown
 		if skipIndices != nil && skipIndices[i] {
@@ -167,6 +173,20 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		}
 		if waitErr != nil {
 			if ctx.Err() == context.DeadlineExceeded {
+				// If runner_on_timeout is configured and we haven't tried it yet, try it now
+				if runnerOnTimeout != "" && i == 0 {
+					log.Printf("runner[%d] [%s] timed out, trying runner_on_timeout: %s", i, taskLabel, runnerOnTimeout)
+					// Run the timeout fallback (without context timeout since we're already in timeout)
+					timeoutCtx, cancel := context.WithTimeout(context.Background(), r.Timeout)
+					defer cancel()
+					timeoutResult, timeoutLogPath, timeoutIdx, timeoutStderr, timeoutErr := runSingleRunner(timeoutCtx, dir, sessionID, resume, skipPermissions, allowedTools, content, taskLabel, logFile, runnerOnTimeout, extraEnv)
+					if timeoutErr == nil {
+						// Timeout fallback succeeded - use index 100+ to indicate fallback
+						return timeoutResult, timeoutLogPath, 100 + timeoutIdx, timeoutStderr, nil
+					}
+					// Timeout fallback also failed, return original timeout error
+					return "", logPath, i, stderr.String(), fmt.Errorf("timed out after %s (runner_on_timeout also failed: %v)", r.Timeout, timeoutErr)
+				}
 				return "", logPath, i, stderr.String(), fmt.Errorf("timed out after %s", r.Timeout)
 			}
 			lastErr = waitErr
