@@ -613,6 +613,7 @@ anvil cleanup -o=24h
 | `anvil task next [name]` | Show next scheduled run time (--all for all projects) |
 | `anvil task wait <name> [--timeout D] [--match PAT]` | Block until a running task completes (exit 0=ok, 1=fail, 2=timeout) |
 | `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
+| `anvil task pipeline [--dot|--verbose] [--all]` | Visualize task dependency pipelines |
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
@@ -656,6 +657,31 @@ print("##anvil:status Found 5 issues, triaging...")
 ```
 
 Any line starting with `##anvil:status ` (note the trailing space) is intercepted. All other output passes through normally.
+
+## Pipeline Visualization
+
+Visualize task dependency pipelines to understand how tasks are connected:
+
+```bash
+anvil task pipeline                    # show pipeline for current project
+anvil task pipeline --verbose          # show detailed pipeline info
+anvil task pipeline --dot             # output in GraphViz DOT format
+anvil task pipeline --all             # show pipelines across all watched projects
+```
+
+Output formats:
+- **Default** — ASCII tree showing task dependencies
+- `--verbose` — detailed view with schedule and last run status for each task
+- `--dot` — GraphViz DOT format for rendering with tools like `dot`
+
+```bash
+# Export to DOT and render with GraphViz
+anvil task pipeline --dot > pipeline.dot
+dot -Tpng pipeline.dot -o pipeline.png
+
+# Show all project pipelines
+anvil task pipeline --all --verbose
+```
 
 ## Prometheus Metrics
 
