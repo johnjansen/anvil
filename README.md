@@ -425,13 +425,20 @@ Reload the daemon configuration without restarting:
 anvil reload
 ```
 
+Or with graceful option to wait for running tasks:
+
+```bash
+anvil reload --graceful
+anvil reload --graceful --timeout 60s
+```
+
 Or send SIGHUP manually:
 
 ```bash
 kill -HUP $(cat ~/.anvil/daemon.pid)
 ```
 
-The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
+The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected unless `--graceful` is used — in that case, the daemon waits for running tasks to complete before reloading.
 
 ### Project-level Configuration
 
@@ -497,6 +504,10 @@ anvil cleanup -o=24h
 | `anvil watch` | Start the daemon |
 | `anvil watch [-d|--daemonize]` | Start daemon in background |
 | `anvil watch --stop` | Stop the running daemon |
+| `anvil watch --stop --graceful` | Stop daemon gracefully (wait for running tasks) |
+| `anvil watch --stop --force` | Stop daemon immediately (kill running tasks) |
+| `anvil watch --restart` | Restart the daemon |
+| `anvil watch --restart --graceful` | Restart gracefully (wait for running tasks) |
 | `anvil watch --install` | Install as system service (auto-start on boot) |
 | `anvil watch --uninstall` | Remove the system service |
 | `anvil watch --status` | Show system service status |
@@ -506,7 +517,8 @@ anvil cleanup -o=24h
 | `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
 | `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
 | `anvil status` | Show watched projects |
-| `anvil reload` | Reload daemon configuration (SIGHUP) |
+| `anvil reload` | Reload daemon configuration |
+| `anvil reload --graceful` | Reload daemon gracefully (wait for running tasks) |
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
@@ -538,7 +550,6 @@ anvil cleanup -o=24h
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
 | `anvil task next [name]` | Show next scheduled run time (--all for all projects) |
 | `anvil task wait <name> [--timeout D] [--match PAT]` | Block until a running task completes (exit 0=ok, 1=fail, 2=timeout) |
-| `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |

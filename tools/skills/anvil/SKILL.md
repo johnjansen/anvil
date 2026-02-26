@@ -21,6 +21,10 @@ anvil watch
 # Or run in background (daemonized)
 anvil watch [-d|--daemonize]
 anvil watch --stop             # stop the daemon
+anvil watch --stop --graceful  # stop gracefully (wait for running tasks)
+anvil watch --stop --force     # stop immediately (kill running tasks)
+anvil watch --restart          # restart the daemon
+anvil watch --restart --graceful # restart gracefully (wait for running tasks)
 anvil watch --install          # install as system service (auto-start on boot)
 anvil watch --uninstall        # remove the system service
 anvil watch --status           # show system service status
@@ -655,6 +659,8 @@ Reload the daemon configuration without restarting:
 
 ```bash
 anvil reload
+anvil reload --graceful          # wait for running tasks before reloading
+anvil reload --graceful --timeout 60s  # wait up to 60 seconds
 ```
 
 Or send SIGHUP manually:
@@ -663,7 +669,7 @@ Or send SIGHUP manually:
 kill -HUP $(cat ~/.anvil/daemon.pid)
 ```
 
-The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected — only new task dispatches use the updated config.
+The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected unless `--graceful` is used — in that case, the daemon waits for running tasks to complete before reloading.
 
 ## Listing Tasks
 
