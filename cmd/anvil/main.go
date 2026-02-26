@@ -169,6 +169,7 @@ Task subcommands:
   edit <name>               Edit task (schedule, priority, content, labels, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
+  pipeline [--dot|--verbose] [-a]  Visualize task dependency pipelines
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1590,6 +1591,8 @@ func taskCmd(args []string) {
 		taskImportCmd(args[1:])
 	case "wait":
 		taskWaitCmd(args[1:])
+	case "pipeline":
+		taskPipelineCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -4784,6 +4787,343 @@ func checkTaskResult(taskName string) int {
 		return 0
 	}
 	return 1
+}
+
+type pipelineTask struct {
+	name      string
+	project   string
+	schedule  string
+	disabled  bool
+	labels    []string
+	dependsOn []string
+	status    string // "success", "failure", "never", "running"
+}
+
+func taskPipelineCmd(args []string) {
+	allProjects := false
+	dotOutput := false
+	verbose := false
+	for _, a := range args {
+		switch a {
+		case "-a", "--all":
+			allProjects = true
+		case "--dot":
+			dotOutput = true
+		case "--verbose", "-v":
+			verbose = true
+		case "-h", "--help":
+			fmt.Fprintf(os.Stderr, `usage: anvil task pipeline [--dot|--verbose] [-a|--all]
+
+Visualize task dependency pipelines.
+
+Options:
+  --dot        Output in GraphViz DOT format
+  --verbose    Show schedules and last run status
+  -a, --all    Show pipelines across all watched projects
+`)
+			os.Exit(0)
+		}
+	}
+
+	var tasks []pipelineTask
+
+	type projectTodos struct {
+		path  string
+		todos []project.Todo
+	}
+	var projects []projectTodos
+
+	if allProjects {
+		watched, err := loadAllWatched()
+		if err != nil {
+			log.Fatalf("failed to read watched: %v", err)
+		}
+		for _, w := range watched {
+			proj, err := project.Load(w.Path)
+			if err != nil {
+				continue
+			}
+			todos, _ := proj.LoadTodos()
+			projects = append(projects, projectTodos{path: w.Path, todos: todos})
+		}
+	} else {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		proj, err := project.Load(abs)
+		if err != nil {
+			log.Fatalf("failed to load project: %v", err)
+		}
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			log.Fatalf("failed to load todos: %v", err)
+		}
+		projects = append(projects, projectTodos{path: abs, todos: todos})
+	}
+
+	// Build task list with status info
+	for _, p := range projects {
+		projName := filepath.Base(p.path)
+		for _, t := range p.todos {
+			name := strings.TrimSuffix(t.Name, ".md")
+			status := "never"
+			if verbose {
+				rec, err := project.ReadCurrentRunRecord(p.path, t.ID)
+				if err == nil {
+					if rec.Success {
+						status = "success"
+					} else {
+						status = "failure"
+					}
+				}
+			}
+			tasks = append(tasks, pipelineTask{
+				name:      name,
+				project:   projName,
+				schedule:  t.Schedule,
+				disabled:  t.Disabled,
+				labels:    t.Labels,
+				dependsOn: t.DependsOn,
+				status:    status,
+			})
+		}
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("no tasks found")
+		return
+	}
+
+	// Build dependency graph
+	taskMap := make(map[string]*pipelineTask) // name -> task
+	for i := range tasks {
+		taskMap[tasks[i].name] = &tasks[i]
+	}
+
+	// Check for circular dependencies using DFS
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in progress
+		black = 2 // done
+	)
+	colors := make(map[string]int)
+	var cyclePath []string
+	hasCycle := false
+
+	var detectCycle func(name string) bool
+	detectCycle = func(name string) bool {
+		colors[name] = gray
+		cyclePath = append(cyclePath, name)
+		t := taskMap[name]
+		if t != nil {
+			for _, dep := range t.dependsOn {
+				if colors[dep] == gray {
+					// Found cycle — trim cyclePath to start at dep
+					for i, n := range cyclePath {
+						if n == dep {
+							cyclePath = cyclePath[i:]
+							break
+						}
+					}
+					cyclePath = append(cyclePath, dep)
+					hasCycle = true
+					return true
+				}
+				if colors[dep] == white {
+					if detectCycle(dep) {
+						return true
+					}
+				}
+			}
+		}
+		cyclePath = cyclePath[:len(cyclePath)-1]
+		colors[name] = black
+		return false
+	}
+
+	for _, t := range tasks {
+		if colors[t.name] == white {
+			if detectCycle(t.name) {
+				break
+			}
+		}
+	}
+
+	if hasCycle {
+		fmt.Fprintf(os.Stderr, "Error: Circular dependency detected: %s\n", strings.Join(cyclePath, " -> "))
+		os.Exit(1)
+	}
+
+	// Check for missing dependency targets
+	for _, t := range tasks {
+		for _, dep := range t.dependsOn {
+			if _, ok := taskMap[dep]; !ok {
+				fmt.Fprintf(os.Stderr, "Warning: %s depends on %q which does not exist\n", t.name, dep)
+			}
+		}
+	}
+
+	if dotOutput {
+		taskPipelineDot(tasks)
+		return
+	}
+
+	// Find tasks that have dependencies or are depended upon
+	hasDeps := make(map[string]bool)
+	for _, t := range tasks {
+		if len(t.dependsOn) > 0 {
+			hasDeps[t.name] = true
+			for _, dep := range t.dependsOn {
+				hasDeps[dep] = true
+			}
+		}
+	}
+
+	// Build reverse map: task -> what depends on it
+	dependents := make(map[string][]string) // task -> tasks that depend on it
+	for _, t := range tasks {
+		for _, dep := range t.dependsOn {
+			dependents[dep] = append(dependents[dep], t.name)
+		}
+	}
+
+	// Find root tasks (tasks with no dependencies, or depended on by others)
+	roots := make(map[string]bool)
+	for name := range hasDeps {
+		t := taskMap[name]
+		if t == nil || len(t.dependsOn) == 0 {
+			roots[name] = true
+		}
+	}
+
+	if len(roots) == 0 {
+		fmt.Println("no task pipelines found (no dependencies configured)")
+		return
+	}
+
+	// Print tree for each root
+	printed := make(map[string]bool)
+	var printTree func(name string, prefix string, isLast bool)
+	printTree = func(name string, prefix string, isLast bool) {
+		if printed[name] {
+			connector := "├── "
+			if isLast {
+				connector = "└── "
+			}
+			fmt.Printf("%s%s%s (see above)\n", prefix, connector, name)
+			return
+		}
+		printed[name] = true
+
+		connector := "├── "
+		childPrefix := "│   "
+		if isLast {
+			connector = "└── "
+			childPrefix = "    "
+		}
+
+		label := name
+		if verbose {
+			t := taskMap[name]
+			if t != nil {
+				statusIcon := "○"
+				switch t.status {
+				case "success":
+					statusIcon = "✓"
+				case "failure":
+					statusIcon = "✗"
+				case "running":
+					statusIcon = "▶"
+				}
+				sched := t.schedule
+				if sched == "" {
+					sched = "one-shot"
+				}
+				if t.disabled {
+					label = fmt.Sprintf("%s [%s] %s (disabled)", name, sched, statusIcon)
+				} else {
+					label = fmt.Sprintf("%s [%s] %s %s", name, sched, statusIcon, t.status)
+				}
+			}
+		}
+
+		if prefix == "" {
+			// Root node
+			fmt.Println(label)
+		} else {
+			fmt.Printf("%s%s%s\n", prefix, connector, label)
+		}
+
+		deps := dependents[name]
+		sort.Strings(deps)
+		for i, dep := range deps {
+			printTree(dep, prefix+childPrefix, i == len(deps)-1)
+		}
+	}
+
+	// Sort roots for consistent output
+	var sortedRoots []string
+	for r := range roots {
+		sortedRoots = append(sortedRoots, r)
+	}
+	sort.Strings(sortedRoots)
+
+	for i, root := range sortedRoots {
+		if i > 0 {
+			fmt.Println()
+		}
+		printTree(root, "", true)
+	}
+}
+
+func taskPipelineDot(tasks []pipelineTask) {
+	fmt.Println("digraph pipeline {")
+	fmt.Println("  rankdir=LR;")
+	fmt.Println("  node [shape=box, style=rounded];")
+	fmt.Println()
+
+	for _, t := range tasks {
+		if len(t.dependsOn) == 0 {
+			// Check if anyone depends on this task
+			depended := false
+			for _, other := range tasks {
+				for _, d := range other.dependsOn {
+					if d == t.name {
+						depended = true
+						break
+					}
+				}
+				if depended {
+					break
+				}
+			}
+			if !depended {
+				continue // skip tasks with no dependency relationships
+			}
+		}
+
+		// Node attributes
+		attrs := ""
+		if t.disabled {
+			attrs = ` [style="rounded,dashed", color=gray]`
+		} else if t.status == "failure" {
+			attrs = ` [color=red]`
+		} else if t.status == "success" {
+			attrs = ` [color=green]`
+		}
+		fmt.Printf("  %q%s;\n", t.name, attrs)
+	}
+
+	fmt.Println()
+
+	for _, t := range tasks {
+		for _, dep := range t.dependsOn {
+			fmt.Printf("  %q -> %q;\n", dep, t.name)
+		}
+	}
+
+	fmt.Println("}")
 }
 
 // formatDurationShort formats a duration as short human-readable relative time.
