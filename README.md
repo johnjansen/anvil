@@ -397,7 +397,7 @@ anvil cleanup -o=24h
 | `anvil task history <name> --failures` | Show only failed runs |
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task queue` | Show daemon queue status and skip reasons |
-| `anvil task edit <name> [-s schedule] [-p priority]` | Edit task schedule/priority |
+| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path]` | Edit task schedule, priority, or content |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |

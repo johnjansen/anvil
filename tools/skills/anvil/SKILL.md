@@ -558,6 +558,8 @@ Shows a table with start time, duration, and status (ok/failed) for each run.
 ```bash
 anvil task edit <name> -s "*/30 * * * *"  # change schedule
 anvil task edit <name> -p 0                 # change priority
+anvil task edit <name> --content "New task description"  # change content
+anvil task edit <name> --content-file task.md  # change content from file
 ```
 
 Edits the task's frontmatter in place. Moving a task to a different priority moves the file to the corresponding priority directory.
