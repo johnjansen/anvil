@@ -190,6 +190,17 @@ type TaskQueueInfo struct {
 	SkipReason string `json:"skip_reason,omitempty"` // why task was skipped in last tick
 }
 
+// TaskBudgetInfo holds budget consumption info for a persistent task.
+type TaskBudgetInfo struct {
+	Project    string  `json:"project"`
+	Name       string  `json:"name"`
+	Budget     string  `json:"budget"`
+	Used       string  `json:"used"`
+	Remaining  string  `json:"remaining"`
+	PercentUsed float64 `json:"percent_used"`
+	Exhausted  bool    `json:"exhausted"`
+}
+
 func New(cfg *config.Config) *Daemon {
 	poolSize := cfg.MaxWorkers
 	if poolSize < 1 {
@@ -928,6 +939,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		}
 	}
 
+	// For persistent tasks, accumulate budget usage
+	if t.IsPersistent() {
+		d.persistentBudgetUsedMu.Lock()
+		d.persistentBudgetUsed[taskKey] += elapsed
+		budgetUsed := d.persistentBudgetUsed[taskKey]
+		d.persistentBudgetUsedMu.Unlock()
+		// Emit warning when budget is below 20%
+		if t.PersistentBudget > 0 {
+			remaining := t.PersistentBudget - budgetUsed
+			pctUsed := float64(budgetUsed) / float64(t.PersistentBudget) * 100
+			if pctUsed >= 80 && remaining > 0 {
+				dlog.Warn("##anvil:status Budget low for %s: %v remaining (%.0f%% of %v used)", t.Name, remaining.Round(time.Second), pctUsed, t.PersistentBudget)
+			}
+		}
+	}
+
 	// For persistent tasks, set cooldown after each cycle completes
 	if t.IsPersistent() && t.PersistentCooldown > 0 {
 		d.persistentCooldownsMu.Lock()
@@ -1067,6 +1094,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/reload", d.handleReload)
 	mux.HandleFunc("/stop", d.handleStopTask)
 	mux.HandleFunc("/start", d.handleStartTask)
+	mux.HandleFunc("/budget", d.handleBudget)
+	mux.HandleFunc("/reset-budget", d.handleResetBudget)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -1224,6 +1253,71 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleBudget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	d.persistentBudgetUsedMu.Lock()
+	// Return the raw budget usage map as task_key -> seconds
+	result := make(map[string]float64, len(d.persistentBudgetUsed))
+	for k, v := range d.persistentBudgetUsed {
+		result[k] = v.Seconds()
+	}
+	d.persistentBudgetUsedMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (d *Daemon) handleResetBudget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		TaskKey string `json:"task_key"` // project_path/task_name
+		Budget  string `json:"budget"`   // optional: new budget duration (empty = reset to 0)
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	d.persistentBudgetUsedMu.Lock()
+	if req.Budget != "" {
+		// Set used to a negative offset so effective remaining = parsed budget
+		if newBudget, err := time.ParseDuration(req.Budget); err == nil {
+			// Reset used to (total budget - new budget) to give them the requested remaining time
+			// Actually simpler: just reset used to 0 and let the budget field handle it
+			_ = newBudget
+			d.persistentBudgetUsed[req.TaskKey] = 0
+		} else {
+			d.persistentBudgetUsedMu.Unlock()
+			http.Error(w, "invalid budget duration", http.StatusBadRequest)
+			return
+		}
+	} else {
+		d.persistentBudgetUsed[req.TaskKey] = 0
+	}
+	d.persistentBudgetUsedMu.Unlock()
+
+	// Also unstop the task if it was stopped due to budget exhaustion
+	d.stoppedMu.Lock()
+	// Find and remove any stopped state for this task
+	for id := range d.stoppedTasks {
+		if strings.HasSuffix(req.TaskKey, "/"+id) || req.TaskKey == id {
+			delete(d.stoppedTasks, id)
+			break
+		}
+	}
+	d.stoppedMu.Unlock()
+
+	fmt.Fprintf(w, "budget reset for %s", req.TaskKey)
 }
 
 func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
@@ -2004,6 +2098,26 @@ func (d *Daemon) tick(now time.Time) {
 			d.persistentCooldownsMu.Unlock()
 		}
 
+		// Skip dispatch if persistent task has exhausted its budget
+		if pt.todo.IsPersistent() && pt.todo.PersistentBudget > 0 {
+			d.persistentBudgetUsedMu.Lock()
+			used := d.persistentBudgetUsed[taskKey]
+			d.persistentBudgetUsedMu.Unlock()
+			if used >= pt.todo.PersistentBudget {
+				dlog.Info("skip %s/%s — persistent budget exhausted (%v / %v)", projName, pt.todo.Name, used.Round(time.Second), pt.todo.PersistentBudget)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "budget exhausted"
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
+		}
+
 		// Starvation prevention: if a persistent task has been waiting too long,
 		// skip it to let higher-priority work through. This prevents low-priority
 		// persistent tasks from blocking high-priority cron jobs indefinitely.
@@ -2524,5 +2638,37 @@ func SendReloadRequest() error {
 		return fmt.Errorf("daemon reload failed: %s", string(body))
 	}
 
+	return nil
+}
+
+// SendBudgetRequest retrieves budget usage for all persistent tasks.
+// Returns a map of task_key -> seconds_used.
+func SendBudgetRequest() (map[string]float64, error) {
+	resp, err := socketClient().Get("http://daemon/budget")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result map[string]float64
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SendResetBudgetRequest resets the budget usage for a task.
+func SendResetBudgetRequest(taskKey string) error {
+	payload := fmt.Sprintf(`{"task_key":%q}`, taskKey)
+	resp, err := socketClient().Post("http://daemon/reset-budget", "application/json", bytes.NewBufferString(payload))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("reset budget failed: %s", string(body))
+	}
 	return nil
 }

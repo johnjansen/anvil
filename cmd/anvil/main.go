@@ -170,6 +170,8 @@ Task subcommands:
   timeout [name]            Show task timeout progress (--all for all tasks)
   next [name]              Show next scheduled run time (--all for all projects)
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
+  analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
+  reset-budget <name>        Reset persistent task budget consumption
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
 
@@ -1837,6 +1839,10 @@ func taskCmd(args []string) {
 		taskImportCmd(args[1:])
 	case "wait":
 		taskWaitCmd(args[1:])
+	case "analyze":
+		taskAnalyzeCmd(args[1:])
+	case "reset-budget":
+		taskResetBudgetCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -2382,6 +2388,12 @@ func taskLsCmd(args []string) {
 		return
 	}
 
+	// Fetch budget data for persistent tasks
+	var budgetMap map[string]float64
+	if daemon.IsDaemonRunning() {
+		budgetMap, _ = daemon.SendBudgetRequest()
+	}
+
 	for _, p := range projects {
 		if allProjects && len(p.todos) > 0 {
 			fmt.Printf("%s\n", p.path)
@@ -2409,7 +2421,21 @@ func taskLsCmd(args []string) {
 			if len(t.Labels) > 0 {
 				labelStr = "  [" + strings.Join(t.Labels, ", ") + "]"
 			}
-			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr)
+			budgetStr := ""
+			if t.IsPersistent() && t.PersistentBudget > 0 {
+				budgetUsed := time.Duration(0)
+				if secs, ok := budgetMap[taskKey]; ok {
+					budgetUsed = time.Duration(secs * float64(time.Second))
+				}
+				pct := float64(budgetUsed) / float64(t.PersistentBudget) * 100
+				filled := int(pct / 10)
+				if filled > 10 {
+					filled = 10
+				}
+				bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", 10-filled)
+				budgetStr = fmt.Sprintf("  %s %.0f%%", bar, pct)
+			}
+			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr, budgetStr)
 		}
 	}
 }
@@ -2489,6 +2515,11 @@ func taskGetCmd(args []string) {
 			MaxConcurrent   int      `json:"max_concurrent,omitempty"`
 			SkipPermissions bool     `json:"skip_permissions,omitempty"`
 			Runner          string   `json:"runner,omitempty"`
+			BudgetTotal     string   `json:"budget_total,omitempty"`
+			BudgetUsed      string   `json:"budget_used,omitempty"`
+			BudgetRemaining string   `json:"budget_remaining,omitempty"`
+			BudgetPercent   float64  `json:"budget_percent,omitempty"`
+			BudgetExhausted bool     `json:"budget_exhausted,omitempty"`
 		}
 		detail := taskDetailJSON{
 			File:            todo.Path,
@@ -2508,6 +2539,29 @@ func taskGetCmd(args []string) {
 			MaxConcurrent:   todo.MaxConcurrent,
 			SkipPermissions: todo.SkipPermissions,
 			Runner:          todo.Runner,
+		}
+		// Add budget info for persistent tasks
+		if todo.IsPersistent() && todo.PersistentBudget > 0 {
+			budgetUsed := time.Duration(0)
+			if daemon.IsDaemonRunning() {
+				budgetMap, err := daemon.SendBudgetRequest()
+				if err == nil {
+					taskKey := fmt.Sprintf("%s/%s", abs, todo.Name)
+					if secs, ok := budgetMap[taskKey]; ok {
+						budgetUsed = time.Duration(secs * float64(time.Second))
+					}
+				}
+			}
+			remaining := todo.PersistentBudget - budgetUsed
+			if remaining < 0 {
+				remaining = 0
+			}
+			pct := float64(budgetUsed) / float64(todo.PersistentBudget) * 100
+			detail.BudgetTotal = todo.PersistentBudget.String()
+			detail.BudgetUsed = budgetUsed.Round(time.Second).String()
+			detail.BudgetRemaining = remaining.Round(time.Second).String()
+			detail.BudgetPercent = pct
+			detail.BudgetExhausted = budgetUsed >= todo.PersistentBudget
 		}
 		data, err := json.MarshalIndent(detail, "", "  ")
 		if err != nil {
@@ -2536,7 +2590,76 @@ func taskGetCmd(args []string) {
 	} else {
 		fmt.Printf("Status:   %s\n", runStatus)
 	}
+	// Show budget info for persistent tasks with a budget
+	if todo.IsPersistent() && todo.PersistentBudget > 0 {
+		budgetUsed := time.Duration(0)
+		if daemon.IsDaemonRunning() {
+			budgetMap, err := daemon.SendBudgetRequest()
+			if err == nil {
+				taskKey := fmt.Sprintf("%s/%s", abs, todo.Name)
+				if secs, ok := budgetMap[taskKey]; ok {
+					budgetUsed = time.Duration(secs * float64(time.Second))
+				}
+			}
+		}
+		remaining := todo.PersistentBudget - budgetUsed
+		if remaining < 0 {
+			remaining = 0
+		}
+		pct := float64(budgetUsed) / float64(todo.PersistentBudget) * 100
+		fmt.Printf("Budget:   %v / %v used (%.0f%%)\n", budgetUsed.Round(time.Second), todo.PersistentBudget, pct)
+		if remaining > 0 {
+			fmt.Printf("          %v remaining\n", remaining.Round(time.Second))
+		} else {
+			fmt.Printf("          EXHAUSTED\n")
+		}
+	}
 	fmt.Printf("\n%s", todo.Content)
+}
+
+func taskResetBudgetCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task reset-budget <name>\n")
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintf(os.Stderr, "daemon is not running\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	if !todo.IsPersistent() {
+		fmt.Fprintf(os.Stderr, "task %s is not a persistent task\n", todo.Name)
+		os.Exit(1)
+	}
+
+	taskKey := fmt.Sprintf("%s/%s", abs, todo.Name)
+	if err := daemon.SendResetBudgetRequest(taskKey); err != nil {
+		log.Fatalf("failed to reset budget: %v", err)
+	}
+
+	fmt.Printf("Budget reset for %s\n", todo.Name)
 }
 
 func taskLogCmd(args []string) {
