@@ -802,6 +802,11 @@ anvil usage                     # show usage for last 7 days
 anvil usage --project <path>    # filter to a specific project
 anvil usage --task <name>      # filter to a specific task
 anvil usage --since 2026-01-01 # show usage since a specific date
+anvil usage --metrics          # show task runtime metrics (total runtime, success rate, etc.)
+anvil usage --top 10           # limit to top 10 tasks (use with --metrics)
+anvil usage --json             # output as JSON
 ```
 
 Shows LLM token usage and estimated costs across tasks and projects. Tracks input/output tokens and calculates estimated USD costs based on the `input_token_rate` and `output_token_rate` configured in `~/.anvil/config.yaml`.
+
+With `--metrics`, shows task runtime metrics including total runtime, average execution time, run count, and success rates. Use `--top N` to limit output to the top N tasks by runtime.

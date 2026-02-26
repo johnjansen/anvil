@@ -470,7 +470,7 @@ anvil cleanup -o=24h
 | `anvil stop-on-idle` | Drain running tasks then exit the daemon |
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
-| `anvil usage [--project <path>] [--task <name>] [--since <date>]` | Show LLM token usage and estimated costs |
+| `anvil usage [--project <path>] [--task <name>] [--since <date>] [--metrics] [--top N] [--json]` | Show LLM token usage and estimated costs (--metrics shows runtime metrics, --top limits output, --json for JSON output) |
 | `anvil version` | Show version |
 
 **Task management:**
