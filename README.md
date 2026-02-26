@@ -506,7 +506,7 @@ anvil cleanup -o=24h
 | `anvil task history <name> --failures` | Show only failed runs |
 | `anvil task history <name> --json` | Output in JSON format |
 | `anvil task queue` | Show daemon queue status and skip reasons |
-| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path]` | Edit task schedule, priority, or content |
+| `anvil task edit <name> [-s schedule] [-p priority] [--content text] [--content-file path] [--add-label L] [--remove-label L]` | Edit task schedule, priority, content, or labels |
 | `anvil task pause <name>` | Pause a task (sets disabled: true) |
 | `anvil task resume <name>` | Resume a paused task (sets disabled: false) |
 | `anvil task timeout [name]` | Show task timeout progress (--all for all tasks) |
@@ -554,6 +554,30 @@ print("##anvil:status Found 5 issues, triaging...")
 ```
 
 Any line starting with `##anvil:status ` (note the trailing space) is intercepted. All other output passes through normally.
+
+## Prometheus Metrics
+
+The daemon exposes a Prometheus-compatible `/metrics` endpoint at the daemon socket:
+
+```bash
+# Fetch metrics from the daemon
+curl --unix-socket ~/.anvil/daemon.sock http://daemon/metrics
+```
+
+Available metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `anvil_workers_available` | gauge | Number of available worker slots |
+| `anvil_workers_max` | gauge | Maximum number of workers |
+| `anvil_tasks_in_flight` | gauge | Number of tasks currently running |
+| `anvil_tasks_pending` | gauge | Number of tasks queued but not running |
+| `anvil_projects_watched` | gauge | Number of projects being watched |
+| `anvil_uptime_seconds` | gauge | Daemon uptime in seconds |
+| `anvil_task_runs_total` | counter | Total number of task runs |
+| `anvil_task_success_total` | counter | Number of successful task runs |
+| `anvil_task_failure_total` | counter | Number of failed task runs |
+| `anvil_task_duration_seconds_bucket` | histogram | Task duration buckets |
 
 ## Cron Format
 

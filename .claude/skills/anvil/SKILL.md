@@ -497,6 +497,30 @@ Tasks can report their current status to the daemon by printing a special line t
 
 The daemon picks up the status text and displays it in `anvil task ls` and heartbeat logs. Status lines are stripped from the task's output — they never appear in log files. Any line starting with `##anvil:status ` (note the trailing space) is intercepted. All other output passes through normally.
 
+## Prometheus Metrics
+
+The daemon exposes a Prometheus-compatible `/metrics` endpoint at the daemon socket:
+
+```bash
+# Fetch metrics from the daemon
+curl --unix-socket ~/.anvil/daemon.sock http://daemon/metrics
+```
+
+Available metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `anvil_workers_available` | gauge | Number of available worker slots |
+| `anvil_workers_max` | gauge | Maximum number of workers |
+| `anvil_tasks_in_flight` | gauge | Number of tasks currently running |
+| `anvil_tasks_pending` | gauge | Number of tasks queued but not running |
+| `anvil_projects_watched` | gauge | Number of projects being watched |
+| `anvil_uptime_seconds` | gauge | Daemon uptime in seconds |
+| `anvil_task_runs_total` | counter | Total number of task runs |
+| `anvil_task_success_total` | counter | Number of successful task runs |
+| `anvil_task_failure_total` | counter | Number of failed task runs |
+| `anvil_task_duration_seconds_bucket` | histogram | Task duration buckets |
+
 ## Runner Fallback Chain
 
 The daemon supports an ordered list of runner commands in `~/.anvil/config.yaml`. If the first runner fails, it tries the next:
@@ -718,6 +742,8 @@ anvil task edit <name> -s "*/30 * * * *"  # change schedule
 anvil task edit <name> -p 0                 # change priority
 anvil task edit <name> --content "New task description"  # change content
 anvil task edit <name> --content-file task.md  # change content from file
+anvil task edit <name> --add-label triage     # add a label
+anvil task edit <name> --remove-label old     # remove a label
 anvil task edit <name> --remove pre_check   # remove a frontmatter field
 ```
 
