@@ -139,6 +139,7 @@ Commands:
 Add options:
   -p, --priority int          Task priority 0-9 (default 1)
   -s, --schedule string      Cron schedule (e.g., "*/15 * * * *"), "" for one-shot
+  -o, --once                 Create a one-shot task (no schedule)
   -f, --file path            Read task content from a file
   -                          Read task content from stdin
       --pre-check string    Shell command to skip task if non-zero exit
@@ -903,13 +904,14 @@ func addCmd(args []string) {
 	// Handle -h/--help before creating task
 	for _, arg := range args {
 		if arg == "-h" || arg == "--help" {
-			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
+			fmt.Fprintf(os.Stderr, `usage: anvil add [-p priority] [-s schedule | --once] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>
 
 Add a new task to the project.
 
 Options:
   -p, --priority n        Priority 0-9 (default: 1)
   -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
+  -o, --once              Create a one-shot task (no schedule)
   --pre-check cmd        Command to run before task execution
   --allowed-tools tools  Comma-separated list of allowed tools
   --max-concurrent n     Max concurrent runs (default: 1)
@@ -921,6 +923,7 @@ Frontmatter in file/stdin input is merged with CLI flags (CLI flags take precede
 
 Examples:
   anvil add "Review pull requests"
+  anvil add --once "Migrate the database schema"
   anvil add -p 2 -s "0 9 * * *" "Daily standup notes"
   anvil add --pre-check "git diff --quiet" "Sync documentation"
   anvil add -s "*/30 * * * *" --file triage-prompt.md
@@ -1164,6 +1167,7 @@ func taskCreateCmd(args []string) {
 	skipPermissions := false
 	filePath := ""
 	readStdin := false
+	onceFlag := false
 
 	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter.
 	prioritySet := false
@@ -1199,6 +1203,8 @@ func taskCreateCmd(args []string) {
 			i++
 			schedule = args[i]
 			scheduleSet = true
+		case "-o", "--once":
+			onceFlag = true
 		case "--pre-check":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for --pre-check")
@@ -1242,6 +1248,17 @@ func taskCreateCmd(args []string) {
 		}
 	}
 
+	// Validate --once and --schedule are not both set.
+	if onceFlag && scheduleSet {
+		log.Fatal("cannot use both --once and --schedule")
+	}
+
+	// --once explicitly sets an empty schedule (one-shot task).
+	if onceFlag {
+		schedule = ""
+		scheduleSet = true
+	}
+
 	var taskText string
 
 	switch {
@@ -1261,7 +1278,7 @@ func taskCreateCmd(args []string) {
 		taskText = string(data)
 	default:
 		if len(rest) == 0 {
-			log.Fatal("usage: anvil add [-p priority] [-s schedule] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>")
+			log.Fatal("usage: anvil add [-p priority] [-s schedule | --once] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>")
 		}
 		taskText = strings.Join(rest, " ")
 	}
