@@ -104,6 +104,8 @@ type Todo struct {
 	PersistentBudget     time.Duration // cumulative wall-clock budget per daemon lifetime (0 = unlimited)
 	MaxLogSize           int64         // max log file size in bytes (0 = use global default)
 	Runner               string        // per-task runner command override (empty = use global runner chain)
+	RunnerChain          []string      // per-task runner chain (tried in sequence on failure)
+	RunnerOnTimeout      string        // fallback runner when task times out
 	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
 	Labels               []string      // user-defined labels for organizing and filtering tasks
 	Env                  map[string]string // environment variables injected into task execution
