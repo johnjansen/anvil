@@ -364,10 +364,11 @@ The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`
 
 ### Health Endpoint
 
-The daemon exposes a `/health` HTTP endpoint for monitoring and container orchestration:
+The daemon exposes a `/health` HTTP endpoint (via Unix socket at `$ANVIL_SOCKET/health`) for monitoring and container orchestration:
 
 ```bash
-anvil health
+# Query the health endpoint via socket
+curl --unix-socket ~/.anvil/daemon.sock http://localhost/health
 ```
 
 The endpoint returns JSON with:
@@ -447,6 +448,7 @@ anvil cleanup -o=24h
 | `anvil add [opts] <task>` | Add a task (`-s schedule`, `-p priority 0-9`, `-o|--once`, `-f file`, `-` stdin, `-n|--dry-run`, `--pre-check`, `--allowed-tools`, `--max-concurrent`, `--skip-permissions`) |
 | `anvil logs [<name>]` | Raw worker output (all tasks or one) |
 | `anvil daemon log` | View daemon log (-f to follow, -n for lines) |
+| `anvil daemon config-validate [--show]` | Validate config file (--show to display parsed config) |
 | `anvil ps [--json] [-w|--watch]` | Show running tasks (--watch for live updates) |
 | `anvil status` | Show watched projects |
 | `anvil reload` | Reload daemon configuration (SIGHUP) |
@@ -482,6 +484,9 @@ anvil cleanup -o=24h
 | `anvil task next [name]` | Show next scheduled run time (--all for all projects) |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
+| `anvil task find <pattern>` | Find tasks by name pattern (alias for ls --match) |
+| `anvil task export [names...] [-a\|--all] [-o file]` | Export tasks to JSON for sharing or backup |
+| `anvil task import <file> [--base-path path] [-n\|--dry-run] [-f\|--force]` | Import tasks from a JSON export file |
 
 **Task status:**
 
@@ -501,6 +506,42 @@ anvil cleanup -o=24h
 | `anvil project ls [-a|--all]` | List watched projects |
 | `anvil project get [path]` | Show project and running tasks |
 | `anvil project rm [path] [--clean]` | Unwatch a project (--clean removes .anvil/ too) |
+
+## Task Import/Export
+
+Share or back up task configurations:
+
+```bash
+# Export specific tasks to stdout
+anvil task export task1.md task2.md
+
+# Export all tasks from current project to a file
+anvil task export --all -o backup.json
+
+# Import tasks from a JSON file
+anvil task import backup.json
+
+# Preview import without creating tasks
+anvil task import backup.json --dry-run
+
+# Import with path remapping (for sharing between machines)
+anvil task import backup.json --base-path /new/project/path
+
+# Overwrite existing tasks on import
+anvil task import backup.json --force
+```
+
+## Validating Configuration
+
+Check your daemon config for errors without starting the daemon:
+
+```bash
+# Validate ~/.anvil/config.yaml
+anvil daemon config-validate
+
+# Validate and show the parsed config
+anvil daemon config-validate --show
+```
 
 ## Runtime Status Reporting
 

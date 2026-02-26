@@ -167,6 +167,8 @@ Task subcommands:
   resume <name>             Resume a paused task (sets disabled: false)
   edit <name>               Edit task (schedule, priority, content, or --remove field)
   timeout [name]            Show task timeout progress (--all for all tasks)
+  export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
+  import <file> [options]   Import tasks from a JSON export file
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -175,7 +177,8 @@ Project subcommands:
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
 
 Daemon subcommands:
-  log [-f] [-n lines]    View daemon log (-f to follow, -n for last N lines)
+  log [-f] [-n lines]      View daemon log (-f to follow, -n for last N lines)
+  config-validate [--show]  Validate config file (--show to display parsed config)
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config

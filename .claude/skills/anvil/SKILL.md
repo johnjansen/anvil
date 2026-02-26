@@ -638,8 +638,12 @@ anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
+anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)
+anvil task find <pattern>            # find tasks by name pattern (alias for ls --match)
+anvil task export [names...] [-a|--all] [-o file]  # export tasks to JSON
+anvil task import <file> [--base-path path] [-n|--dry-run] [-f|--force]  # import tasks from JSON
 ```
 
 ## Project Subcommands
@@ -681,6 +685,39 @@ anvil daemon log -n 100   # view last 100 lines
 ```
 
 View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
+
+## Validating Configuration
+
+```bash
+anvil daemon config-validate          # validate ~/.anvil/config.yaml
+anvil daemon config-validate --show   # validate and show parsed config
+```
+
+Checks the daemon config file for syntax errors and invalid values without starting the daemon.
+
+## Task Import/Export
+
+```bash
+# Export specific tasks to stdout
+anvil task export task1.md task2.md
+
+# Export all tasks from current project to a file
+anvil task export --all -o backup.json
+
+# Import tasks from a JSON file
+anvil task import backup.json
+
+# Preview import without creating tasks
+anvil task import backup.json --dry-run
+
+# Import with path remapping
+anvil task import backup.json --base-path /new/project/path
+
+# Overwrite existing tasks
+anvil task import backup.json --force
+```
+
+Export tasks to a portable JSON format for sharing between machines or backing up configurations. Use `--base-path` during import to remap project paths.
 
 ## Cleanup
 
