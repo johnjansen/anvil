@@ -174,7 +174,7 @@ Project subcommands:
   rm [path] [--clean]      Unwatch a project (--clean removes .anvil/ too)
 
 Daemon subcommands:
-  log [-f] [-n lines]    View daemon log (-f to follow, -n for last N lines)
+  log [-f] [-n N] [--level L] [--match PAT] [--since DUR]  View/filter daemon log
 
 Configuration:
   ~/.anvil/config.yaml   Daemon config
@@ -3068,6 +3068,9 @@ func daemonCmd(args []string) {
 func daemonLogCmd(args []string) {
 	follow := false
 	numLines := 50
+	levelFilter := ""
+	matchFilter := ""
+	sinceFilter := ""
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -3083,18 +3086,65 @@ func daemonLogCmd(args []string) {
 				log.Fatalf("invalid line count: %s", args[i])
 			}
 			numLines = n
+		case "--level":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --level")
+			}
+			i++
+			levelFilter = strings.ToLower(args[i])
+		case "--match":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --match")
+			}
+			i++
+			matchFilter = strings.ToLower(args[i])
+		case "--since":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --since")
+			}
+			i++
+			sinceFilter = args[i]
 		case "-h", "--help":
-			fmt.Fprintf(os.Stderr, `usage: anvil daemon log [-f] [-n lines]
+			fmt.Fprintf(os.Stderr, `usage: anvil daemon log [-f] [-n lines] [--level LEVEL] [--match PATTERN] [--since DURATION]
 
 View the daemon log file (~/.anvil/daemon.log).
 
 Options:
-  -f, --follow   Follow the log (like tail -f)
-  -n lines       Show last N lines (default 50)
+  -f, --follow       Follow the log (like tail -f)
+  -n lines           Show last N lines (default 50, applied after filtering)
+  --level LEVEL      Filter by level: debug, info, warn, error (comma-separated)
+  --match PATTERN    Filter lines containing pattern (case-insensitive)
+  --since DURATION   Show entries from last duration (e.g., 1h, 30m, 2h30m)
 `)
 			os.Exit(0)
 		}
 	}
+
+	// Parse level filter into a set of accepted levels
+	acceptLevels := map[string]bool{}
+	if levelFilter != "" {
+		for _, l := range strings.Split(levelFilter, ",") {
+			l = strings.TrimSpace(l)
+			switch l {
+			case "debug", "info", "warn", "error":
+				acceptLevels[l] = true
+			default:
+				log.Fatalf("unknown log level: %q (valid: debug, info, warn, error)", l)
+			}
+		}
+	}
+
+	// Parse --since into a cutoff time
+	var sinceCutoff time.Time
+	if sinceFilter != "" {
+		dur, err := time.ParseDuration(sinceFilter)
+		if err != nil {
+			log.Fatalf("invalid duration for --since: %v", err)
+		}
+		sinceCutoff = time.Now().Add(-dur)
+	}
+
+	hasFilter := len(acceptLevels) > 0 || matchFilter != "" || !sinceCutoff.IsZero()
 
 	logPath := config.DaemonLogPath()
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
@@ -3112,6 +3162,17 @@ Options:
 	// Remove trailing empty line from Split.
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
+	}
+
+	// Apply filters
+	if hasFilter {
+		var filtered []string
+		for _, line := range lines {
+			if logLineMatches(line, acceptLevels, matchFilter, sinceCutoff) {
+				filtered = append(filtered, line)
+			}
+		}
+		lines = filtered
 	}
 
 	start := 0
@@ -3142,6 +3203,7 @@ Options:
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
+	var lineBuf []byte
 	buf := make([]byte, 4096)
 	for {
 		select {
@@ -3152,7 +3214,23 @@ Options:
 
 		n, readErr := f.Read(buf)
 		if n > 0 {
-			os.Stdout.Write(buf[:n])
+			if !hasFilter {
+				os.Stdout.Write(buf[:n])
+			} else {
+				// Buffer and filter line-by-line
+				lineBuf = append(lineBuf, buf[:n]...)
+				for {
+					idx := bytes.IndexByte(lineBuf, '\n')
+					if idx < 0 {
+						break
+					}
+					line := string(lineBuf[:idx])
+					lineBuf = lineBuf[idx+1:]
+					if logLineMatches(line, acceptLevels, matchFilter, sinceCutoff) {
+						fmt.Println(line)
+					}
+				}
+			}
 			continue
 		}
 		if readErr != nil && readErr != io.EOF {
@@ -3175,6 +3253,66 @@ Options:
 
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// logLineLevel detects the log level of a daemon log line.
+func logLineLevel(line string) string {
+	lower := strings.ToLower(line)
+	// Explicit level tags
+	if strings.Contains(lower, "[error]") || strings.Contains(lower, "[fatal]") {
+		return "error"
+	}
+	if strings.Contains(lower, "[warn]") {
+		return "warn"
+	}
+	// Worker events by symbol
+	if strings.Contains(line, "✗") || strings.Contains(lower, "fail ") {
+		return "error"
+	}
+	if strings.Contains(line, "—") && strings.Contains(lower, "idle") {
+		return "debug"
+	}
+	// Everything else is info
+	return "info"
+}
+
+// logLineMatches checks if a log line passes all active filters.
+func logLineMatches(line string, acceptLevels map[string]bool, matchFilter string, sinceCutoff time.Time) bool {
+	if line == "" {
+		return false
+	}
+	// Level filter
+	if len(acceptLevels) > 0 {
+		level := logLineLevel(line)
+		if !acceptLevels[level] {
+			return false
+		}
+	}
+	// Match filter (case-insensitive substring)
+	if matchFilter != "" {
+		if !strings.Contains(strings.ToLower(line), matchFilter) {
+			return false
+		}
+	}
+	// Since filter: parse time from line start (HH:MM:SS format)
+	if !sinceCutoff.IsZero() {
+		if len(line) >= 8 {
+			t, err := time.Parse("15:04:05", line[:8])
+			if err == nil {
+				// Reconstruct full timestamp using today's date
+				now := time.Now()
+				lineTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), 0, now.Location())
+				// Handle midnight wraparound
+				if lineTime.After(now) {
+					lineTime = lineTime.AddDate(0, 0, -1)
+				}
+				if lineTime.Before(sinceCutoff) {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func stopOnIdleCmd() {
