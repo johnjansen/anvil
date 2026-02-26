@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -126,10 +127,9 @@ Commands:
   watch --stop             Stop the background daemon
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
-  ps [--json] [-w|--watch] Show running tasks (--watch for live updates)
+  ps [--json] [-w|--watch] Show running tasks (--watch for live dashboard)
   status [--json]          Show watched projects and daemon status
   project <subcommand>     Project management commands
-  ps [--watch|-f] [--json] Show running tasks (--watch for live dashboard)
   daemon <subcommand>      Daemon management commands
   update [--check]         Update anvil to the latest release
   version                  Show version
@@ -1065,13 +1065,18 @@ func psWatchLoop(daemonPID, maxWorkers int, quit <-chan struct{}) {
 }
 
 func psRenderDashboard(daemonPID, maxWorkers int) {
+	// Use a buffer so we can translate \n → \r\n for raw terminal mode.
+	var buf bytes.Buffer
+	w := &buf
+
 	// Clear screen and move to top
-	fmt.Print("\033[2J\033[H")
-	fmt.Print("\033[?25l") // hide cursor
+	fmt.Fprint(w, "\033[2J\033[H")
+	fmt.Fprint(w, "\033[?25l") // hide cursor
 
 	// Check daemon is still running
 	if !daemon.IsDaemonRunning() {
-		fmt.Println("daemon not running")
+		fmt.Fprintln(w, "daemon not running")
+		writeRaw(buf.Bytes())
 		return
 	}
 
@@ -1083,8 +1088,8 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 
 	// Count total todos across projects
 	totalTasks := 0
-	for _, w := range watched {
-		proj, err := project.Load(w.Path)
+	for _, wp := range watched {
+		proj, err := project.Load(wp.Path)
 		if err != nil {
 			continue
 		}
@@ -1097,15 +1102,15 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 	if status != nil && status.Draining {
 		drainNote = " (draining)"
 	}
-	fmt.Printf("anvil daemon (PID %d), %d projects, %d tasks — %d workers%s\n",
+	fmt.Fprintf(w, "anvil daemon (PID %d), %d projects, %d tasks — %d workers%s\n",
 		daemonPID, len(watched), totalTasks, maxWorkers, drainNote)
-	fmt.Println()
+	fmt.Fprintln(w)
 
 	// RUNNING section
 	runningTasks := tasks
-	fmt.Printf("RUNNING (%d)\n", len(runningTasks))
+	fmt.Fprintf(w, "RUNNING (%d)\n", len(runningTasks))
 	if len(runningTasks) == 0 {
-		fmt.Println("  (none)")
+		fmt.Fprintln(w, "  (none)")
 	}
 	for _, t := range runningTasks {
 		projectName := filepath.Base(t.Project)
@@ -1113,20 +1118,20 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 		if t.Status != "" {
 			statusStr = "  " + t.Status
 		}
-		fmt.Printf("  %-40s %8s%s\n",
+		fmt.Fprintf(w, "  %-40s %8s%s\n",
 			truncate(projectName+"/"+t.Name, 40),
 			t.Elapsed,
 			statusStr)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 
 	// IDLE workers
 	idleCount := maxWorkers - len(runningTasks)
 	if idleCount < 0 {
 		idleCount = 0
 	}
-	fmt.Printf("IDLE (%d)\n", idleCount)
-	fmt.Println()
+	fmt.Fprintf(w, "IDLE (%d)\n", idleCount)
+	fmt.Fprintln(w)
 
 	// PENDING / SKIPPED from queue
 	var pending []daemon.TaskQueueInfo
@@ -1141,25 +1146,25 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 	}
 
 	if len(pending) > 0 {
-		fmt.Printf("PENDING (%d)\n", len(pending))
+		fmt.Fprintf(w, "PENDING (%d)\n", len(pending))
 		for _, q := range pending {
 			projectName := filepath.Base(q.Project)
-			fmt.Printf("  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), q.Schedule)
+			fmt.Fprintf(w, "  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), q.Schedule)
 		}
-		fmt.Println()
+		fmt.Fprintln(w)
 	}
 
 	if len(skipped) > 0 {
-		fmt.Printf("SKIPPED (%d)\n", len(skipped))
+		fmt.Fprintf(w, "SKIPPED (%d)\n", len(skipped))
 		for _, q := range skipped {
 			projectName := filepath.Base(q.Project)
 			reason := q.SkipReason
 			if reason == "" {
 				reason = "unknown"
 			}
-			fmt.Printf("  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), reason)
+			fmt.Fprintf(w, "  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), reason)
 		}
-		fmt.Println()
+		fmt.Fprintln(w)
 	}
 
 	// NEXT SCHEDULED — compute from watched projects
@@ -1171,8 +1176,8 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 	}
 	var upcoming []nextTask
 	now := time.Now()
-	for _, w := range watched {
-		proj, err := project.Load(w.Path)
+	for _, wp := range watched {
+		proj, err := project.Load(wp.Path)
 		if err != nil {
 			continue
 		}
@@ -1190,7 +1195,7 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 				continue
 			}
 			upcoming = append(upcoming, nextTask{
-				project:  filepath.Base(w.Path),
+				project:  filepath.Base(wp.Path),
 				name:     t.Name,
 				schedule: t.Schedule,
 				nextRun:  next,
@@ -1206,7 +1211,7 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 		upcoming = upcoming[:5]
 	}
 	if len(upcoming) > 0 {
-		fmt.Printf("NEXT SCHEDULED\n")
+		fmt.Fprintf(w, "NEXT SCHEDULED\n")
 		for _, u := range upcoming {
 			until := time.Until(u.nextRun)
 			var untilStr string
@@ -1217,17 +1222,24 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 			} else {
 				untilStr = fmt.Sprintf("in %dh%dm", int(until.Hours()), int(until.Minutes())%60)
 			}
-			fmt.Printf("  %-6s %-34s %s\n",
+			fmt.Fprintf(w, "  %-6s %-34s %s\n",
 				u.schedule,
 				truncate(u.project+"/"+u.name, 34),
 				untilStr)
 		}
-		fmt.Println()
+		fmt.Fprintln(w)
 	}
 
-	fmt.Println("Press q to quit")
+	fmt.Fprintln(w, "Press q to quit")
+	writeRaw(buf.Bytes())
 }
 
+
+// writeRaw writes data to stdout, translating bare \n to \r\n for raw terminal mode.
+func writeRaw(data []byte) {
+	out := bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
+	os.Stdout.Write(out)
+}
 
 // truncate shortens a string to the specified length
 func truncate(s string, maxLen int) string {
