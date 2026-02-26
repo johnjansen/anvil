@@ -43,6 +43,7 @@ Options:
 - `-p, --priority <0-9>` — Priority level (default: 1). Lower = higher priority.
 - `-s, --schedule <cron>` — Cron expression for when to run.
 - `-o, --once` — Create a one-shot task (no schedule).
+- `-n, --dry-run` — Validate schedule without creating the task.
 - `-f, --file <path>` — Read task content from a file.
 - `-` — Read task content from stdin.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
@@ -79,6 +80,12 @@ anvil add -s "*/15 * * * *" --skip-permissions "Run automated checks"
 
 # Task with max concurrent instances
 anvil add -s "*/5 * * * *" --max-concurrent 2 "Process in parallel"
+
+# Read task content from a file
+anvil add -s "*/30 * * * *" -f task.md
+
+# Read task content from stdin
+echo "Process items from queue" | anvil add -s "*/30 * * * *" -
 ```
 
 Task files are stored in `.anvil/todos/p<N>/<slugified-name>.md` with YAML frontmatter containing the schedule and a UUID.
@@ -125,6 +132,20 @@ persistent_max_runtime: 10m
 ```
 
 Useful for preventing runaway tasks. Default is 0 (no limit).
+
+### persistent_budget
+
+Set `persistent_budget` to limit cumulative wall-clock time a persistent task can run per daemon lifetime:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "persistent"
+persistent_budget: 1h
+---
+```
+
+When the cumulative runtime exceeds this budget, the task stops and requires manual restart. Default is 0 (unlimited).
 
 ### Starvation prevention
 
@@ -315,6 +336,29 @@ Hooks run in the project directory with a 60-second timeout. Environment variabl
 
 Hook errors are logged as warnings but do not affect the task outcome.
 
+## Per-task runner override
+
+Override the global runner chain for a specific task:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+runner: "claude -p 'You are a specialized assistant'"
+---
+Run this task with a different runner command than the global default.
+```
+
+The task-level runner is used instead of the global `runners` list for this task only.
+
+You can also set a default runner at the project level:
+
+```yaml
+# .anvil/config.yaml (project-level)
+defaults:
+  runner: "claude -p 'You are a task runner'"
+```
+
 ## Runtime Status Reporting
 
 Tasks can report their current status to the daemon by printing a special line to stdout:
@@ -351,10 +395,16 @@ runners:
   - claude
 max_workers: 10    # parallel tasks (max_todos is deprecated)
 timeout: 15m       # max per task
-tick_interval: 5s  # how often to check for work
+tick_interval: 10s  # how often to check for work
+input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
+output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
+auto_update: false       # opt-in: auto-update binary on daemon startup
 hooks:
   on_success: "echo 'Task completed' >> ~/.anvil/history.log"
   on_failure: "curl -X POST https://example.com/webhook -d '{\"text\":\"Task failed\"}'"
+retention:
+  max_age: 7d      # delete logs older than 7 days
+  max_runs: 50     # keep only last 50 runs per task
 ```
 
 Global hooks run for all tasks. Task-level hooks override global hooks for that specific task.
@@ -380,9 +430,37 @@ defaults:
   skip_permissions: false
   persistent_cooldown: 5s
   persistent_max_runtime: 30m
+  persistent_budget: 1h
+  runner: "claude -p 'You are a task runner'"
 ```
 
 Task-level frontmatter overrides project defaults. Global hooks from `~/.anvil/config.yaml` apply to all tasks unless overridden at the project or task level.
+
+### Log Retention
+
+Configure automatic cleanup of old logs and session data in `~/.anvil/config.yaml`:
+
+```yaml
+retention:
+  max_age: 7d    # delete logs older than 7 days
+  max_runs: 50   # keep only last 50 runs per task
+```
+
+Or run cleanup manually:
+
+```bash
+# Preview what would be deleted
+anvil cleanup --older-than=3d --dry-run
+
+# Shorthand for dry-run
+anvil cleanup --older-than=3d -n
+
+# Actually delete logs older than 3 days
+anvil cleanup --older-than=3d
+
+# Use shorter duration syntax
+anvil cleanup -o=24h
+```
 
 ### Hot Reload
 
@@ -553,6 +631,18 @@ anvil daemon log -n 100   # view last 100 lines
 ```
 
 View the daemon's log output. Useful for debugging daemon issues or monitoring daemon activity.
+
+## Cleanup
+
+```bash
+anvil cleanup                         # show retention policy config
+anvil cleanup --older-than=3d         # delete logs older than 3 days
+anvil cleanup --older-than=3d --dry-run  # preview what would be deleted
+anvil cleanup --older-than=3d -n      # shorthand for --dry-run
+anvil cleanup -o=24h                  # short form
+```
+
+Prune old logs and session data. Use `--dry-run` to preview deletions without actually deleting. Without a retention policy configured, it shows how to configure one.
 
 ## Checking Status
 
