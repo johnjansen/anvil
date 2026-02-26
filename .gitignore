@@ -45,3 +45,5 @@ logs/
 
 # Example project
 /example_proj
+/.worktrees/
+/.worktrees/
