@@ -126,7 +126,7 @@ Commands:
   watch --install          Install as system service (auto-start on boot)
   watch --uninstall        Remove the system service
   watch --status           Show system service status
-  watch --stop             Stop the background daemon
+  watch --stop [--graceful] Stop the daemon (--graceful waits for tasks, --force kills)
   add [options] <task>     Add a task to the current project
   logs [<name>]            Raw worker output (all tasks if no name given)
   ps [--json] [-w|--watch] Show running tasks (--watch for live dashboard)
@@ -361,8 +361,11 @@ func watchCmd2(args []string) {
 	install := false
 	uninstall := false
 	status := false
-	for _, arg := range args {
-		switch arg {
+	graceful := false
+	force := false
+	gracefulTimeout := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--daemonize", "-d":
 			daemonize = true
 		case "--stop":
@@ -375,6 +378,22 @@ func watchCmd2(args []string) {
 			uninstall = true
 		case "--status":
 			status = true
+		case "--graceful", "-g":
+			graceful = true
+		case "--force":
+			force = true
+		case "--timeout":
+			if i+1 < len(args) {
+				i++
+				gracefulTimeout = args[i]
+			}
+		default:
+			if strings.HasPrefix(args[i], "--graceful=") {
+				graceful = true
+				gracefulTimeout = strings.TrimPrefix(args[i], "--graceful=")
+			} else if strings.HasPrefix(args[i], "--timeout=") {
+				gracefulTimeout = strings.TrimPrefix(args[i], "--timeout=")
+			}
 		}
 	}
 
@@ -394,7 +413,11 @@ func watchCmd2(args []string) {
 	}
 
 	if stop {
-		stopDaemon()
+		if graceful {
+			stopDaemonGraceful(gracefulTimeout)
+		} else {
+			stopDaemon(force)
+		}
 		return
 	}
 
@@ -602,7 +625,7 @@ func runDaemonChild() {
 }
 
 // stopDaemon sends SIGTERM to the running daemon and waits for it to exit.
-func stopDaemon() {
+func stopDaemon(force bool) {
 	pid := readDaemonPID()
 	if pid == 0 {
 		fmt.Fprintln(os.Stderr, "no daemon running")
@@ -615,8 +638,19 @@ func stopDaemon() {
 		return
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	sig := syscall.SIGTERM
+	if force {
+		sig = syscall.SIGKILL
+	}
+
+	if err := proc.Signal(sig); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to stop daemon: %v\n", err)
+		return
+	}
+
+	if force {
+		fmt.Fprintf(os.Stderr, "daemon force-killed (PID %d)\n", pid)
+		os.Remove(config.PidFile())
 		return
 	}
 
@@ -629,6 +663,86 @@ func stopDaemon() {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "daemon did not stop in time (PID %d)\n", pid)
+}
+
+func stopDaemonGraceful(timeoutStr string) {
+	pid := readDaemonPID()
+	if pid == 0 {
+		fmt.Fprintln(os.Stderr, "no daemon running")
+		return
+	}
+
+	timeoutDur := 5 * time.Minute
+	if timeoutStr != "" {
+		d, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			log.Fatalf("invalid timeout: %s (use format like 5m, 30s, 1h)", timeoutStr)
+		}
+		timeoutDur = d
+	}
+
+	// Check running tasks before stopping
+	if daemon.IsDaemonRunning() {
+		tasks, err := daemon.SendPsRequest()
+		if err == nil && len(tasks) == 0 {
+			// No running tasks — stop immediately
+			stopDaemon(false)
+			return
+		}
+
+		if err == nil && len(tasks) > 0 {
+			fmt.Fprintf(os.Stderr, "Gracefully stopping daemon...\nWaiting for %d running task(s) to complete:\n", len(tasks))
+			for _, t := range tasks {
+				fmt.Fprintf(os.Stderr, "  - %s/%s (running %s)\n", t.Project, t.Name, t.Elapsed)
+			}
+			fmt.Fprintf(os.Stderr, "Press Ctrl+C to force stop\n\n")
+		}
+	}
+
+	// Send SIGTERM — daemon will do graceful shutdown internally
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "no daemon running")
+		return
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to stop daemon: %v\n", err)
+		return
+	}
+
+	// Poll until daemon stops or timeout expires
+	deadline := time.After(timeoutDur + 10*time.Second) // extra 10s buffer over daemon's own timeout
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	startTime := time.Now()
+
+	for {
+		select {
+		case <-deadline:
+			fmt.Fprintf(os.Stderr, "\nTimeout reached. Force-killing daemon (PID %d)...\n", pid)
+			proc.Signal(syscall.SIGKILL)
+			os.Remove(config.PidFile())
+			return
+		case <-ticker.C:
+			if _, err := os.Stat(config.PidFile()); os.IsNotExist(err) {
+				elapsed := time.Since(startTime).Round(time.Second)
+				fmt.Fprintf(os.Stderr, "\ndaemon stopped gracefully (PID %d, waited %s)\n", pid, elapsed)
+				return
+			}
+			// Show progress
+			if daemon.IsDaemonRunning() {
+				tasks, err := daemon.SendPsRequest()
+				if err == nil {
+					elapsed := time.Since(startTime).Round(time.Second)
+					remaining := timeoutDur - time.Since(startTime)
+					if remaining < 0 {
+						remaining = 0
+					}
+					fmt.Fprintf(os.Stderr, "\r  %d task(s) still running... (%s elapsed, %s remaining)  ", len(tasks), elapsed, remaining.Round(time.Second))
+				}
+			}
+		}
+	}
 }
 
 // watchCmd is the legacy "register a project" command, now superseded by

@@ -24,7 +24,8 @@ type Config struct {
 	InputTokenRate  float64         `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
 	OutputTokenRate float64         `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
 	AutoUpdate      bool            `yaml:"auto_update"`       // opt-in: auto-update binary on daemon startup
-	Env             map[string]string `yaml:"env"`             // global environment variables injected into all task executions
+	Env                      map[string]string `yaml:"env"`                        // global environment variables injected into all task executions
+	GracefulShutdownTimeout  time.Duration     `yaml:"graceful_shutdown_timeout"`   // max wait for running tasks on graceful stop (default: 5m)
 }
 
 // WebhookConfig defines a single webhook endpoint that receives task lifecycle events.
