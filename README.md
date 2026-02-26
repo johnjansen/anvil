@@ -275,7 +275,59 @@ Run with up to 3 retries, waiting 2 minutes between attempts.
 
 The retry delay uses exponential backoff: the initial delay doubles after each retry attempt (delay * 2^attempt). For example, with retry_delay=1m, retries occur at 1m, 2m, 4m, etc.
 
-### Task labels
+### Task timeout progress
+
+Monitor task timeout progress to see how much time is left:
+
+```bash
+# Show timeout progress for a specific task
+anvil task timeout my-task
+
+# Show timeout progress for all running tasks
+anvil task timeout --all
+```
+
+The output shows elapsed time, remaining time, and percentage complete.
+
+### SLA Tracking
+
+Configure SLA (Service Level Agreement) tracking to monitor and control task dispatch delays:
+
+```yaml
+# Per-task SLA configuration
+---
+schedule: "*/30 * * * *"
+sla:
+  max_delay: 5m      # max delay before violation (default: no SLA)
+  strict: true       # skip task if SLA violated (default: false)
+on_sla_violation: "echo 'Task missed SLA window'"
+---
+```
+
+Or set a global default in `~/.anvil/config.yaml`:
+
+```yaml
+sla:
+  default_max_delay: 10m    # default max_delay for tasks without per-task SLA
+```
+
+**How SLA works:**
+
+- `max_delay` — Maximum allowed delay from the scheduled time before triggering a violation
+- `strict: true` — Skip the task entirely if it would violate SLA (run on next cron match instead)
+- `strict: false` (default) — Run the task but log the violation
+- `on_sla_violation` — Shell command to run when SLA is violated
+
+View SLA violations:
+
+```bash
+anvil task sla                    # show SLA violations
+anvil task sla --verbose          # show detailed violation info
+anvil task sla --reset            # clear violation history
+anvil task sla --json            # output as JSON
+```
+
+SLA tracking only applies to cron-scheduled tasks (not one-shot or persistent tasks).
 
 Add labels to tasks for organization and filtering:
 
@@ -732,7 +784,16 @@ anvil cleanup -o=24h
 | `anvil cleanup [--older-than=<duration>] [-n\|--dry-run]` | Prune old logs and session data (use --older-than=3d format with equals sign) |
 | `anvil update [--check]` | Update to latest release |
 | `anvil usage [--project <path>] [--task <name>] [--since <date>]` | Show LLM token usage and estimated costs |
+| `anvil prompt <subcommand>` | Prompt testing and validation tools |
 | `anvil version` | Show version |
+
+**Prompt subcommands:**
+
+| Command | Description |
+|---------|-------------|
+| `anvil prompt test <task> [--format json|yaml] [--iterations N] [--json]` | Test prompt output parsing |
+| `anvil prompt analyze <task> [--json]` | Show token count and cost estimates |
+| `anvil prompt preview <task>` | Show expanded prompt with variables |
 
 **Task management:**
 
@@ -762,6 +823,8 @@ anvil cleanup -o=24h
 | `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task pipeline [--dot|--verbose] [--all]` | Visualize task dependency pipelines |
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
+| `anvil task dry-run <name> [options]` | Validate and preview task config without executing |
+| `anvil task sla [--verbose] [--reset] [--json]` | Show SLA violations |
 | `anvil task state <name> [--export FILE \| --import FILE \| --clear]` | View, export, import, or clear task state |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |

@@ -330,6 +330,46 @@ anvil task ls --label triage,github
 anvil task ls --label !archived
 ```
 
+## SLA Tracking
+
+Configure SLA (Service Level Agreement) tracking to monitor and control task dispatch delays:
+
+```yaml
+# Per-task SLA configuration
+---
+schedule: "*/30 * * * *"
+sla:
+  max_delay: 5m      # max delay before violation (default: no SLA)
+  strict: true       # skip task if SLA violated (default: false)
+on_sla_violation: "echo 'Task missed SLA window'"
+---
+```
+
+Or set a global default in `~/.anvil/config.yaml`:
+
+```yaml
+sla:
+  default_max_delay: 10m    # default max_delay for tasks without per-task SLA
+```
+
+**How SLA works:**
+
+- `max_delay` — Maximum allowed delay from the scheduled time before triggering a violation
+- `strict: true` — Skip the task entirely if it would violate SLA (run on next cron match instead)
+- `strict: false` (default) — Run the task but log the violation
+- `on_sla_violation` — Shell command to run when SLA is violated
+
+View SLA violations:
+
+```bash
+anvil task sla                    # show SLA violations
+anvil task sla --verbose          # show detailed violation info
+anvil task sla --reset            # clear violation history
+anvil task sla --json            # output as JSON
+```
+
+SLA tracking only applies to cron-scheduled tasks (not one-shot or persistent tasks).
+
 ## disabled
 
 Set `disabled: true` to pause a task without deleting it:
@@ -1062,10 +1102,14 @@ anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
 anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes (exit 0=ok, 1=fail, 2=timeout)
+anvil task dry-run <name> [options]  # validate and preview task config without executing
+anvil task sla [--verbose] [--reset] [--json]  # show SLA violations
 anvil task analyze [--all]         # analyze task schedules for potential conflicts
 anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
 anvil task reset-budget <name>    # reset persistent task budget consumption
 anvil task state <name> [--export|--import|--clear]  # view, export, import, or clear task state
+anvil task dry-run <name> [options]  # validate and preview task config without executing
+anvil task sla [--verbose] [--reset] [--json]  # show SLA violations
 anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)
@@ -1085,6 +1129,25 @@ anvil project ls [-a|--all]          # list watched projects
 anvil project get [path]             # show project details and running tasks
 anvil project rm [path] [--clean]    # unwatch (--clean removes .anvil/ too)
 ```
+
+## Prompt Subcommands
+
+Test and validate task prompts before running them in production:
+
+```bash
+anvil prompt test <task> [--format json|yaml] [--iterations N] [--json]
+anvil prompt analyze <task> [--json]
+anvil prompt preview <task>
+```
+
+- `test` — Run the task multiple times and report parse success rate
+- `analyze` — Show token count and cost estimates
+- `preview` — Show expanded prompt with variables
+
+Options:
+- `--format json|yaml` — Expected output format for test validation
+- `--iterations N, -n N` — Number of test iterations (default: 3)
+- `--json` — Output results in JSON format
 
 ## Updating Anvil
 
