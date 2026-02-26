@@ -97,6 +97,7 @@ type Todo struct {
 	MaxLogSize           int64         // max log file size in bytes (0 = use global default)
 	Runner               string        // per-task runner command override (empty = use global runner chain)
 	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
+	Labels               []string      // user-defined labels for organizing and filtering tasks
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -190,6 +191,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var maxLogSize int64
 			runnerOverride := ""
 			webhookURL := ""
+			var labels []string
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -222,6 +224,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						MaxLogSize           string   `yaml:"max_log_size"`
 						Runner               string   `yaml:"runner"`
 						Webhook              string   `yaml:"webhook"`
+						Labels               []string `yaml:"labels"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -258,6 +261,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						}
 						runnerOverride = fmData.Runner
 						webhookURL = fmData.Webhook
+						labels = fmData.Labels
 					}
 				}
 			}
@@ -292,6 +296,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				MaxLogSize:           maxLogSize,
 				Runner:               runnerOverride,
 				Webhook:              webhookURL,
+				Labels:               labels,
 			})
 		}
 	}
