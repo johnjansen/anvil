@@ -26,4 +26,18 @@ Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static bl
 - 002-cli-ecosystem-blog-post: Added Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document)
 
 <!-- MANUAL ADDITIONS START -->
+
+## Development Workflow
+
+All features and non-trivial bug fixes MUST follow the speckit workflow:
+
+1. `/speckit.specify` — Create feature spec from issue description
+2. `/speckit.plan` — Generate technical implementation plan
+3. `/speckit.tasks` — Break plan into dependency-ordered tasks
+4. `/speckit.implement` — Execute tasks with validation
+
+Trivial fixes (1-2 line changes) may skip speckit and implement directly.
+
+The automated planning task in `.anvil/todos/` follows this same workflow when picking up GitHub issues.
+
 <!-- MANUAL ADDITIONS END -->
