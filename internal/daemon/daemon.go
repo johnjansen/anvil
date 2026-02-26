@@ -718,6 +718,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	var checkpointMu sync.Mutex
 	var lastCheckpointData string
 
+	// State file path and storage config (used for persisting task state)
+	var stateFilePath string
+	var stateBucket string
+	var stateKey string
+
 	for attempt := 0; ; attempt++ {
 		finalAttempt = attempt
 		// Check if context is already cancelled before attempting
@@ -737,6 +742,43 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 					mergedEnv = make(map[string]string)
 				}
 				mergedEnv["ANVIL_CHECKPOINT_DATA"] = cpData
+			}
+		}
+
+		// If state is configured, inject ANVIL_STATE_FILE with current state
+		if t.State != nil {
+			stateBucket = t.State.Bucket
+			// Resolve key template (e.g., {{ .TaskID }} -> actual task ID)
+			stateKey = strings.ReplaceAll(t.State.Key, "{{ .TaskID }}", t.ID)
+			// Read existing state
+			existingState, err := project.ReadTaskState(proj.Path, stateBucket, stateKey)
+			if err == nil && existingState != nil {
+				// Create temp file for task to read/write
+				tmpFile, err := os.CreateTemp("", "anvil-state-*.json")
+				if err == nil {
+					defer os.Remove(tmpFile.Name()) // Clean up on error
+					stateData, _ := json.Marshal(existingState)
+					tmpFile.Write(stateData)
+					tmpFile.Close()
+					stateFilePath = tmpFile.Name()
+					if mergedEnv == nil {
+						mergedEnv = make(map[string]string)
+					}
+					mergedEnv["ANVIL_STATE_FILE"] = stateFilePath
+				}
+			} else if os.IsNotExist(err) || err == nil {
+				// No existing state - create empty temp file
+				tmpFile, err := os.CreateTemp("", "anvil-state-*.json")
+				if err == nil {
+					defer os.Remove(tmpFile.Name()) // Clean up on error
+					tmpFile.Write([]byte("{}"))
+					tmpFile.Close()
+					stateFilePath = tmpFile.Name()
+					if mergedEnv == nil {
+						mergedEnv = make(map[string]string)
+					}
+					mergedEnv["ANVIL_STATE_FILE"] = stateFilePath
+				}
 			}
 		}
 
@@ -1000,6 +1042,18 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		delete(d.starvationTrackers, taskKey)
 		d.starvationTrackersMu.Unlock()
 		dlog.Info("persistent task %s completed — next run in %v", t.Name, t.PersistentCooldown)
+	}
+
+	// If state was configured, save the state file back to persistent storage
+	if stateFilePath != "" && stateBucket != "" && stateKey != "" {
+		if stateData, err := os.ReadFile(stateFilePath); err == nil {
+			var state map[string]interface{}
+			if err := json.Unmarshal(stateData, &state); err == nil {
+				if err := project.WriteTaskState(proj.Path, stateBucket, stateKey, state); err != nil {
+					dlog.Warn("failed to save state for %s: %v", t.Name, err)
+				}
+			}
+		}
 	}
 
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {

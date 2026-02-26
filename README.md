@@ -382,6 +382,43 @@ On the next run, the daemon sets `ANVIL_CHECKPOINT_DATA` to the last emitted che
 - Multiple `##anvil:checkpoint` lines can be emitted; the last one wins
 - Checkpoint data is stored in the run record and visible via `anvil task get`
 
+### Task State Management
+
+For long-running data processing tasks, use state buckets to persist arbitrary JSON state between runs:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+state:
+  bucket: "data-processing"
+  key: "cursor-{{ .TaskID }}"
+---
+Process items from where we left off...
+```
+
+The task reads/writes a JSON state file via `ANVIL_STATE_FILE` environment variable:
+
+```python
+import json
+import os
+
+# Read previous state
+with open(os.environ['ANVIL_STATE_FILE'], 'r') as f:
+    state = json.load(f)
+
+# Update state
+state['last_processed_id'] = 42
+
+# Write back (automatically persisted after task completes)
+with open(os.environ['ANVIL_STATE_FILE'], 'w') as f:
+    json.dump(state, f)
+```
+
+- `bucket` — named bucket for grouping related state (shared across tasks)
+- `key` — unique key within the bucket (supports `{{ .TaskID }}` template variable)
+
+State is automatically persisted to `.anvil/state/<bucket>/<key>.json` in the project directory after each run. Multiple tasks can share the same bucket but have different keys.
+
 ### Webhook Notifications
 
 Configure HTTP webhooks to receive notifications for task lifecycle events:
@@ -413,6 +450,47 @@ webhook: "https://hooks.slack.com/services/xxx"
 ---
 Triage GitHub issues...
 ```
+
+## Desktop Notifications
+
+Configure native desktop notifications for task events:
+
+```yaml
+notifications:
+  enabled: true           # master switch
+  on_failure: true        # notify on task failure (default when enabled)
+  on_success: false       # notify on task success
+  on_budget_warning: true # notify when persistent task budget is exhausted
+  persistent_cycle: false  # notify on persistent task cycle completion
+  # command: ""  # optional custom command (overrides platform default)
+```
+
+Supported platforms:
+- **macOS**: Uses `osascript` to display notifications
+- **Linux**: Uses `notify-send`
+- **Windows**: Uses PowerShell toast notifications
+- **Custom**: Set `command` to use a custom notification tool
+
+Custom command supports `{title}` and `{message}` placeholders:
+
+```yaml
+notifications:
+  enabled: true
+  command: "echo '{title}: {message}' | logger"
+```
+
+You can also override notifications per-task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+notify_on_failure: false
+notify_on_success: true
+---
+Triage GitHub issues...
+```
+
+Notifications fire asynchronously after webhooks, so they never block task execution.
 
 ## Configuration
 
@@ -615,6 +693,8 @@ anvil cleanup -o=24h
 | `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task pipeline [--dot|--verbose] [--all]` | Visualize task dependency pipelines |
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
+| `anvil task state <bucket> [key]` | Show task state bucket contents |
+| `anvil task state <name> [--get|--set <key=value>] [--delete]` | Manage task state buckets |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 | `anvil task find <pattern>` | Find tasks by name pattern |

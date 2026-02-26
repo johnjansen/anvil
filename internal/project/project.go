@@ -101,8 +101,15 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
+	State                *TaskState    // optional state bucket for long-running data processing tasks
 	NotifyOnFailure      *bool         // per-task override: notify on failure (nil = use global config)
 	NotifyOnSuccess      *bool         // per-task override: notify on success (nil = use global config)
+}
+
+// TaskState defines a state bucket for task state management.
+type TaskState struct {
+	Bucket string `yaml:"bucket"` // named bucket for sharing state between tasks
+	Key    string `yaml:"key"`    // key within the bucket (supports template variables like {{ .TaskID }})
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -204,6 +211,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var envVars map[string]string
 			var dependsOn []string
 			checkpoint := false
+			var taskState *TaskState
 			var notifyOnFailure *bool
 			var notifyOnSuccess *bool
 			body := contentStr
@@ -242,6 +250,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
+						State                *TaskState        `yaml:"state"`
 						NotifyOnFailure      *bool             `yaml:"notify_on_failure"`
 						NotifyOnSuccess      *bool             `yaml:"notify_on_success"`
 					}
@@ -284,6 +293,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
 						checkpoint = fmData.Checkpoint
+						taskState = fmData.State
 						notifyOnFailure = fmData.NotifyOnFailure
 						notifyOnSuccess = fmData.NotifyOnSuccess
 					}
@@ -327,6 +337,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
+				State:                taskState,
 				NotifyOnFailure:      notifyOnFailure,
 				NotifyOnSuccess:      notifyOnSuccess,
 			})
@@ -583,6 +594,59 @@ func SessionPathBySessionID(projectPath string, sessionID string) string {
 // runsDir returns the path to the runs directory for a task.
 func runsDir(projectPath, taskID string) string {
 	return filepath.Join(projectPath, ".anvil", "runs", taskID)
+}
+
+// stateDir returns the path to the state directory.
+func stateDir(projectPath string) string {
+	return filepath.Join(projectPath, ".anvil", "state")
+}
+
+// StatePath returns the path to a state file for a given bucket and key.
+func StatePath(projectPath, bucket, key string) string {
+	return filepath.Join(stateDir(projectPath), bucket, key+".json")
+}
+
+// ReadTaskState reads the state for a given bucket and key.
+func ReadTaskState(projectPath, bucket, key string) (map[string]interface{}, error) {
+	statePath := StatePath(projectPath, bucket, key)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading state file: %w", err)
+	}
+	var state map[string]interface{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("unmarshaling state: %w", err)
+	}
+	return state, nil
+}
+
+// WriteTaskState writes the state for a given bucket and key.
+func WriteTaskState(projectPath, bucket, key string, state map[string]interface{}) error {
+	dir := filepath.Join(stateDir(projectPath), bucket)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating state dir: %w", err)
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshaling state: %w", err)
+	}
+	statePath := filepath.Join(dir, key+".json")
+	if err := os.WriteFile(statePath, data, 0644); err != nil {
+		return fmt.Errorf("writing state file: %w", err)
+	}
+	return nil
+}
+
+// DeleteTaskState deletes the state for a given bucket and key.
+func DeleteTaskState(projectPath, bucket, key string) error {
+	statePath := StatePath(projectPath, bucket, key)
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting state file: %w", err)
+	}
+	return nil
 }
 
 // RunPath returns the path to a specific run record JSON file.
