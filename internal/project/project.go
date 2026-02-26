@@ -725,3 +725,103 @@ func slugify(s string) string {
 	}
 	return s
 }
+
+// TemplateSpec represents a task template with all configurable fields.
+// These fields map to the same frontmatter fields available in task files.
+type TemplateSpec struct {
+	Schedule              string            `yaml:"schedule,omitempty"`
+	Priority              int               `yaml:"priority,omitempty"`
+	AllowedTools          []string          `yaml:"allowed_tools,omitempty"`
+	PreCheck              string            `yaml:"pre_check,omitempty"`
+	OnSuccess             string            `yaml:"on_success,omitempty"`
+	OnFailure             string            `yaml:"on_failure,omitempty"`
+	SkipPermissions       bool              `yaml:"skip_permissions,omitempty"`
+	Timeout               string            `yaml:"timeout,omitempty"`
+	Retry                int               `yaml:"retry,omitempty"`
+	RetryDelay           string            `yaml:"retry_delay,omitempty"`
+	MaxConcurrent        int               `yaml:"max_concurrent,omitempty"`
+	PersistentCooldown    string            `yaml:"persistent_cooldown,omitempty"`
+	PersistentMaxRuntime string            `yaml:"persistent_max_runtime,omitempty"`
+	PersistentBudget     string            `yaml:"persistent_budget,omitempty"`
+	MaxLogSize           int64             `yaml:"max_log_size,omitempty"`
+	Runner               string            `yaml:"runner,omitempty"`
+	Webhook              string            `yaml:"webhook,omitempty"`
+	Labels               []string          `yaml:"labels,omitempty"`
+	Env                  map[string]string `yaml:"env,omitempty"`
+	DependsOn            []string          `yaml:"depends_on,omitempty"`
+	Checkpoint           bool              `yaml:"checkpoint,omitempty"`
+}
+
+// Template represents a loaded template with its name and spec.
+type Template struct {
+	Name string
+	Spec TemplateSpec
+}
+
+// templatePaths returns the search paths for templates (project then global).
+func templatePaths(projectPath string) []string {
+	homeDir, _ := os.UserHomeDir()
+	paths := []string{
+		filepath.Join(projectPath, ".anvil", "templates"),
+		filepath.Join(homeDir, ".anvil", "templates"),
+	}
+	return paths
+}
+
+// LoadTemplate loads a template by name from project or global templates.
+// Returns the template if found, or an error if not found.
+func LoadTemplate(projectPath, name string) (*Template, error) {
+	// Prevent directory traversal
+	name = filepath.Clean(name)
+	if strings.Contains(name, "..") || strings.HasPrefix(name, "/") {
+		return nil, fmt.Errorf("invalid template name: %s", name)
+	}
+
+	for _, basePath := range templatePaths(projectPath) {
+		templatePath := filepath.Join(basePath, name)
+		// Try with .yaml extension first
+		if _, err := os.Stat(templatePath + ".yaml"); err == nil {
+			templatePath += ".yaml"
+		}
+
+		data, err := os.ReadFile(templatePath)
+		if err == nil {
+			var spec TemplateSpec
+			if err := yaml.Unmarshal(data, &spec); err != nil {
+				return nil, fmt.Errorf("failed to parse template %s: %w", name, err)
+			}
+			return &Template{Name: name, Spec: spec}, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to read template %s: %w", name, err)
+		}
+	}
+	return nil, fmt.Errorf("template not found: %s", name)
+}
+
+// ListTemplates returns all available templates from project and global locations.
+func ListTemplates(projectPath string) ([]Template, error) {
+	var templates []Template
+	seen := make(map[string]bool)
+
+	for _, basePath := range templatePaths(projectPath) {
+		entries, err := os.ReadDir(basePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to read templates directory: %w", err)
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() && (strings.HasSuffix(entry.Name(), ".yaml") || strings.HasSuffix(entry.Name(), ".yml")) {
+				name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+				if !seen[name] {
+					seen[name] = true
+					templates = append(templates, Template{Name: name})
+				}
+			}
+		}
+	}
+	return templates, nil
+}

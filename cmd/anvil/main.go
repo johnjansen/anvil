@@ -96,6 +96,8 @@ func main() {
 		taskCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
+	case "template":
+		templateCmd(os.Args[2:])
 	case "usage":
 		usageCmd(os.Args[2:])
 	case "update":
@@ -1587,6 +1589,7 @@ Add a new task to the project.
 Options:
   -p, --priority n        Priority 0-9 (default: 1)
   -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
+  -t, --template name    Use a template for task configuration
   -o, --once              Create a one-shot task (no schedule)
   -n, --dry-run          Validate schedule without creating task
   --pre-check cmd        Command to run before task execution
@@ -1870,8 +1873,9 @@ func taskCreateCmd(args []string) {
 	dryRun := false
 	strict := false
 	noOverlapCheck := false
+	templateName := ""
 
-	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter.
+	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter/template.
 	prioritySet := false
 	scheduleSet := false
 	preCheckSet := false
@@ -1881,6 +1885,12 @@ func taskCreateCmd(args []string) {
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-t", "--template":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -t/--template")
+			}
+			i++
+			templateName = args[i]
 		case "-p", "--priority":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for -p/--priority")
@@ -1984,6 +1994,39 @@ func taskCreateCmd(args []string) {
 			fmt.Println("No schedule specified (one-shot task)")
 		}
 		return
+	}
+
+	// Load template if specified and apply its values (CLI flags take precedence).
+	if templateName != "" {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		tmpl, err := project.LoadTemplate(abs, templateName)
+		if err != nil {
+			log.Fatalf("failed to load template: %v", err)
+		}
+		// Apply template values only if not explicitly set via CLI flags
+		if !prioritySet && tmpl.Spec.Priority > 0 {
+			priority = tmpl.Spec.Priority
+		}
+		if !scheduleSet && tmpl.Spec.Schedule != "" {
+			schedule = tmpl.Spec.Schedule
+		}
+		if !preCheckSet && tmpl.Spec.PreCheck != "" {
+			preCheck = tmpl.Spec.PreCheck
+		}
+		if !allowedToolsSet && len(tmpl.Spec.AllowedTools) > 0 {
+			allowedTools = strings.Join(tmpl.Spec.AllowedTools, ",")
+		}
+		if !maxConcurrentSet && tmpl.Spec.MaxConcurrent > 0 {
+			maxConcurrent = tmpl.Spec.MaxConcurrent
+		}
+		if !skipPermissions && tmpl.Spec.SkipPermissions {
+			skipPermissions = true
+		}
+		// Store template labels for later use (in AddTodo)
+		// These will be used when creating the task
 	}
 
 	var taskText string
@@ -5685,6 +5728,88 @@ func formatDurationShort(d time.Duration) string {
 		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 	return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
+}
+
+func templateCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil template <subcommand> [options]\n")
+		fmt.Fprintf(os.Stderr, "Subcommands:\n")
+		fmt.Fprintf(os.Stderr, "  ls           List available templates\n")
+		fmt.Fprintf(os.Stderr, "  get <name>   Show template details\n")
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "ls":
+		templateListCmd(args[1:])
+	case "get":
+		templateGetCmd(args[1:])
+	case "-h", "--help":
+		fmt.Fprintf(os.Stderr, "usage: anvil template <subcommand> [options]\n")
+		fmt.Fprintf(os.Stderr, "Subcommands:\n")
+		fmt.Fprintf(os.Stderr, "  ls           List available templates\n")
+		fmt.Fprintf(os.Stderr, "  get <name>   Show template details\n")
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown template subcommand: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func templateListCmd(_ []string) {
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	templates, err := project.ListTemplates(abs)
+	if err != nil {
+		log.Fatalf("failed to list templates: %v", err)
+	}
+
+	if len(templates) == 0 {
+		fmt.Println("No templates found")
+		fmt.Println("\nCreate templates in:")
+		fmt.Println("  .anvil/templates/   (project-specific)")
+		fmt.Println("  ~/.anvil/templates/ (global)")
+		return
+	}
+
+	fmt.Println("Available templates:")
+	for _, t := range templates {
+		fmt.Printf("  %s\n", t.Name)
+	}
+}
+
+func templateGetCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil template get <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	tmpl, err := project.LoadTemplate(abs, args[0])
+	if err != nil {
+		log.Fatalf("template not found: %s\n", args[0])
+	}
+
+	fmt.Printf("Template: %s\n", tmpl.Name)
+	// Display key template fields
+	spec := tmpl.Spec
+	if spec.Schedule != "" {
+		fmt.Printf("Schedule: %s\n", spec.Schedule)
+	}
+	if spec.Priority > 0 {
+		fmt.Printf("Priority: %d\n", spec.Priority)
+	}
+	if len(spec.AllowedTools) > 0 {
+		fmt.Printf("AllowedTools: %s\n", strings.Join(spec.AllowedTools, ", "))
+	}
 }
 
 func projectCmd(args []string) {
