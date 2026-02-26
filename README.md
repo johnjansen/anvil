@@ -386,7 +386,7 @@ anvil cleanup -o=24h
 | Command | Description |
 |---------|-------------|
 | `anvil task ls` | List tasks in current project |
-| `anvil task ls [-a|--all] [--json]` | List tasks across all projects |
+| `anvil task ls [-a|--all] [--json] [--label L] [--match P]` | List tasks across all projects with optional filtering |
 | `anvil task get <name> [--json]` | Show task details |
 | `anvil task run <name>` | Trigger immediate execution (bypass cron) |
 | `anvil task log <name>` | Show execution log |
