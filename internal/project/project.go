@@ -101,6 +101,8 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
+	NotifyOnFailure      *bool         // per-task override: notify on failure (nil = use global config)
+	NotifyOnSuccess      *bool         // per-task override: notify on success (nil = use global config)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -202,6 +204,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var envVars map[string]string
 			var dependsOn []string
 			checkpoint := false
+			var notifyOnFailure *bool
+			var notifyOnSuccess *bool
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -238,6 +242,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
+						NotifyOnFailure      *bool             `yaml:"notify_on_failure"`
+						NotifyOnSuccess      *bool             `yaml:"notify_on_success"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -278,6 +284,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
 						checkpoint = fmData.Checkpoint
+						notifyOnFailure = fmData.NotifyOnFailure
+						notifyOnSuccess = fmData.NotifyOnSuccess
 					}
 				}
 			}
@@ -319,6 +327,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
+				NotifyOnFailure:      notifyOnFailure,
+				NotifyOnSuccess:      notifyOnSuccess,
 			})
 		}
 	}
@@ -750,6 +760,8 @@ type TemplateSpec struct {
 	Env                  map[string]string `yaml:"env,omitempty"`
 	DependsOn            []string          `yaml:"depends_on,omitempty"`
 	Checkpoint           bool              `yaml:"checkpoint,omitempty"`
+	NotifyOnFailure      *bool             `yaml:"notify_on_failure,omitempty"`
+	NotifyOnSuccess      *bool             `yaml:"notify_on_success,omitempty"`
 }
 
 // Template represents a loaded template with its name and spec.

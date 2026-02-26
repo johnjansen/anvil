@@ -24,8 +24,19 @@ type Config struct {
 	InputTokenRate  float64         `yaml:"input_token_rate"`  // cost per 1M input tokens in USD (default: 3.0)
 	OutputTokenRate float64         `yaml:"output_token_rate"` // cost per 1M output tokens in USD (default: 15.0)
 	AutoUpdate      bool            `yaml:"auto_update"`       // opt-in: auto-update binary on daemon startup
-	Env                      map[string]string `yaml:"env"`                        // global environment variables injected into all task executions
-	GracefulShutdownTimeout  time.Duration     `yaml:"graceful_shutdown_timeout"`   // max wait for running tasks on graceful stop (default: 5m)
+	Env                      map[string]string    `yaml:"env"`                        // global environment variables injected into all task executions
+	GracefulShutdownTimeout  time.Duration        `yaml:"graceful_shutdown_timeout"`   // max wait for running tasks on graceful stop (default: 5m)
+	Notifications            NotificationsConfig  `yaml:"notifications"`              // desktop notification settings
+}
+
+// NotificationsConfig defines desktop notification settings.
+type NotificationsConfig struct {
+	Enabled         bool   `yaml:"enabled"`           // master switch for desktop notifications
+	OnFailure       bool   `yaml:"on_failure"`        // notify on task failure (default: true when enabled)
+	OnSuccess       bool   `yaml:"on_success"`        // notify on task success
+	OnBudgetWarning bool   `yaml:"on_budget_warning"` // notify on cost budget warnings
+	PersistentCycle bool   `yaml:"persistent_cycle"`  // notify on persistent task cycle completion
+	Command         string `yaml:"command"`            // custom notification command (overrides platform default)
 }
 
 // WebhookConfig defines a single webhook endpoint that receives task lifecycle events.
