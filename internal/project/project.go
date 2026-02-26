@@ -337,6 +337,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				PersistentBudget:     persistentBudget,
 				MaxLogSize:           maxLogSize,
 				Runner:               runnerOverride,
+				RunnerChain:          runnerChain,
+				RunnerOnTimeout:      runnerOnTimeout,
 				Webhook:              webhookURL,
 				Labels:               labels,
 				Env:                  resolvedEnv,
