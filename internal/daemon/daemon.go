@@ -389,6 +389,22 @@ func (d *Daemon) worker(id int) {
 	dlog.WorkerStopped(id)
 }
 
+// mergeEnv merges global and task-specific environment variable maps.
+// Task env overrides global env for the same key. Returns nil if both are empty.
+func mergeEnv(global, task map[string]string) map[string]string {
+	if len(global) == 0 && len(task) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(global)+len(task))
+	for k, v := range global {
+		merged[k] = v
+	}
+	for k, v := range task {
+		merged[k] = v
+	}
+	return merged
+}
+
 // runTask executes a single todo task and handles all bookkeeping.
 func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
@@ -571,7 +587,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			break
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, func(pid int, lp string, sid string) {
+		// Merge global config env with task-specific env (task overrides global)
+		mergedEnv := mergeEnv(d.config.Env, t.Env)
+
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {

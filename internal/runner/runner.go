@@ -51,7 +51,7 @@ func New(commands []string, timeout time.Duration) *Runner {
 // or a freshly generated one), the log file path (empty if no log was written),
 // the index of the runner that was used (last attempted, -1 if none), the stderr
 // output from the last runner attempt (used for token usage parsing), and any error.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, usedRunnerIndex int, stderrOutput string, err error) {
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, extraEnv map[string]string, onStart func(pid int, logPath string, sessionID string), onStatus func(status string)) (usedSessionID string, logPath string, usedRunnerIndex int, stderrOutput string, err error) {
 	var lastErr error
 	var lastStderr string
 	var lastRunnerIndex int
@@ -122,6 +122,10 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr+" "+escaped)
 		cmd.Dir = dir
 		cmd.Env = cleanEnv()
+		// Append task-specific environment variables (overrides any existing values)
+		for k, v := range extraEnv {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 
 		var stdout, stderr bytes.Buffer
 		var sw *statusWriter

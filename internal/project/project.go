@@ -98,6 +98,7 @@ type Todo struct {
 	Runner               string        // per-task runner command override (empty = use global runner chain)
 	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
 	Labels               []string      // user-defined labels for organizing and filtering tasks
+	Env                  map[string]string // environment variables injected into task execution
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -192,6 +193,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			runnerOverride := ""
 			webhookURL := ""
 			var labels []string
+			var envVars map[string]string
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -224,7 +226,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						MaxLogSize           string   `yaml:"max_log_size"`
 						Runner               string   `yaml:"runner"`
 						Webhook              string   `yaml:"webhook"`
-						Labels               []string `yaml:"labels"`
+						Labels               []string          `yaml:"labels"`
+						Env                  map[string]string `yaml:"env"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
 						// Parse raw keys to detect which fields were explicitly set.
@@ -262,6 +265,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						runnerOverride = fmData.Runner
 						webhookURL = fmData.Webhook
 						labels = fmData.Labels
+						envVars = fmData.Env
 					}
 				}
 			}
@@ -270,6 +274,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
 				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride)
+
+			// Resolve env: prefixed values from the current environment
+			resolvedEnv := resolveEnvVars(envVars)
 
 			todos = append(todos, Todo{
 				Path:                 fp,
@@ -297,6 +304,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Runner:               runnerOverride,
 				Webhook:              webhookURL,
 				Labels:               labels,
+				Env:                  resolvedEnv,
 			})
 		}
 	}
@@ -657,6 +665,26 @@ var (
 	reNonAlphaNum    = regexp.MustCompile(`[^a-z0-9]+`)
 	reMultipleHyphen = regexp.MustCompile(`-{2,}`)
 )
+
+// resolveEnvVars processes a map of environment variable definitions.
+// Values prefixed with "env:" are resolved from the current environment.
+// Empty string values inherit from the parent environment (included as-is for merging).
+// All other values are used as literal strings.
+func resolveEnvVars(vars map[string]string) map[string]string {
+	if len(vars) == 0 {
+		return nil
+	}
+	resolved := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if strings.HasPrefix(v, "env:") {
+			envKey := v[4:]
+			resolved[k] = os.Getenv(envKey)
+		} else {
+			resolved[k] = v
+		}
+	}
+	return resolved
+}
 
 // slugify converts a string to a URL-safe slug suitable for use as a filename.
 func slugify(s string) string {
