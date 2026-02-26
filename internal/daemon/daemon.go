@@ -491,29 +491,51 @@ func mergeEnv(global, task map[string]string) map[string]string {
 	return merged
 }
 
+// depFailInfo holds details about a dependency that prevented a task from running.
+type depFailInfo struct {
+	Reason    string    // human-readable reason (e.g., "dependency failed: fetch-data.md")
+	DepName   string    // name of the failed dependency
+	DepError  string    // error message from the failed dependency run
+	Finished  time.Time // when the dependency last ran
+	ExitCode  int       // 0 if success, 1 if failed (no explicit exit code in RunRecord)
+}
+
 // checkDependenciesMet verifies all dependencies have completed successfully in the current cycle.
-// Returns (true, "") if all dependencies are met, (false, reason) if not.
-func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, reason string) {
+// Returns (true, nil) if all dependencies are met, (false, info) if not.
+func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, info *depFailInfo) {
 	for _, dep := range dependsOn {
 		// dep is the task name (e.g., "fetch-data.md")
 		// We need to find the task ID from the project todos directory
 		runRecord, err := project.ReadCurrentRunRecord(projectPath, dep)
 		if err != nil {
 			// No run record found - dependency hasn't run yet
-			return false, "dependency not run: " + dep
+			return false, &depFailInfo{
+				Reason:  "dependency not run: " + dep,
+				DepName: dep,
+			}
 		}
 		if !runRecord.Success {
-			return false, "dependency failed: " + dep
+			return false, &depFailInfo{
+				Reason:   "dependency failed: " + dep,
+				DepName:  dep,
+				DepError: runRecord.Error,
+				Finished: runRecord.Finished,
+				ExitCode: 1,
+			}
 		}
 		// Check if the run finished in this daemon cycle (within last ~1 minute)
 		// This ensures dependencies from previous cycles are re-run
 		elapsed := time.Since(runRecord.Finished)
 		if elapsed > 2*time.Minute {
 			// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
-			return false, "dependency stale: " + dep
+			return false, &depFailInfo{
+				Reason:   "dependency stale: " + dep,
+				DepName:  dep,
+				Finished: runRecord.Finished,
+			}
 		}
 	}
-	return true, ""
+	return true, nil
 }
 
 // runTask executes a single todo task and handles all bookkeeping.
@@ -1997,16 +2019,29 @@ func (d *Daemon) tick(now time.Time) {
 
 		// Skip if task has dependencies that haven't completed successfully
 		if len(pt.todo.DependsOn) > 0 {
-			depMet, depFail := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn)
+			depMet, depInfo := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn)
 			if !depMet {
 				reason := "dependency not met"
-				if depFail != "" {
-					reason = depFail
+				if depInfo != nil {
+					reason = depInfo.Reason
 				}
 				dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, reason)
 				d.pendingTasksMu.Lock()
 				d.pendingTasks[taskKey] = reason
 				d.pendingTasksMu.Unlock()
+
+				// Fire skipped webhook for dependency failures
+				if depInfo != nil && strings.HasPrefix(depInfo.Reason, "dependency failed") {
+					skipPayload := webhook.BuildSkippedPayload(
+						pt.todo.Name, pt.proj.Path, "dependency_failed",
+						depInfo.DepName, depInfo.ExitCode, depInfo.Finished,
+					)
+					d.webhooks.Fire(webhook.EventSkipped, skipPayload)
+					if pt.todo.Webhook != "" {
+						d.webhooks.FireURL(pt.todo.Webhook, webhook.EventSkipped, skipPayload)
+					}
+				}
+
 				d.inFlightMu.Lock()
 				d.inFlight[taskKey]--
 				if d.inFlight[taskKey] <= 0 {

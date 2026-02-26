@@ -2545,29 +2545,37 @@ func taskGetCmd(args []string) {
 	}
 
 	if jsonOutput {
+		type depStatusJSON struct {
+			Name    string `json:"name"`
+			Status  string `json:"status"` // "success", "failed", "not_run", "stale"
+			Error   string `json:"error,omitempty"`
+			LastRun string `json:"last_run,omitempty"`
+		}
 		type taskDetailJSON struct {
-			File            string   `json:"file"`
-			ID              string   `json:"id"`
-			Name            string   `json:"name"`
-			Schedule        string   `json:"schedule"`
-			Priority        int      `json:"priority"`
-			Disabled        bool     `json:"disabled"`
-			Status          string   `json:"status"`
-			PID             int      `json:"pid,omitempty"`
-			Elapsed         string   `json:"elapsed,omitempty"`
-			Content         string   `json:"content"`
-			PreCheck        string   `json:"pre_check,omitempty"`
-			OnSuccess       string   `json:"on_success,omitempty"`
-			OnFailure       string   `json:"on_failure,omitempty"`
-			AllowedTools    []string `json:"allowed_tools,omitempty"`
-			MaxConcurrent   int      `json:"max_concurrent,omitempty"`
-			SkipPermissions bool     `json:"skip_permissions,omitempty"`
-			Runner          string   `json:"runner,omitempty"`
-			BudgetTotal     string   `json:"budget_total,omitempty"`
-			BudgetUsed      string   `json:"budget_used,omitempty"`
-			BudgetRemaining string   `json:"budget_remaining,omitempty"`
-			BudgetPercent   float64  `json:"budget_percent,omitempty"`
-			BudgetExhausted bool     `json:"budget_exhausted,omitempty"`
+			File            string          `json:"file"`
+			ID              string          `json:"id"`
+			Name            string          `json:"name"`
+			Schedule        string          `json:"schedule"`
+			Priority        int             `json:"priority"`
+			Disabled        bool            `json:"disabled"`
+			Status          string          `json:"status"`
+			PID             int             `json:"pid,omitempty"`
+			Elapsed         string          `json:"elapsed,omitempty"`
+			Content         string          `json:"content"`
+			PreCheck        string          `json:"pre_check,omitempty"`
+			OnSuccess       string          `json:"on_success,omitempty"`
+			OnFailure       string          `json:"on_failure,omitempty"`
+			AllowedTools    []string        `json:"allowed_tools,omitempty"`
+			MaxConcurrent   int             `json:"max_concurrent,omitempty"`
+			SkipPermissions bool            `json:"skip_permissions,omitempty"`
+			Runner          string          `json:"runner,omitempty"`
+			DependsOn       []string        `json:"depends_on,omitempty"`
+			Dependencies    []depStatusJSON `json:"dependencies,omitempty"`
+			BudgetTotal     string          `json:"budget_total,omitempty"`
+			BudgetUsed      string          `json:"budget_used,omitempty"`
+			BudgetRemaining string          `json:"budget_remaining,omitempty"`
+			BudgetPercent   float64         `json:"budget_percent,omitempty"`
+			BudgetExhausted bool            `json:"budget_exhausted,omitempty"`
 		}
 		detail := taskDetailJSON{
 			File:            todo.Path,
@@ -2587,6 +2595,29 @@ func taskGetCmd(args []string) {
 			MaxConcurrent:   todo.MaxConcurrent,
 			SkipPermissions: todo.SkipPermissions,
 			Runner:          todo.Runner,
+			DependsOn:       todo.DependsOn,
+		}
+		// Add dependency status info
+		if len(todo.DependsOn) > 0 {
+			for _, dep := range todo.DependsOn {
+				ds := depStatusJSON{Name: dep}
+				rec, err := project.ReadCurrentRunRecord(abs, dep)
+				if err != nil {
+					ds.Status = "not_run"
+				} else if !rec.Success {
+					ds.Status = "failed"
+					ds.Error = rec.Error
+					if !rec.Finished.IsZero() {
+						ds.LastRun = rec.Finished.Format(time.RFC3339)
+					}
+				} else {
+					ds.Status = "success"
+					if !rec.Finished.IsZero() {
+						ds.LastRun = rec.Finished.Format(time.RFC3339)
+					}
+				}
+				detail.Dependencies = append(detail.Dependencies, ds)
+			}
 		}
 		// Add budget info for persistent tasks
 		if todo.IsPersistent() && todo.PersistentBudget > 0 {
@@ -2637,6 +2668,32 @@ func taskGetCmd(args []string) {
 		fmt.Printf("Status:   running (PID %d, elapsed %s)\n", runPID, runElapsed)
 	} else {
 		fmt.Printf("Status:   %s\n", runStatus)
+	}
+	// Show dependency status
+	if len(todo.DependsOn) > 0 {
+		fmt.Printf("Deps:     %s\n", strings.Join(todo.DependsOn, ", "))
+		for _, dep := range todo.DependsOn {
+			rec, err := project.ReadCurrentRunRecord(abs, dep)
+			if err != nil {
+				fmt.Printf("  %-30s not_run\n", dep)
+			} else if !rec.Success {
+				lastRun := ""
+				if !rec.Finished.IsZero() {
+					lastRun = fmt.Sprintf(" (last run: %s)", rec.Finished.Format("15:04"))
+				}
+				errMsg := ""
+				if rec.Error != "" {
+					errMsg = fmt.Sprintf(" — %s", rec.Error)
+				}
+				fmt.Printf("  %-30s failed%s%s\n", dep, lastRun, errMsg)
+			} else {
+				lastRun := ""
+				if !rec.Finished.IsZero() {
+					lastRun = fmt.Sprintf(" (last run: %s)", rec.Finished.Format("15:04"))
+				}
+				fmt.Printf("  %-30s success%s\n", dep, lastRun)
+			}
+		}
 	}
 	// Show budget info for persistent tasks with a budget
 	if todo.IsPersistent() && todo.PersistentBudget > 0 {
