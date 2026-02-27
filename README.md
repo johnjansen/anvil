@@ -857,6 +857,7 @@ anvil cleanup -o=24h
 | `anvil task wait <name> [--timeout D] [--match PAT]` | Block until a running task completes (exit 0=ok, 1=fail, 2=timeout) |
 | `anvil task analyze [--all]` | Analyze task schedules for potential conflicts |
 | `anvil task pipeline [--dot|--verbose] [--all]` | Visualize task dependency pipelines |
+| `anvil task overlaps [-a|--all]` | Show schedule conflicts and overlapping tasks |
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
 | `anvil task dry-run <name> [options]` | Validate and preview task config without executing |
 | `anvil task sla [--verbose] [--reset] [--json]` | Show SLA violations |

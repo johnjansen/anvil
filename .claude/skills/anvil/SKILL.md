@@ -740,6 +740,17 @@ anvil task pipeline --dot             # output in GraphViz DOT format
 anvil task pipeline --all             # show pipelines across all watched projects
 ```
 
+### Schedule Overlaps
+
+Show all schedule conflicts and overlapping task runs:
+
+```bash
+anvil task overlaps                    # check current project
+anvil task overlaps -a                # check all watched projects
+```
+
+Groups tasks by time slot to identify scheduling bottlenecks.
+
 Output formats:
 - **Default** — ASCII tree showing task dependencies
 - `--verbose` — detailed view with schedule and last run status for each task
@@ -1141,6 +1152,7 @@ anvil task dry-run <name> [options]  # validate and preview task config without 
 anvil task sla [--verbose] [--reset] [--json]  # show SLA violations
 anvil task analyze [--all]         # analyze task schedules for potential conflicts
 anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
+anvil task overlaps [-a|--all]    # show schedule conflicts and overlapping tasks
 anvil task reset-budget <name>    # reset persistent task budget consumption
 anvil task state <name> [--export|--import|--clear]  # view, export, import, or clear task state
 anvil task next [name]              # show next scheduled run time (--all for all projects)
