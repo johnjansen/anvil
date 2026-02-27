@@ -57,6 +57,7 @@ Options:
 - `--skip-permissions` — Bypass all tool permission prompts.
 - `--strict` — Fail if the schedule conflicts with existing tasks.
 - `--no-overlap-check` — Skip schedule overlap detection.
+- `--depends-on <task>` — Task dependency (repeatable; use `project:task` for cross-project).
 
 **Note:** The `runner` option is available in task frontmatter or project config, but not as a CLI flag.
 

@@ -52,11 +52,12 @@ Options:
 - `-` — Read task content from stdin.
 - `-t, --template <name>` — Use a task template for configuration.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
-- `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
+- `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write") or scoped (e.g. "Bash(gh:*)").
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
 - `--skip-permissions` — Bypass all tool permission prompts.
 - `--strict` — Fail if the schedule conflicts with existing tasks.
 - `--no-overlap-check` — Skip schedule overlap detection.
+- `--depends-on <dep>` — Task dependency (repeatable; use `project:task` for cross-project).
 
 **Note:** The `runner` option is available in task frontmatter or project config, but not as a CLI flag.
 

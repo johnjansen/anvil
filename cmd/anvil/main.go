@@ -158,6 +158,7 @@ Add options:
       --skip-permissions     Bypass all tool permission prompts
       --strict               Fail if schedule conflicts with existing tasks
       --no-overlap-check    Skip schedule overlap detection
+      --depends-on dep      Task dependency (repeatable; use project:task for cross-project)
 
 Task subcommands:
   create [options] <task>   Create a new task
