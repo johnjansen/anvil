@@ -52,11 +52,12 @@ Options:
 - `-` — Read task content from stdin.
 - `-t, --template <name>` — Use a task template for configuration.
 - `--pre-check <command>` — Shell command to gate execution (skip if non-zero exit).
-- `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write").
+- `--allowed-tools <tools>` — Comma-separated tool allowlist (e.g. "Bash,Read,Write" or scoped "Bash(gh:*)").
 - `--max-concurrent <n>` — Max parallel instances (default: 1).
 - `--skip-permissions` — Bypass all tool permission prompts.
 - `--strict` — Fail if the schedule conflicts with existing tasks.
 - `--no-overlap-check` — Skip schedule overlap detection.
+- `--depends-on <task>` — Task dependency (repeatable; use `project:task` for cross-project).
 
 **Note:** The `runner` option is available in task frontmatter or project config, but not as a CLI flag.
 
@@ -837,6 +838,32 @@ Available metrics:
 | `anvil_task_failure_total` | counter | Number of failed task runs |
 | `anvil_task_duration_seconds_bucket` | histogram | Task duration buckets |
 
+## Health Probe Endpoint
+
+When `health_port` is configured in `~/.anvil/config.yaml`, the daemon exposes HTTP health probe endpoints:
+
+```yaml
+health_port: 8080  # TCP port for health probe endpoints (0 = disabled)
+```
+
+Available endpoints:
+
+```bash
+# Basic health check
+curl http://localhost:8080/health
+
+# Liveness probe (always returns 200 if daemon is running)
+curl http://localhost:8080/live
+
+# Readiness probe (returns 200 only if daemon can accept tasks)
+curl http://localhost:8080/ready
+
+# Daemon metrics in Prometheus format
+curl http://localhost:8080/metrics
+```
+
+The health endpoint is useful for container orchestration systems (Kubernetes, Docker Compose) to check daemon health.
+
 ## Runner Fallback Chain
 
 The daemon supports an ordered list of runner commands in `~/.anvil/config.yaml`. If the first runner fails, it tries the next:
@@ -868,6 +895,7 @@ input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
 output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
 auto_update: false       # opt-in: auto-update binary on daemon startup
 graceful_shutdown_timeout: 5m  # max wait for running tasks on graceful stop (default: 5m)
+health_port: 8080        # TCP port for health probe endpoints (0 = disabled)
 quiet_hours:
   enabled: false
   start: "22:00"

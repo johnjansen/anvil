@@ -642,6 +642,7 @@ input_token_rate: 3.0    # cost per 1M input tokens in USD (default: 3.0)
 output_token_rate: 15.0  # cost per 1M output tokens in USD (default: 15.0)
 auto_update: false       # opt-in: auto-update binary on daemon startup
 graceful_shutdown_timeout: 5m  # max wait for running tasks on graceful stop (default: 5m)
+health_port: 8080        # TCP port for health probe endpoints (0 = disabled, default: disabled)
 quiet_hours:
   enabled: false
   start: "22:00"
@@ -1025,6 +1026,32 @@ Available metrics:
 | `anvil_task_success_total` | counter | Number of successful task runs |
 | `anvil_task_failure_total` | counter | Number of failed task runs |
 | `anvil_task_duration_seconds_bucket` | histogram | Task duration buckets |
+
+## Health Probe Endpoint
+
+When `health_port` is configured in `~/.anvil/config.yaml`, the daemon exposes HTTP health probe endpoints:
+
+```yaml
+health_port: 8080  # TCP port for health probe endpoints (0 = disabled)
+```
+
+Available endpoints:
+
+```bash
+# Basic health check
+curl http://localhost:8080/health
+
+# Liveness probe (always returns 200 if daemon is running)
+curl http://localhost:8080/live
+
+# Readiness probe (returns 200 only if daemon can accept tasks)
+curl http://localhost:8080/ready
+
+# Daemon metrics in Prometheus format
+curl http://localhost:8080/metrics
+```
+
+The health endpoint is useful for container orchestration systems (Kubernetes, Docker Compose) to check daemon health.
 
 ## Cluster Status API
 
