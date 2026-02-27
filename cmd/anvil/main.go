@@ -8478,6 +8478,28 @@ func clusterLeaveCmd(args []string) {
 
 
 func taskDiffCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task diff <name> [<v1> [v2]]\n")
+		fmt.Fprintf(os.Stderr, "       anvil task diff <name> [--run1 ID] [--run2 ID] [--context N] [--ignore-whitespace] [--json]\n")
+		os.Exit(1)
+	}
+
+	// Detect output-diff mode: if only 1 positional arg (task name) or any --run1/--run2 flags present
+	hasOutputDiffFlags := false
+	positionalCount := 0
+	for _, a := range args {
+		if a == "--run1" || a == "--run2" || a == "--context" || a == "--ignore-whitespace" || a == "--json" {
+			hasOutputDiffFlags = true
+		}
+		if !strings.HasPrefix(a, "--") {
+			positionalCount++
+		}
+	}
+	if positionalCount < 2 || hasOutputDiffFlags {
+		taskOutputDiffCmd(args)
+		return
+	}
+
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "usage: anvil task diff <name> <v1> [v2]\n")
 		os.Exit(1)
