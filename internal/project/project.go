@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +40,7 @@ type TaskDefaults struct {
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 	PersistentBudget     string   `yaml:"persistent_budget"`
+	CostBudget          string   `yaml:"cost_budget"`
 	MaxLogSize           string   `yaml:"max_log_size"`
 	Runner               string   `yaml:"runner"`
 }
@@ -115,6 +118,7 @@ type Todo struct {
 	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
 	PersistentBudget     time.Duration // cumulative wall-clock budget per daemon lifetime (0 = unlimited)
+	CostBudget           float64       // cumulative USD budget per daemon lifetime (0 = unlimited)
 	MaxLogSize           int64         // max log file size in bytes (0 = use global default)
 	Runner               string        // per-task runner command override (empty = use global runner chain)
 	RunnerChain          []string      // per-task runner chain (tried in sequence on failure)
@@ -232,6 +236,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var persistentCooldown time.Duration
 			var persistentMaxRuntime time.Duration
 			var persistentBudget time.Duration
+			var costBudget float64
 			var maxLogSize int64
 			runnerOverride := ""
 			var runnerChain []string
@@ -273,6 +278,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 						PersistentBudget     string   `yaml:"persistent_budget"`
+						CostBudget          string   `yaml:"cost_budget"`
 						MaxLogSize           string   `yaml:"max_log_size"`
 						Runner               string   `yaml:"runner"`
 						RunnerChain          []string `yaml:"runner_chain"`
@@ -289,7 +295,11 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						} `yaml:"sla"`
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 					}
-					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
+					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
+						// Log the error but continue - the task will load with defaults
+						// This is safer than silently skipping, which causes tasks to "disappear"
+						log.Printf("WARN: failed to parse frontmatter for %s: %v (using defaults)", e.Name(), err)
+					} else {
 						// Parse raw keys to detect which fields were explicitly set.
 						_ = yaml.Unmarshal([]byte(fm), &fmKeys)
 
@@ -318,6 +328,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						}
 						if fmData.PersistentBudget != "" {
 							persistentBudget, _ = time.ParseDuration(fmData.PersistentBudget)
+						}
+						if fmData.CostBudget != "" {
+							costBudget, _ = strconv.ParseFloat(fmData.CostBudget, 64)
 						}
 						if fmData.MaxLogSize != "" {
 							maxLogSize, _ = config.ParseByteSize(fmData.MaxLogSize)
@@ -374,6 +387,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
 				PersistentBudget:     persistentBudget,
+				CostBudget:           costBudget,
 				MaxLogSize:           maxLogSize,
 				Runner:               runnerOverride,
 				RunnerChain:          runnerChain,

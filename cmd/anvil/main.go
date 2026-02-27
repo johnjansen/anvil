@@ -4438,7 +4438,9 @@ func taskEditCmd(args []string) {
 				var fmData struct {
 					Schedule string `yaml:"schedule"`
 				}
-				if yaml.Unmarshal([]byte(parts[0]), &fmData) == nil && fmData.Schedule != "" && fmData.Schedule != "persistent" {
+				if err := yaml.Unmarshal([]byte(parts[0]), &fmData); err != nil {
+					log.Printf("WARN: failed to parse frontmatter after edit: %v", err)
+				} else if fmData.Schedule != "" && fmData.Schedule != "persistent" {
 					if _, err := cron.Parse(fmData.Schedule); err != nil {
 						log.Fatalf("invalid schedule %q after edit: %v", fmData.Schedule, err)
 					}
