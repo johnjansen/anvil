@@ -1904,6 +1904,8 @@ func taskCmd(args []string) {
 		taskPipelineCmd(args[1:])
 	case "sla":
 		taskSlaCmd(args[1:])
+	case "runbook":
+		taskRunbookCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -2946,6 +2948,68 @@ func taskResetBudgetCmd(args []string) {
 	}
 
 	fmt.Printf("Budget reset for %s\n", todo.Name)
+}
+
+func taskRunbookCmd(args []string) {
+	openInBrowser := false
+	var rest []string
+	for _, a := range args {
+		if a == "--open" || a == "-o" {
+			openInBrowser = true
+		} else {
+			rest = append(rest, a)
+		}
+	}
+
+	if len(rest) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task runbook <name> [--open|-o]\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, rest[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", rest[0])
+		os.Exit(1)
+	}
+
+	runbook := todo.Runbook
+	if runbook == "" {
+		fmt.Printf("No runbook defined for task %s\n", todo.Name)
+		fmt.Printf("Add a runbook in the task's frontmatter:\n")
+		fmt.Printf("  ---\n")
+		fmt.Printf("  runbook: https://example.com/runbook\n")
+		fmt.Printf("  ---\n")
+		os.Exit(0)
+	}
+
+	// Check if it's a URL
+	if strings.HasPrefix(runbook, "http://") || strings.HasPrefix(runbook, "https://") {
+		fmt.Printf("Runbook: %s\n", runbook)
+		if openInBrowser {
+			fmt.Printf("Opening in browser...\n")
+			exec.Command("open", runbook).Start()
+		}
+	} else {
+		// Inline markdown - display it
+		fmt.Printf("Runbook for %s:\n", todo.Name)
+		fmt.Println(strings.Repeat("-", 50))
+		fmt.Println(runbook)
+	}
 }
 
 func taskSlaCmd(args []string) {
@@ -6390,7 +6454,33 @@ func checkTaskResult(taskName string) int {
 	if rec.Success {
 		return 0
 	}
+
+	// Task failed - show runbook if available
+	showRunbookHint(todo)
+
 	return 1
+}
+
+// showRunbookHint displays runbook information when a task fails.
+func showRunbookHint(todo *project.Todo) {
+	if todo.Runbook == "" {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\nRunbook available for this task:\n")
+	if strings.HasPrefix(todo.Runbook, "http://") || strings.HasPrefix(todo.Runbook, "https://") {
+		fmt.Fprintf(os.Stderr, "  %s\n", todo.Runbook)
+		fmt.Fprintf(os.Stderr, "  View: anvil task runbook %s\n", todo.Name)
+	} else {
+		// Show inline runbook preview
+		lines := strings.Split(todo.Runbook, "\n")
+		preview := strings.Join(lines[:min(5, len(lines))], "\n")
+		if len(lines) > 5 {
+			preview += "\n  ..."
+		}
+		fmt.Fprintf(os.Stderr, "  (inline runbook)\n%s\n", preview)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
 }
 
 // suggestStagger prints a hint for staggering overlapping schedules.

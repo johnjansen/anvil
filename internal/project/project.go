@@ -135,6 +135,7 @@ type Todo struct {
 	State                *TaskStateConfig // optional task state management config
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
+	Runbook              string        // URL or inline markdown with troubleshooting instructions
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
