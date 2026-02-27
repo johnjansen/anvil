@@ -1101,6 +1101,7 @@ anvil task queue                     # show daemon queue status and skip reasons
 anvil task pause <name>              # pause a task (sets disabled: true)
 anvil task resume <name>             # resume a paused task (sets disabled: false)
 anvil task timeout [name]            # show task timeout progress (--all for all tasks)
+anvil task extend-timeout <name> <duration>  # extend a running task's timeout (e.g., 30m, 1h)
 anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes (exit 0=ok, 1=fail, 2=timeout)
 anvil task dry-run <name> [options]  # validate and preview task config without executing
 anvil task sla [--verbose] [--reset] [--json]  # show SLA violations
