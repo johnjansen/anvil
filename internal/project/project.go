@@ -111,6 +111,7 @@ type Todo struct {
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
+	ParseError           string        // non-empty if frontmatter failed to parse; task is preserved but should not be executed
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -251,7 +252,20 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Checkpoint           bool              `yaml:"checkpoint"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
 					}
-					if err := yaml.Unmarshal([]byte(fm), &fmData); err == nil {
+					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
+						// Frontmatter has a parse error — preserve the task file but mark it
+						// as broken so the daemon skips execution and logs a warning.
+						fmt.Fprintf(os.Stderr, "anvil: warning: %s: frontmatter parse error: %v (task preserved but will not run)\n", fp, err)
+						todos = append(todos, Todo{
+							Path:       fp,
+							Name:       e.Name(),
+							Priority:   pri,
+							Content:    body,
+							IsLocked:   hasLock,
+							ParseError: fmt.Sprintf("frontmatter parse error: %v", err),
+						})
+						continue
+					} else {
 						// Parse raw keys to detect which fields were explicitly set.
 						_ = yaml.Unmarshal([]byte(fm), &fmKeys)
 

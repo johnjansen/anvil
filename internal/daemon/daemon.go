@@ -2062,6 +2062,11 @@ func (d *Daemon) tick(now time.Time) {
 			if t.Disabled {
 				continue
 			}
+			// Skip tasks with frontmatter parse errors (file is preserved on disk)
+			if t.ParseError != "" {
+				dlog.Warn("skip %s/%s — %s (fix the task file to resume)", projName, t.Name, t.ParseError)
+				continue
+			}
 			// Include task if:
 			// - one-shot (empty schedule)
 			// - cron schedule matches current minute
