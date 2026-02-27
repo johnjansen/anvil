@@ -671,6 +671,15 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 		return "", fmt.Errorf("writing todo file: %w", err)
 	}
 
+	// Log task creation activity
+	WriteActivity(p.Path, ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "created",
+		TaskID:    id,
+		TaskName:  strings.TrimSuffix(filename, ".md"),
+		Details:   map[string]string{"priority": fmt.Sprintf("%d", priority), "schedule": schedule},
+	})
+
 	return fmt.Sprintf("p%d/%s", priority, filename), nil
 }
 
@@ -1129,4 +1138,66 @@ func ListTemplates(projectPath string) ([]Template, error) {
 		}
 	}
 	return templates, nil
+}
+
+
+// ActivityEntry represents a single event in a task's lifecycle.
+type ActivityEntry struct {
+	Timestamp time.Time         `json:"timestamp"`
+	Action    string            `json:"action"`
+	TaskID    string            `json:"task_id"`
+	TaskName  string            `json:"task_name"`
+	Details   map[string]string `json:"details,omitempty"`
+}
+
+// ActivitiesPath returns the path to the activity log file for a task.
+func ActivitiesPath(projectPath, taskID string) string {
+	return filepath.Join(projectPath, ".anvil", "activities", taskID+".jsonl")
+}
+
+// WriteActivity appends an activity entry to the task's activity log.
+func WriteActivity(projectPath string, entry ActivityEntry) error {
+	if entry.TaskID == "" {
+		return nil // silently skip if no task ID
+	}
+	dir := filepath.Join(projectPath, ".anvil", "activities")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating activities dir: %w", err)
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshaling activity entry: %w", err)
+	}
+	f, err := os.OpenFile(ActivitiesPath(projectPath, entry.TaskID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening activity file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("writing activity entry: %w", err)
+	}
+	return nil
+}
+
+// ReadActivities reads all activity entries for a task, returning them in chronological order.
+func ReadActivities(projectPath, taskID string) ([]ActivityEntry, error) {
+	data, err := os.ReadFile(ActivitiesPath(projectPath, taskID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading activity file: %w", err)
+	}
+	var entries []ActivityEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry ActivityEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue // skip malformed lines
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }

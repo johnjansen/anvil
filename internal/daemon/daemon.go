@@ -1237,6 +1237,23 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
+
+	// Log run activity
+	runDetails := map[string]string{
+		"run_id":    runID,
+		"success":   fmt.Sprintf("%t", runRecord.Success),
+		"duration":  elapsed.Round(time.Second).String(),
+	}
+	if runRecord.Error != "" {
+		runDetails["error"] = runRecord.Error
+	}
+	project.WriteActivity(proj.Path, project.ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "run",
+		TaskID:    t.ID,
+		TaskName:  t.Name,
+		Details:   runDetails,
+	})
 }
 
 // runHook executes a lifecycle hook (on_success or on_failure) as a shell command.
@@ -1709,6 +1726,16 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 
 	// Cancel the task's context
 	found.Cancel()
+
+	// Log kill activity
+	project.WriteActivity(found.Project, project.ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "killed",
+		TaskID:    found.TaskID,
+		TaskName:  found.Name,
+		Details:   map[string]string{"method": "cancel"},
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
 }
@@ -2073,6 +2100,14 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	projName := filepath.Base(proj.Path)
 	dlog.Info("force-run requested for %s/%s — dispatching immediately", projName, todo.Name)
+
+	// Log force-run activity
+	project.WriteActivity(proj.Path, project.ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "force-run",
+		TaskID:    todo.ID,
+		TaskName:  todo.Name,
+	})
 
 	select {
 	case d.workQueue <- workItem{project: proj, todo: todo}:

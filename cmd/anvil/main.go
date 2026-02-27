@@ -186,6 +186,7 @@ Task subcommands:
   reset-budget <name>        Reset persistent task budget consumption
   state <name>              View, export, import, or clear task state
   dry-run <name> [options]   Validate and preview task config without executing
+  activity <name> [options]  Show task activity history (--type, --since, --limit, --export, --json)
   sla [--verbose] [--reset] [--json]  Show SLA violations (--verbose for all, --reset to clear)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
@@ -1921,6 +1922,8 @@ func taskCmd(args []string) {
 		taskBlameCmd(args[1:])
 	case "dry-run":
 		taskDryRunCmd(args[1:])
+	case "activity":
+		taskActivityCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -3890,6 +3893,12 @@ func taskUnlockCmd(args []string) {
 		log.Fatalf("failed to remove lock: %v", err)
 	}
 
+	project.WriteActivity(abs, project.ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "unlocked",
+		TaskID:    todo.ID,
+		TaskName:  todo.Name,
+	})
 	fmt.Printf("unlocked: %s\n", todo.Name)
 }
 
@@ -5047,6 +5056,12 @@ func taskPauseCmd(args []string) {
 		log.Fatalf("failed to write task file: %v", err)
 	}
 
+	project.WriteActivity(abs, project.ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "paused",
+		TaskID:    todo.ID,
+		TaskName:  todo.Name,
+	})
 	fmt.Printf("paused: %s\n", args[0])
 }
 
@@ -5142,6 +5157,12 @@ func taskResumeCmd(args []string) {
 					log.Fatalf("failed to write task file: %v", err)
 				}
 
+				project.WriteActivity(abs, project.ActivityEntry{
+					Timestamp: time.Now(),
+					Action:    "resumed",
+					TaskID:    todo.ID,
+					TaskName:  todo.Name,
+				})
 				fmt.Printf("resumed: %s\n", args[0])
 				return
 			}
