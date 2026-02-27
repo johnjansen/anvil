@@ -139,6 +139,18 @@ type Todo struct {
 	OnRiskHigh           string        // shell command to run when risk transitions to HIGH
 	RiskThreshold        RiskThresholds // risk scoring thresholds
 	Spawn               []string      // list of task names to spawn in parallel when this task runs
+	Subscription        *Subscription // external event subscription configuration
+	PriorityAging       *bool         // per-task override for priority aging (nil = use global config, false = disabled)
+}
+
+// Subscription defines an external event trigger configuration.
+type Subscription struct {
+	Type    string   // "webhook", "amqp", "fs"
+	Path    string   // webhook path, AMQP queue, or glob pattern
+	Method  string   // HTTP method for webhook
+	Secret  string   // webhook secret for validation
+	URL     string   // AMQP connection URL
+	Events  []string // fs events: "create", "modify", "delete"
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -945,6 +957,7 @@ type TemplateSpec struct {
 	Env                  map[string]string `yaml:"env,omitempty"`
 	DependsOn            []string          `yaml:"depends_on,omitempty"`
 	Checkpoint           bool              `yaml:"checkpoint,omitempty"`
+	PriorityAging        *bool             `yaml:"priority_aging,omitempty"`
 }
 
 // Template represents a loaded template with its name and spec.

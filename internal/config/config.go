@@ -31,6 +31,7 @@ type Config struct {
 	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
 	HealthPort               int                 `yaml:"health_port"`                 // optional TCP port for health probe endpoints (0 = disabled)
 	Cluster                  ClusterConfig       `yaml:"cluster"`                     // multi-daemon cluster coordination
+	PriorityAging            PriorityAgingConfig `yaml:"priority_aging"`              // priority aging for tasks waiting in queue
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
@@ -66,6 +67,14 @@ type QuietHoursConfig struct {
 	Start           string `yaml:"start"`            // HH:MM format (24h), e.g. "22:00"
 	End             string `yaml:"end"`              // HH:MM format (24h), e.g. "07:00"
 	ExcludePriority int    `yaml:"exclude_priority"` // tasks with priority <= this value bypass quiet hours (default: 0 = only p0)
+}
+
+// PriorityAgingConfig defines priority aging settings for tasks that wait too long.
+type PriorityAgingConfig struct {
+	Enabled   bool          `yaml:"enabled"`
+	Threshold time.Duration `yaml:"threshold"` // wait time threshold (e.g., 30m)
+	BoostBy   int           `yaml:"boost_by"` // priority reduction (e.g., 2 means p5 becomes p3)
+	MaxBoost  int           `yaml:"max_boost"` // maximum priority reduction (e.g., 4 means p5 can become p1 at worst)
 }
 
 // WebhookConfig defines a single webhook endpoint that receives task lifecycle events.

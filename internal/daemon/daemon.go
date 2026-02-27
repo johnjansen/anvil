@@ -132,6 +132,13 @@ type Daemon struct {
 	// Used by CLI to show queue status.
 	pendingTasks  map[string]string // taskKey -> skip reason
 	pendingTasksMu sync.RWMutex
+	// pendingSince tracks when each pending task entered the pending queue.
+	// Used for priority aging calculations.
+	pendingSince  map[string]time.Time // taskKey -> when task entered pending state
+	pendingSinceMu sync.RWMutex
+	// pendingPriority tracks the base priority of pending tasks (for display).
+	pendingPriority map[string]int
+	pendingPriorityMu sync.RWMutex
 	// stoppedTasks tracks persistent tasks that have been explicitly stopped.
 	// Stopped tasks are not re-dispatched until started again via /start.
 	stoppedTasks map[string]bool // taskID -> true
@@ -193,12 +200,14 @@ type TaskInfo struct {
 
 // TaskQueueInfo holds information about a task in the queue or its last skip reason.
 type TaskQueueInfo struct {
-	Project    string `json:"project"`
-	Name       string `json:"name"`
-	Priority   int    `json:"priority"`
-	Schedule   string `json:"schedule"`
-	Status     string `json:"status"`       // "running", "pending", "skipped"
-	SkipReason string `json:"skip_reason,omitempty"` // why task was skipped in last tick
+	Project         string `json:"project"`
+	Name            string `json:"name"`
+	Priority        int    `json:"priority"`        // configured priority
+	EffectivePriority int `json:"effective_priority"` // priority after aging boost
+	WaitDuration    string `json:"wait_duration,omitempty"` // how long task has been waiting
+	Schedule        string `json:"schedule"`
+	Status          string `json:"status"`       // "running", "pending", "skipped"
+	SkipReason      string `json:"skip_reason,omitempty"` // why task was skipped in last tick
 }
 
 // TaskBudgetInfo holds budget consumption info for a persistent task.
@@ -233,6 +242,8 @@ func New(cfg *config.Config) *Daemon {
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
+		pendingSince:  make(map[string]time.Time),
+		pendingPriority: make(map[string]int),
 		stoppedTasks:         make(map[string]bool),
 		persistentBudgetUsed: make(map[string]time.Duration),
 		webhooks:             webhook.New(cfg.Webhooks),
@@ -1456,6 +1467,7 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	// Get pending/skipped tasks from the last tick
 	d.pendingTasksMu.RLock()
+	d.pendingSinceMu.RLock()
 	for taskKey, skipReason := range d.pendingTasks {
 		// Parse taskKey as project/path
 		parts := strings.Split(taskKey, "/")
@@ -1471,13 +1483,34 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 		if skipReason != "" {
 			status = "skipped"
 		}
+		// Get wait duration and effective priority
+		var waitDuration string
+		var basePriority int
+		d.pendingSinceMu.RLock()
+		d.pendingPriorityMu.RLock()
+		if pendingSince, exists := d.pendingSince[taskKey]; exists {
+			waitDuration = time.Since(pendingSince).Round(time.Second).String()
+		}
+		if priority, exists := d.pendingPriority[taskKey]; exists {
+			basePriority = priority
+		}
+		d.pendingPriorityMu.RUnlock()
+		d.pendingSinceMu.RUnlock()
+
+		// Calculate effective priority
+		effectivePriority, _ := d.getEffectivePriority(taskKey, basePriority, nil)
+
 		result = append(result, TaskQueueInfo{
-			Project:    projectPath,
-			Name:       taskName,
-			Status:     status,
-			SkipReason: skipReason,
+			Project:             projectPath,
+			Name:                taskName,
+			Priority:            basePriority,
+			EffectivePriority:   effectivePriority,
+			Status:              status,
+			SkipReason:          skipReason,
+			WaitDuration:       waitDuration,
 		})
 	}
+	d.pendingSinceMu.RUnlock()
 	d.pendingTasksMu.RUnlock()
 
 	// Sort by project/name for consistent output
@@ -2229,10 +2262,22 @@ func (d *Daemon) tick(now time.Time) {
 		}
 	}
 
-	// Sort globally by priority (p0 first), then by name (oldest timestamp first)
+	// Calculate effective priority for each task (for sorting)
+	for i := range dueTodos {
+		taskKey := fmt.Sprintf("%s/%s", dueTodos[i].proj.Path, dueTodos[i].todo.Name)
+		effectivePriority, _ := d.getEffectivePriority(taskKey, dueTodos[i].todo.Priority, dueTodos[i].todo.PriorityAging)
+		dueTodos[i].todo.Priority = effectivePriority
+	}
+
+	// Sort globally by effective priority (p0 first), then by name (oldest timestamp first)
+	// Effective priority includes aging boost for tasks that have been waiting too long
 	sort.SliceStable(dueTodos, func(i, j int) bool {
-		if dueTodos[i].todo.Priority != dueTodos[j].todo.Priority {
-			return dueTodos[i].todo.Priority < dueTodos[j].todo.Priority
+		taskKeyI := fmt.Sprintf("%s/%s", dueTodos[i].proj.Path, dueTodos[i].todo.Name)
+		taskKeyJ := fmt.Sprintf("%s/%s", dueTodos[j].proj.Path, dueTodos[j].todo.Name)
+		effPriI, _ := d.getEffectivePriority(taskKeyI, dueTodos[i].todo.Priority, dueTodos[i].todo.PriorityAging)
+		effPriJ, _ := d.getEffectivePriority(taskKeyJ, dueTodos[j].todo.Priority, dueTodos[j].todo.PriorityAging)
+		if effPriI != effPriJ {
+			return effPriI < effPriJ
 		}
 		return dueTodos[i].todo.Name < dueTodos[j].todo.Name
 	})
@@ -2258,6 +2303,7 @@ func (d *Daemon) tick(now time.Time) {
 			dlog.Info("skip %s/%s — already in-flight", projName, pt.todo.Name)
 			d.pendingTasksMu.Lock()
 			d.pendingTasks[taskKey] = "max concurrent"
+			d.setPendingWithTime(taskKey, pt.todo.Priority)
 			d.pendingTasksMu.Unlock()
 			continue
 		}
@@ -2275,6 +2321,7 @@ func (d *Daemon) tick(now time.Time) {
 				dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, reason)
 				d.pendingTasksMu.Lock()
 				d.pendingTasks[taskKey] = reason
+				d.setPendingWithTime(taskKey, pt.todo.Priority)
 				d.pendingTasksMu.Unlock()
 
 				// Fire skipped webhook for dependency failures
@@ -2304,6 +2351,7 @@ func (d *Daemon) tick(now time.Time) {
 			dlog.Info("skip %s/%s — outside allowed time window", projName, pt.todo.Name)
 			d.pendingTasksMu.Lock()
 			d.pendingTasks[taskKey] = "outside time window"
+			d.setPendingWithTime(taskKey, pt.todo.Priority)
 			d.pendingTasksMu.Unlock()
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
@@ -2317,6 +2365,7 @@ func (d *Daemon) tick(now time.Time) {
 			dlog.Info("skip %s/%s — quiet hours active", projName, pt.todo.Name)
 			d.pendingTasksMu.Lock()
 			d.pendingTasks[taskKey] = "quiet hours"
+			d.setPendingWithTime(taskKey, pt.todo.Priority)
 			d.pendingTasksMu.Unlock()
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
@@ -2333,6 +2382,7 @@ func (d *Daemon) tick(now time.Time) {
 			dlog.Info("skip %s/%s — SLA strict: %v late (max %v)", projName, pt.todo.Name, slaCheck.Delay.Round(time.Second), slaCheck.MaxDelay)
 			d.pendingTasksMu.Lock()
 			d.pendingTasks[taskKey] = fmt.Sprintf("SLA strict: %v late", slaCheck.Delay.Round(time.Second))
+			d.setPendingWithTime(taskKey, pt.todo.Priority)
 			d.pendingTasksMu.Unlock()
 			d.inFlightMu.Lock()
 			d.inFlight[taskKey]--
@@ -2766,6 +2816,62 @@ func IsDaemonRunning() bool {
 	}
 	conn.Close()
 	return true
+}
+
+// setPendingWithTime marks a task as pending and records the time and priority if not already set.
+func (d *Daemon) setPendingWithTime(taskKey string, priority int) {
+	d.pendingSinceMu.Lock()
+	if _, exists := d.pendingSince[taskKey]; !exists {
+		d.pendingSince[taskKey] = time.Now()
+	}
+	d.pendingSinceMu.Unlock()
+	d.pendingPriorityMu.Lock()
+	if _, exists := d.pendingPriority[taskKey]; !exists {
+		d.pendingPriority[taskKey] = priority
+	}
+	d.pendingPriorityMu.Unlock()
+}
+
+// getEffectivePriority calculates the effective priority after applying aging boost.
+// Returns the effective priority and a boolean indicating if aging is being applied.
+func (d *Daemon) getEffectivePriority(taskKey string, basePriority int, todoPriorityAging *bool) (int, bool) {
+	// Check if aging is enabled for this task
+	agingEnabled := d.config.PriorityAging.Enabled
+	if todoPriorityAging != nil {
+		// Explicit per-task setting overrides global config
+		agingEnabled = *todoPriorityAging
+	}
+	if !agingEnabled {
+		return basePriority, false
+	}
+
+	// Get wait time
+	d.pendingSinceMu.Lock()
+	pendingSince, exists := d.pendingSince[taskKey]
+	d.pendingSinceMu.Unlock()
+
+	if !exists {
+		return basePriority, false
+	}
+
+	waitDuration := time.Since(pendingSince)
+	if waitDuration < d.config.PriorityAging.Threshold {
+		return basePriority, false
+	}
+
+	// Calculate boost
+	boost := int(waitDuration / d.config.PriorityAging.Threshold)
+	if boost > d.config.PriorityAging.MaxBoost {
+		boost = d.config.PriorityAging.MaxBoost
+	}
+
+	// Boost means lowering the priority number (p5 -> p3 = boost by 2)
+	effectivePriority := basePriority - (boost * d.config.PriorityAging.BoostBy)
+	if effectivePriority < 0 {
+		effectivePriority = 0
+	}
+
+	return effectivePriority, true
 }
 
 // socketClient returns an HTTP client that dials the daemon's unix socket
