@@ -372,12 +372,12 @@ SLA tracking only applies to cron-scheduled tasks (not one-shot or persistent ta
 
 ## runbook
 
-Associate troubleshooting instructions with tasks:
+Add troubleshooting instructions to tasks that display when tasks fail:
 
 ```yaml
 ---
 id: "some-uuid"
-schedule: "*/30 * * * *"
+schedule: "*/15 * * * *"
 runbook: |
   ## Troubleshooting Guide
 
@@ -388,11 +388,12 @@ runbook: |
 Triage GitHub issues...
 ```
 
-Or use a URL:
+Or reference a URL:
 
 ```yaml
 ---
-schedule: "*/30 * * *"
+id: "some-uuid"
+schedule: "*/15 * * * *"
 runbook: "https://wiki.example.com/runbooks/triage-issues"
 ---
 Triage GitHub issues...
@@ -402,10 +403,10 @@ View runbooks:
 
 ```bash
 anvil task runbook <name>              # display runbook content
-anvil task runbook <name> --open        # open URL in browser
+anvil task runbook <name> --open        # open URL in browser (URL runbooks only)
 ```
 
-The runbook is also shown when a task fails.
+The runbook is also shown automatically when a task fails.
 
 ## disabled
 
@@ -1187,6 +1188,7 @@ anvil task extend-timeout <name> <duration>  # extend a running task's timeout (
 anvil task wait <name> [--timeout D] [--match PAT]  # block until task completes (exit 0=ok, 1=fail, 2=timeout)
 anvil task dry-run <name> [options]  # validate and preview task config without executing
 anvil task sla [--verbose] [--reset] [--json]  # show SLA violations
+anvil task runbook <name> [--open]        # show task runbook (--open for URL runbooks)
 anvil task analyze [--all]         # analyze task schedules for potential conflicts
 anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
 anvil task overlaps [-a|--all]    # show schedule conflicts and overlapping tasks
