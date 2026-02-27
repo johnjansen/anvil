@@ -494,6 +494,70 @@ Run after dependencies complete...
 
 The task will only be dispatched when all tasks in `depends_on` have completed successfully (exit code 0) in their most recent run. If any dependency failed, the dependent task is skipped silently.
 
+### Task Fan-out (Spawn)
+
+Spawn child tasks in parallel when a parent task runs:
+
+```yaml
+---
+schedule: "0 * * * *"
+spawn:
+  - process-batch-a
+  - process-batch-b
+  - process-batch-c
+---
+Fetch data and fan out to child tasks for parallel processing.
+```
+
+When a task with `spawn` runs, the listed tasks are dispatched in parallel as child runs. The parent run tracks child run IDs, and you can view the relationship with:
+
+```bash
+anvil task tree <name>              # show parent-child tree
+anvil task tree <name> --json       # output as JSON
+anvil task tree <name> --depth 5    # control tree depth (max 5)
+```
+
+### Cost Budget
+
+Set a cumulative USD budget per daemon lifetime to cap LLM spending:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+cost_budget: "5.00"
+---
+Run with a $5 budget cap.
+```
+
+Once the cumulative estimated cost exceeds the budget, the task stops and requires manual restart with `anvil task reset-budget <name>`.
+
+### Failure Prediction
+
+Analyze historical runs to predict task failure risk:
+
+```bash
+anvil task predict <name>
+```
+
+Shows success rate, recent failure trends, risk factors, and a risk score (LOW/MEDIUM/HIGH). Requires at least 5 historical runs for analysis.
+
+Configure custom risk thresholds per task:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+risk_threshold:
+  high_threshold: 0.7
+  medium_threshold: 0.4
+  min_runs_for_analysis: 5
+  lookback_period: 720h    # 30 days
+on_risk_high: "curl -X POST https://slack.example.com/webhook -d '{\"text\":\"Task at high risk\"}'"
+---
+```
+
+- `risk_threshold` — customize the scoring thresholds (defaults: high=0.7, medium=0.4, min_runs=5, lookback=30d)
+- `on_risk_high` — shell command to run when the task's risk transitions to HIGH
+
 ### Task Checkpointing
 
 Enable checkpoint to persist state between runs. Tasks emit checkpoint data via a special stdout prefix, and the daemon injects it as an environment variable on the next run:
@@ -900,12 +964,13 @@ anvil cleanup -o=24h
 | `anvil task sla [--verbose] [--reset] [--json]` | Show SLA violations |
 | `anvil task runbook <name> [--open]` | Show task runbook (--open for URL runbooks) |
 | `anvil task state <name> [--export FILE \| --import FILE \| --clear]` | View, export, import, or clear task state |
-| `anvil task runbook <name> [--open]` | Show task runbook (--open for URL runbooks) |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 | `anvil task find <pattern>` | Find tasks by name pattern |
 | `anvil task export [names...] [-a\|--all] [-o file]` | Export tasks to JSON |
 | `anvil task import <file> [--base-path path] [-n\|--dry-run] [-f\|--force]` | Import tasks from JSON |
+| `anvil task predict <name>` | Show failure prediction analysis based on historical runs |
+| `anvil task tree <name> [--depth N] [--json]` | Show parent-child relationships for spawned tasks |
 
 **Task status:**
 

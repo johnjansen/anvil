@@ -188,6 +188,8 @@ Task subcommands:
   sla [--verbose] [--reset] [--json]  Show SLA violations (--verbose for all, --reset to clear)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
+  predict <name>            Show failure prediction analysis based on historical runs
+  tree <name> [--depth N] [--json]  Show parent-child relationships for spawned tasks
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
