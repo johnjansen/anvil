@@ -157,6 +157,8 @@ type RunRecord struct {
 	SLAViolation     bool          `json:"sla_violation,omitempty"`     // whether this run violated SLA
 	SLAMaxDelay      time.Duration `json:"sla_max_delay,omitempty"`     // configured max_delay at time of dispatch
 	SLASkipped       bool          `json:"sla_skipped,omitempty"`       // true if strict mode skipped this run
+	RunnerIndex      int           `json:"runner_index,omitempty"`      // which runner in the chain was used (0-based; 100+ means timeout fallback)
+	RunnerCommand    string        `json:"runner_command,omitempty"`    // the actual runner command that was used
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.

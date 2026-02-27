@@ -2620,6 +2620,9 @@ func taskGetCmd(args []string) {
 			MaxConcurrent   int             `json:"max_concurrent,omitempty"`
 			SkipPermissions bool            `json:"skip_permissions,omitempty"`
 			Runner          string          `json:"runner,omitempty"`
+			RunnerChain     []string        `json:"runner_chain,omitempty"`
+			RunnerOnTimeout string          `json:"runner_on_timeout,omitempty"`
+			LastRunnerUsed  string          `json:"last_runner_used,omitempty"`
 			DependsOn       []string        `json:"depends_on,omitempty"`
 			Dependencies    []depStatusJSON `json:"dependencies,omitempty"`
 			Retry           int             `json:"retry,omitempty"`
@@ -2655,7 +2658,13 @@ func taskGetCmd(args []string) {
 			MaxConcurrent:   todo.MaxConcurrent,
 			SkipPermissions: todo.SkipPermissions,
 			Runner:          todo.Runner,
+			RunnerChain:     todo.RunnerChain,
+			RunnerOnTimeout: todo.RunnerOnTimeout,
 			DependsOn:       todo.DependsOn,
+		}
+		// Add last runner used from most recent run record
+		if lastRec, recErr := project.ReadCurrentRunRecord(abs, todo.ID); recErr == nil && lastRec.RunnerCommand != "" {
+			detail.LastRunnerUsed = lastRec.RunnerCommand
 		}
 		// Add dependency status info
 		if len(todo.DependsOn) > 0 {
@@ -2789,6 +2798,23 @@ func taskGetCmd(args []string) {
 				fmt.Printf("  %-30s success%s\n", dep, lastRun)
 			}
 		}
+	}
+	// Show runner chain configuration
+	if len(todo.RunnerChain) > 0 {
+		fmt.Printf("Chain:    %d runners\n", len(todo.RunnerChain))
+		for i, cmd := range todo.RunnerChain {
+			fmt.Printf("  [%d] %s\n", i, cmd)
+		}
+		if todo.RunnerOnTimeout != "" {
+			fmt.Printf("  on_timeout: %s\n", todo.RunnerOnTimeout)
+		}
+		// Show which runner was last used
+		rec, recErr := project.ReadCurrentRunRecord(abs, todo.ID)
+		if recErr == nil && rec.RunnerCommand != "" {
+			fmt.Printf("          last used: %s\n", rec.RunnerCommand)
+		}
+	} else if todo.RunnerOnTimeout != "" {
+		fmt.Printf("Timeout:  fallback runner: %s\n", todo.RunnerOnTimeout)
 	}
 	// Show retry configuration and last run attempt info
 	if todo.Retry > 0 {
@@ -3614,7 +3640,7 @@ func taskHistoryCmd(args []string) {
 	}
 
 	// Print header
-	fmt.Printf("%-20s %10s %10s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "STATUS")
+	fmt.Printf("%-20s %10s %10s %-12s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "RUNNER", "STATUS")
 	for _, rec := range records {
 		duration := ""
 		if !rec.Finished.IsZero() {
@@ -3654,7 +3680,20 @@ func taskHistoryCmd(args []string) {
 			attempts = fmt.Sprintf("%d", rec.Attempt)
 		}
 
-		fmt.Printf("%-20s %10s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, status)
+		// Format runner column
+		runnerLabel := "-"
+		if rec.RunnerCommand != "" {
+			runnerLabel = rec.RunnerCommand
+			if len(runnerLabel) > 12 {
+				runnerLabel = runnerLabel[:12]
+			}
+		} else if rec.RunnerIndex >= 100 {
+			runnerLabel = "timeout-fb"
+		} else if rec.RunnerIndex > 0 {
+			runnerLabel = fmt.Sprintf("runner[%d]", rec.RunnerIndex)
+		}
+
+		fmt.Printf("%-20s %10s %10s %-12s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, runnerLabel, status)
 
 		// Print output summary if available
 		if rec.OutputSummary != "" {

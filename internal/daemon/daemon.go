@@ -925,6 +925,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		DispatchDelay:    sla.Delay,
 		SLAViolation:     sla.Violation,
 		SLAMaxDelay:      sla.MaxDelay,
+		RunnerIndex:      usedRunnerIdx,
+	}
+
+	// Resolve which runner command was actually used for the run record
+	{
+		commands := d.runner.Commands
+		if len(t.RunnerChain) > 0 {
+			commands = t.RunnerChain
+		}
+		idx := usedRunnerIdx
+		if idx >= 100 {
+			// 100+ indicates timeout fallback runner
+			runRecord.RunnerCommand = t.RunnerOnTimeout
+		} else if idx >= 0 && idx < len(commands) {
+			runRecord.RunnerCommand = commands[idx]
+		}
 	}
 	if err != nil {
 		runRecord.Error = err.Error()
