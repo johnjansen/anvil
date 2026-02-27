@@ -370,6 +370,43 @@ anvil task sla --json            # output as JSON
 
 SLA tracking only applies to cron-scheduled tasks (not one-shot or persistent tasks).
 
+## runbook
+
+Associate troubleshooting instructions with tasks:
+
+```yaml
+---
+id: "some-uuid"
+schedule: "*/30 * * * *"
+runbook: |
+  ## Troubleshooting Guide
+
+  1. Check GitHub API rate limit: `gh api rate_limit`
+  2. Verify token has repo scope
+  3. Check network connectivity
+---
+Triage GitHub issues...
+```
+
+Or use a URL:
+
+```yaml
+---
+schedule: "*/30 * * *"
+runbook: "https://wiki.example.com/runbooks/triage-issues"
+---
+Triage GitHub issues...
+```
+
+View runbooks:
+
+```bash
+anvil task runbook <name>              # display runbook content
+anvil task runbook <name> --open        # open URL in browser
+```
+
+The runbook is also shown when a task fails.
+
 ## disabled
 
 Set `disabled: true` to pause a task without deleting it:

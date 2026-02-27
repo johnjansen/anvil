@@ -329,6 +329,42 @@ anvil task sla --json            # output as JSON
 
 SLA tracking only applies to cron-scheduled tasks (not one-shot or persistent tasks).
 
+### Task Runbooks
+
+Add troubleshooting instructions to tasks that display when tasks fail:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+runbook: |
+  ## Troubleshooting Guide
+
+  1. Check GitHub API rate limit: `gh api rate_limit`
+  2. Verify token has repo scope
+  3. Check network connectivity
+---
+Triage GitHub issues...
+```
+
+Or reference a URL:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+runbook: "https://wiki.example.com/runbooks/triage-issues"
+---
+Triage GitHub issues...
+```
+
+View runbooks:
+
+```bash
+anvil task runbook <name>              # display runbook content
+anvil task runbook <name> --open        # open URL in browser (URL runbooks only)
+```
+
+The runbook is also shown automatically when a task fails.
+
 Add labels to tasks for organization and filtering:
 
 ```yaml
@@ -861,7 +897,9 @@ anvil cleanup -o=24h
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
 | `anvil task dry-run <name> [options]` | Validate and preview task config without executing |
 | `anvil task sla [--verbose] [--reset] [--json]` | Show SLA violations |
+| `anvil task runbook <name> [--open]` | Show task runbook (--open for URL runbooks) |
 | `anvil task state <name> [--export FILE \| --import FILE \| --clear]` | View, export, import, or clear task state |
+| `anvil task runbook <name> [--open]` | Show task runbook (--open for URL runbooks) |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
 | `anvil task stop <name>` | Stop a running task (disable rescheduling) |
 | `anvil task find <pattern>` | Find tasks by name pattern |
