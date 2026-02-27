@@ -1915,6 +1915,8 @@ func taskCmd(args []string) {
 		taskLsCmd([]string{"--match", args[1]})
 	case "dry-run":
 		taskDryRunCmd(args[1:])
+	case "overlaps":
+		taskOverlapsCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
