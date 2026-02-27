@@ -575,7 +575,7 @@ func writeEmbeddedFS(destDir string, fsys fs.FS) error {
 
 // AddTodo writes a new todo file into the project's .anvil/todos/pN/ directory.
 // It returns the relative path like "p1/check-github-for-issues.md".
-func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string) (string, error) {
+func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string, dependsOn []string) (string, error) {
 	if priority < 0 || priority > 9 {
 		return "", fmt.Errorf("priority must be 0-9, got %d", priority)
 	}
@@ -634,6 +634,12 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 	}
 	if runnerCmd != "" {
 		sb.WriteString(fmt.Sprintf("runner: %q\n", runnerCmd))
+	}
+	if len(dependsOn) > 0 {
+		sb.WriteString("depends_on:\n")
+		for _, dep := range dependsOn {
+			sb.WriteString(fmt.Sprintf("  - %q\n", dep))
+		}
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)
