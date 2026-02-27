@@ -148,6 +148,7 @@ Add options:
   -o, --once                 Create a one-shot task (no schedule)
   -n, --dry-run              Validate schedule without creating task
   -f, --file path            Read task content from a file
+  -t, --template name        Use a template for task configuration
   -                          Read task content from stdin
       --pre-check string    Shell command to skip task if non-zero exit
       --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read")
