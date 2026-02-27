@@ -55,6 +55,9 @@ type ClusterConfig struct {
 	Peers             []string      `yaml:"peers"`              // static peer list
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"` // leader heartbeat interval (default: 5s)
 	ElectionTimeout   time.Duration `yaml:"election_timeout"`   // follower election timeout (default: 30s)
+	// Multicast discovery settings
+	MulticastAddr  string `yaml:"multicast_addr"`  // multicast address for discovery (e.g., "239.255.0.1:9090")
+	MulticastIface string `yaml:"multicast_iface"` // network interface for multicast (empty = auto)
 }
 
 // QuietHoursConfig defines a global time window during which only high-priority tasks may run.

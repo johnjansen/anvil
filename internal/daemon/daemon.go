@@ -26,6 +26,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cluster"
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
+	"github.com/johnjansen/anvil/internal/discovery"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
 	"github.com/johnjansen/anvil/internal/updater"
@@ -145,6 +146,7 @@ type Daemon struct {
 	costBudgetUsedMu sync.Mutex
 	webhooks    *webhook.Sender
 	clusterNode *cluster.Node // nil when cluster mode disabled
+	discovery   *discovery.Discovery
 	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
 	rateLimitSemaphore chan struct{}
 	// Metrics counters for Prometheus endpoint
@@ -301,6 +303,21 @@ func (d *Daemon) Run() {
 	// Start socket server
 	go d.startSocketServer()
 
+	// Start multicast discovery if configured
+	if d.config.Cluster.MulticastAddr != "" {
+		d.discovery = discovery.New(discovery.Config{
+			MulticastAddr:  d.config.Cluster.MulticastAddr,
+			MulticastIface: d.config.Cluster.MulticastIface,
+			StaticHosts:    d.config.Cluster.Peers,
+			NodeID:         d.config.Cluster.Name,
+		})
+		if err := d.discovery.Start(); err != nil {
+			dlog.Warn("discovery: failed to start: %v", err)
+		} else {
+			dlog.Info("discovery: started on %s", d.config.Cluster.MulticastAddr)
+		}
+	}
+
 	// Start cluster node if enabled
 	if d.config.Cluster.Enabled {
 		node, err := cluster.NewNode(config.Dir(), cluster.Config{
@@ -320,6 +337,21 @@ func (d *Daemon) Run() {
 			} else {
 				d.clusterNode = node
 				dlog.Info("cluster: node %s started", node.ID())
+			}
+		}
+
+		// Start multicast discovery if configured
+		if d.config.Cluster.MulticastAddr != "" {
+			d.discovery = discovery.New(discovery.Config{
+				MulticastAddr:  d.config.Cluster.MulticastAddr,
+				MulticastIface: d.config.Cluster.MulticastIface,
+				StaticHosts:    d.config.Cluster.Peers,
+				NodeID:         d.config.Cluster.Name,
+			})
+			if err := d.discovery.Start(); err != nil {
+				dlog.Warn("discovery: failed to start: %v", err)
+			} else {
+				dlog.Info("discovery: started with node ID %s", d.discovery.GetNodeID())
 			}
 		}
 	}
@@ -432,6 +464,9 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	}
 	if d.clusterNode != nil {
 		d.clusterNode.Stop()
+	}
+	if d.discovery != nil && d.discovery.IsRunning() {
+		d.discovery.AnnounceLeave()
 	}
 	close(d.workQueue)
 	workerWg.Wait()
