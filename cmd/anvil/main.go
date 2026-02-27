@@ -1913,6 +1913,12 @@ func taskCmd(args []string) {
 			os.Exit(1)
 		}
 		taskLsCmd([]string{"--match", args[1]})
+	case "diff":
+		taskDiffCmd(args[1:])
+	case "restore":
+		taskRestoreCmd(args[1:])
+	case "blame":
+		taskBlameCmd(args[1:])
 	case "dry-run":
 		taskDryRunCmd(args[1:])
 	default:
@@ -3528,6 +3534,7 @@ func taskHistoryCmd(args []string) {
 	showStats := false
 	jsonOutput := false
 	followMode := false
+	versionsMode := false
 	i := 0
 	for i < len(args) {
 		switch args[i] {
@@ -3556,13 +3563,16 @@ func taskHistoryCmd(args []string) {
 		case "--json":
 			jsonOutput = true
 			i++
+		case "--versions":
+			versionsMode = true
+			i++
 		default:
 			break
 		}
 	}
 	taskName := strings.Join(args[i:], " ")
 	if taskName == "" {
-		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--retried] [--stats] [--json]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--retried] [--stats] [--json] [--versions]\n")
 		os.Exit(1)
 	}
 
@@ -3585,6 +3595,45 @@ func taskHistoryCmd(args []string) {
 	if todo == nil {
 		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
 		os.Exit(1)
+	}
+
+
+	// Show version history if --versions flag is set
+	if versionsMode {
+		taskNameClean := strings.TrimSuffix(todo.Name, ".md")
+		versions, err := project.ReadAllVersions(abs, taskNameClean)
+		if err != nil {
+			log.Fatalf("failed to read versions: %v", err)
+		}
+		if len(versions) == 0 {
+			fmt.Printf("no versions found for task: %s\n", taskNameClean)
+			return
+		}
+		if jsonOutput {
+			data, err := json.MarshalIndent(versions, "", "  ")
+			if err != nil {
+				log.Fatalf("failed to marshal JSON: %v", err)
+			}
+			fmt.Println(string(data))
+			return
+		}
+		fmt.Printf("%-10s %-20s %-14s %s\n", "VERSION", "DATE", "AUTHOR", "SUMMARY")
+		for _, v := range versions {
+			author := v.Author
+			if len(author) > 14 {
+				author = author[:14]
+			}
+			summary := v.Summary
+			if len(summary) > 40 {
+				summary = summary[:40] + "..."
+			}
+			fmt.Printf("%-10s %-20s %-14s %s\n",
+				fmt.Sprintf("v%d", v.VersionNumber),
+				v.Timestamp.Format("2006-01-02 15:04:05"),
+				author,
+				summary)
+		}
+		return
 	}
 
 	// In follow mode, wait for new runs to complete and display them
@@ -8423,6 +8472,220 @@ func clusterLeaveCmd(args []string) {
 			errMsg = "unknown error"
 		}
 		fmt.Fprintf(os.Stderr, "Cluster mode is not enabled.\n")
+		os.Exit(1)
+	}
+}
+
+
+func taskDiffCmd(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task diff <name> <v1> [v2]\n")
+		os.Exit(1)
+	}
+
+	taskName := args[0]
+	v1Str := args[1]
+	v2Str := ""
+	if len(args) >= 3 {
+		v2Str = args[2]
+	}
+
+	// Parse version numbers (accept "v1" or "1")
+	v1Str = strings.TrimPrefix(v1Str, "v")
+	v1Num := 0
+	if _, err := fmt.Sscanf(v1Str, "%d", &v1Num); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid version: %s\n", args[1])
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "error: task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	taskNameClean := strings.TrimSuffix(todo.Name, ".md")
+
+	ver1, err := project.ReadVersion(abs, taskNameClean, v1Num)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: version not found: v%d\n", v1Num)
+		os.Exit(1)
+	}
+
+	var oldLabel, newLabel, oldContent, newContent string
+
+	if v2Str != "" {
+		v2Str = strings.TrimPrefix(v2Str, "v")
+		v2Num := 0
+		if _, err := fmt.Sscanf(v2Str, "%d", &v2Num); err != nil {
+			fmt.Fprintf(os.Stderr, "invalid version: %s\n", args[2])
+			os.Exit(1)
+		}
+		ver2, err := project.ReadVersion(abs, taskNameClean, v2Num)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: version not found: v%d\n", v2Num)
+			os.Exit(1)
+		}
+		oldLabel = fmt.Sprintf("v%d  %s", ver1.VersionNumber, ver1.Timestamp.Format("2006-01-02 15:04:05"))
+		newLabel = fmt.Sprintf("v%d  %s", ver2.VersionNumber, ver2.Timestamp.Format("2006-01-02 15:04:05"))
+		oldContent = ver1.Content
+		newContent = ver2.Content
+	} else {
+		// Diff against current file
+		currentContent, err := os.ReadFile(todo.Path)
+		if err != nil {
+			log.Fatalf("failed to read current task file: %v", err)
+		}
+		oldLabel = fmt.Sprintf("v%d  %s", ver1.VersionNumber, ver1.Timestamp.Format("2006-01-02 15:04:05"))
+		newLabel = "current"
+		oldContent = ver1.Content
+		newContent = string(currentContent)
+	}
+
+	diff := project.UnifiedDiff(oldLabel, newLabel, oldContent, newContent)
+	if diff == "" {
+		fmt.Println("no differences")
+		return
+	}
+	fmt.Print(diff)
+}
+
+func taskRestoreCmd(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task restore <name> <version>\n")
+		os.Exit(1)
+	}
+
+	taskName := args[0]
+	vStr := strings.TrimPrefix(args[1], "v")
+	vNum := 0
+	if _, err := fmt.Sscanf(vStr, "%d", &vNum); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid version: %s\n", args[1])
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "error: task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	taskNameClean := strings.TrimSuffix(todo.Name, ".md")
+
+	ver, err := project.ReadVersion(abs, taskNameClean, vNum)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: version not found: v%d\n", vNum)
+		os.Exit(1)
+	}
+
+	// Read current content
+	currentContent, err := os.ReadFile(todo.Path)
+	if err != nil {
+		log.Fatalf("failed to read current task file: %v", err)
+	}
+
+	if project.ComputeFileHash(string(currentContent)) == ver.ContentHash {
+		fmt.Printf("no changes: current content matches v%d\n", vNum)
+		return
+	}
+
+	// Check if already at this version
+	versions, _ := project.ReadAllVersions(abs, taskNameClean)
+	if len(versions) > 0 && versions[0].ContentHash == ver.ContentHash {
+		fmt.Printf("task is already at v%d\n", vNum)
+		return
+	}
+
+	// Write restored content to task file
+	if err := os.WriteFile(todo.Path, []byte(ver.Content), 0644); err != nil {
+		log.Fatalf("failed to write task file: %v", err)
+	}
+
+	// Create new version snapshot
+	author := project.GetAuthor(abs)
+	summary := fmt.Sprintf("restored from v%d", vNum)
+	newVer, err := project.WriteTaskVersion(abs, taskNameClean, ver.Content, author, summary)
+	if err != nil {
+		log.Fatalf("failed to create version snapshot: %v", err)
+	}
+
+	fmt.Printf("restored %s to v%d (created v%d)\n", taskNameClean, vNum, newVer.VersionNumber)
+}
+
+func taskBlameCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task blame <name>\n")
+		os.Exit(1)
+	}
+
+	taskName := args[0]
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "error: task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	// Check if project is git-tracked
+	checkCmd := exec.Command("git", "rev-parse", "--git-dir")
+	checkCmd.Dir = abs
+	if err := checkCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "git blame not available: project is not in a git repository\n")
+		os.Exit(1)
+	}
+
+	// Run git blame
+	blameCmd := exec.Command("git", "blame", todo.Path)
+	blameCmd.Dir = abs
+	blameCmd.Stdout = os.Stdout
+	blameCmd.Stderr = os.Stderr
+	if err := blameCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "git blame failed: %v\n", err)
 		os.Exit(1)
 	}
 }

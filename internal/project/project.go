@@ -2,11 +2,15 @@ package project
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -165,6 +169,16 @@ type RunRecord struct {
 	RunnerIndex      int           `json:"runner_index,omitempty"`      // which runner in the chain was used (0-based; 100+ means timeout fallback)
 	RunnerCommand    string        `json:"runner_command,omitempty"`    // the actual runner command that was used
 	NodeID           string        `json:"node_id,omitempty"`            // cluster node that executed this run
+}
+// TaskVersion is a snapshot of a task file at a specific point in time.
+type TaskVersion struct {
+	VersionNumber int       `json:"version_number"`
+	TaskName      string    `json:"task_name"`
+	Content       string    `json:"content"`
+	ContentHash   string    `json:"content_hash"`
+	Timestamp     time.Time `json:"timestamp"`
+	Author        string    `json:"author"`
+	Summary       string    `json:"summary,omitempty"`
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -700,6 +714,44 @@ func CurrentRunPath(projectPath, taskID string) string {
 	return filepath.Join(runsDir(projectPath, taskID), "current")
 }
 
+
+// VersionsDir returns the path to the versions directory for a task.
+func VersionsDir(projectPath, taskName string) string {
+	return filepath.Join(projectPath, ".anvil", "versions", taskName)
+}
+
+// VersionPath returns the path to a specific version snapshot.
+func VersionPath(projectPath, taskName string, versionNum int) string {
+	return filepath.Join(VersionsDir(projectPath, taskName), fmt.Sprintf("v%d.json", versionNum))
+}
+
+
+// GetAuthor returns the author name from git config or system username.
+func GetAuthor(projectPath string) string {
+	// Try git config user.name
+	cmd := exec.Command("git", "config", "user.name")
+	cmd.Dir = projectPath
+	out, err := cmd.Output()
+	if err == nil {
+		name := strings.TrimSpace(string(out))
+		if name != "" {
+			return name
+		}
+	}
+	// Fall back to system username
+	u, err := user.Current()
+	if err == nil && u.Username != "" {
+		return u.Username
+	}
+	return "unknown"
+}
+
+// ComputeFileHash returns the SHA256 hex hash of the given content.
+func ComputeFileHash(content string) string {
+	h := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(h[:])
+}
+
 // WriteRunRecord writes a run record and updates the "current" pointer.
 func WriteRunRecord(projectPath string, rec RunRecord) error {
 	dir := runsDir(projectPath, rec.TaskID)
@@ -778,6 +830,107 @@ func ReadAllRunRecords(projectPath, taskID string) ([]RunRecord, error) {
 	})
 
 	return records, nil
+}
+
+
+// WriteTaskVersion writes a version snapshot for a task.
+func WriteTaskVersion(projectPath, taskName, content, author, summary string) (TaskVersion, error) {
+	dir := VersionsDir(projectPath, taskName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return TaskVersion{}, fmt.Errorf("creating versions dir: %w", err)
+	}
+
+	// Determine next version number
+	versions, _ := ReadAllVersions(projectPath, taskName)
+	nextNum := 1
+	for _, v := range versions {
+		if v.VersionNumber >= nextNum {
+			nextNum = v.VersionNumber + 1
+		}
+	}
+
+	if summary == "" {
+		if nextNum == 1 {
+			summary = "initial version"
+		} else {
+			summary = "modified"
+		}
+	}
+
+	tv := TaskVersion{
+		VersionNumber: nextNum,
+		TaskName:      taskName,
+		Content:       content,
+		ContentHash:   ComputeFileHash(content),
+		Timestamp:     time.Now(),
+		Author:        author,
+		Summary:       summary,
+	}
+
+	data, err := json.MarshalIndent(tv, "", "  ")
+	if err != nil {
+		return TaskVersion{}, fmt.Errorf("marshaling version: %w", err)
+	}
+
+	vPath := VersionPath(projectPath, taskName, nextNum)
+	if err := os.WriteFile(vPath, data, 0644); err != nil {
+		return TaskVersion{}, fmt.Errorf("writing version: %w", err)
+	}
+
+	return tv, nil
+}
+
+// ReadAllVersions reads all version snapshots for a task, sorted by version number (newest first).
+func ReadAllVersions(projectPath, taskName string) ([]TaskVersion, error) {
+	dir := VersionsDir(projectPath, taskName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading versions dir: %w", err)
+	}
+
+	var versions []TaskVersion
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		vPath := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(vPath)
+		if err != nil {
+			continue
+		}
+		var tv TaskVersion
+		if err := json.Unmarshal(data, &tv); err != nil {
+			continue
+		}
+		versions = append(versions, tv)
+	}
+
+	// Sort by version number, newest first
+	sort.Slice(versions, func(i, j int) bool {
+		return versions[i].VersionNumber > versions[j].VersionNumber
+	})
+
+	return versions, nil
+}
+
+// ReadVersion reads a specific version of a task by version number.
+func ReadVersion(projectPath, taskName string, versionNum int) (TaskVersion, error) {
+	vPath := VersionPath(projectPath, taskName, versionNum)
+	data, err := os.ReadFile(vPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return TaskVersion{}, fmt.Errorf("version not found: v%d", versionNum)
+		}
+		return TaskVersion{}, fmt.Errorf("reading version: %w", err)
+	}
+	var tv TaskVersion
+	if err := json.Unmarshal(data, &tv); err != nil {
+		return TaskVersion{}, fmt.Errorf("parsing version: %w", err)
+	}
+	return tv, nil
 }
 
 // LatestSessionID resolves the session ID for the most recent run of a task.

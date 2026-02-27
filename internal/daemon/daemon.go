@@ -145,6 +145,7 @@ type Daemon struct {
 	costBudgetUsed   map[string]float64
 	costBudgetUsedMu sync.Mutex
 	webhooks    *webhook.Sender
+	taskHashes  map[string]string // taskName -> contentHash for change detection
 	clusterNode *cluster.Node // nil when cluster mode disabled
 	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
 	rateLimitSemaphore chan struct{}
@@ -228,6 +229,7 @@ func New(cfg *config.Config) *Daemon {
 		tasks:        make(map[string]*RunningTask),
 		drainedTasks: make(map[string]bool),
 		persistentFailures: make(map[string]int),
+		taskHashes:         make(map[string]string),
 		persistentCooldowns: make(map[string]time.Time),
 	starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
@@ -2274,6 +2276,32 @@ func (d *Daemon) tick(now time.Time) {
 			continue
 		}
 		allProjectTodos[projName] = allTodos
+
+		// Auto-version task files that have changed
+		for _, t := range allTodos {
+			taskName := strings.TrimSuffix(t.Name, ".md")
+			content, err := os.ReadFile(t.Path)
+			if err != nil {
+				continue
+			}
+			hash := project.ComputeFileHash(string(content))
+			prevHash, known := d.taskHashes[proj.Path+"/"+taskName]
+			if !known {
+				// First time seeing this task - check if a version already exists
+				existing, _ := project.ReadAllVersions(proj.Path, taskName)
+				if len(existing) == 0 {
+					// No versions exist yet - create initial version
+					author := project.GetAuthor(proj.Path)
+					project.WriteTaskVersion(proj.Path, taskName, string(content), author, "initial version")
+				}
+				d.taskHashes[proj.Path+"/"+taskName] = hash
+			} else if hash != prevHash {
+				// Content changed - create new version
+				author := project.GetAuthor(proj.Path)
+				project.WriteTaskVersion(proj.Path, taskName, string(content), author, "")
+				d.taskHashes[proj.Path+"/"+taskName] = hash
+			}
+		}
 
 		// Validate cross-project dependencies
 		for _, t := range allTodos {
