@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
 	"github.com/johnjansen/anvil/internal/project"
+	"github.com/johnjansen/anvil/internal/runner"
 	"github.com/johnjansen/anvil/internal/service"
 	"github.com/johnjansen/anvil/tools"
 
@@ -98,6 +100,8 @@ func main() {
 		projectCmd(os.Args[2:])
 	case "template":
 		templateCmd(os.Args[2:])
+	case "prompt":
+		promptCmd(os.Args[2:])
 	case "usage":
 		usageCmd(os.Args[2:])
 	case "update":
@@ -181,6 +185,12 @@ Task subcommands:
   state <name>              View, export, import, or clear task state
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
+
+Prompt subcommands:
+  sandbox <task> [flags]   Run a task prompt in sandbox mode (no side effects)
+                           --json         Output results in JSON format
+                           --compare F... Compare multiple prompt variation files
+                           --watch        Watch task file and re-run on changes
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -8038,4 +8048,359 @@ func loadAllWatched() ([]watchFrontmatter, error) {
 	}
 
 	return result, nil
+}
+
+// --- Prompt Sandbox ---
+
+// SandboxResult holds the outcome of a single sandbox execution.
+type SandboxResult struct {
+	Label        string  `json:"label"`
+	Response     string  `json:"response"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	EstimatedCost float64 `json:"estimated_cost_usd"`
+	DurationMs   int64   `json:"duration_ms"`
+	RunnerIndex  int     `json:"runner_index"`
+	Error        string  `json:"error,omitempty"`
+}
+
+func promptCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil prompt sandbox <task> [--json] [--compare f1 f2 ...] [--watch]\n")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sandbox":
+		promptSandboxCmd(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown prompt command: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "usage: anvil prompt sandbox <task>\n")
+		os.Exit(1)
+	}
+}
+
+func promptSandboxCmd(args []string) {
+	jsonOutput := false
+	watchMode := false
+	var compareFiles []string
+	var taskName string
+	inCompare := false
+
+	for _, a := range args {
+		switch {
+		case a == "--json":
+			jsonOutput = true
+			inCompare = false
+		case a == "--watch":
+			watchMode = true
+			inCompare = false
+		case a == "--compare":
+			inCompare = true
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", a)
+			os.Exit(1)
+		case inCompare:
+			compareFiles = append(compareFiles, a)
+		default:
+			if taskName == "" {
+				taskName = a
+			} else if inCompare {
+				compareFiles = append(compareFiles, a)
+			} else {
+				// Treat extra positional args after task name as compare files if --compare was seen
+				compareFiles = append(compareFiles, a)
+			}
+			inCompare = false
+		}
+	}
+
+	if taskName == "" {
+		fmt.Fprintf(os.Stderr, "usage: anvil prompt sandbox <task> [--json] [--compare f1 f2 ...] [--watch]\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(todo.Content) == "" {
+		fmt.Fprintf(os.Stderr, "task has no prompt content: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	if watchMode {
+		watchAndRunSandbox(abs, proj, todo, jsonOutput)
+		return
+	}
+
+	if len(compareFiles) > 0 {
+		runComparisonSandbox(abs, proj, todo, compareFiles, jsonOutput)
+		return
+	}
+
+	// Single sandbox run
+	result := runSandbox(abs, todo, "default")
+	if jsonOutput {
+		printSandboxResultJSON(result)
+	} else {
+		printSandboxResult(result)
+	}
+	if result.Error != "" {
+		os.Exit(1)
+	}
+}
+
+func runSandbox(projectPath string, todo *project.Todo, label string) SandboxResult {
+	cfg, _ := config.Load()
+
+	// Build runner from config
+	runners := cfg.Runners
+	if todo.Runner != "" {
+		runners = []string{todo.Runner}
+	}
+	if len(runners) == 0 {
+		return SandboxResult{
+			Label: label,
+			Error: "no runners configured (check ~/.anvil/config.yaml)",
+		}
+	}
+	r := runner.New(runners, cfg.Timeout)
+
+	// Create temp log directory (cleaned up after)
+	tmpDir, err := os.MkdirTemp("", "anvil-sandbox-*")
+	if err != nil {
+		return SandboxResult{Label: label, Error: fmt.Sprintf("failed to create temp dir: %v", err)}
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	start := time.Now()
+
+	_, _, usedRunnerIndex, stderrOutput, runErr := r.Run(
+		ctx,
+		projectPath,
+		fmt.Sprintf("sandbox-%d", time.Now().UnixNano()),
+		false, // no resume
+		todo.SkipPermissions,
+		todo.AllowedTools,
+		todo.Content,
+		fmt.Sprintf("sandbox/%s", todo.Name),
+		tmpDir,
+		nil, // no skip indices
+		nil, // no extra env
+		func(pid int, logPath string, sessionID string) {}, // no-op onStart
+		func(status string) {},                              // no-op onStatus
+		func(data string) {},                                // no-op onCheckpoint
+	)
+
+	elapsed := time.Since(start)
+
+	// Parse token usage from stderr
+	tokenUsage := runner.ParseTokenUsage(stderrOutput)
+
+	// Calculate cost
+	inputRate := cfg.InputTokenRate
+	outputRate := cfg.OutputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0
+	}
+	if outputRate <= 0 {
+		outputRate = 15.0
+	}
+	estimatedCost := float64(tokenUsage.InputTokens)/1_000_000*inputRate +
+		float64(tokenUsage.OutputTokens)/1_000_000*outputRate
+
+	// Read response from log file (the runner writes output to log)
+	response := ""
+	logFiles, _ := filepath.Glob(filepath.Join(tmpDir, "*.log"))
+	for _, lf := range logFiles {
+		data, readErr := os.ReadFile(lf)
+		if readErr == nil {
+			response = string(data)
+			break
+		}
+	}
+
+	result := SandboxResult{
+		Label:         label,
+		Response:      response,
+		InputTokens:   tokenUsage.InputTokens,
+		OutputTokens:  tokenUsage.OutputTokens,
+		EstimatedCost: estimatedCost,
+		DurationMs:    elapsed.Milliseconds(),
+		RunnerIndex:   usedRunnerIndex,
+	}
+
+	if runErr != nil {
+		result.Error = runErr.Error()
+	}
+
+	return result
+}
+
+func printSandboxResult(r SandboxResult) {
+	fmt.Printf("=== Sandbox: %s ===\n\n", r.Label)
+
+	if r.Error != "" {
+		fmt.Printf("Error: %s\n", r.Error)
+	}
+	if r.Response != "" {
+		fmt.Println(strings.TrimSpace(r.Response))
+	}
+
+	fmt.Printf("\n--- Stats ---\n")
+	fmt.Printf("Tokens:   %d in / %d out\n", r.InputTokens, r.OutputTokens)
+	fmt.Printf("Cost:     $%.4f\n", r.EstimatedCost)
+	fmt.Printf("Duration: %.1fs\n", float64(r.DurationMs)/1000)
+	if r.RunnerIndex >= 0 {
+		fmt.Printf("Runner:   index %d\n", r.RunnerIndex)
+	}
+}
+
+func printSandboxResultJSON(r SandboxResult) {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		log.Fatalf("failed to marshal JSON: %v", err)
+	}
+	fmt.Println(string(data))
+}
+
+func runComparisonSandbox(projectPath string, proj *project.Project, todo *project.Todo, compareFiles []string, jsonOutput bool) {
+	var results []SandboxResult
+
+	// Run default task content first
+	fmt.Fprintf(os.Stderr, "Running default prompt...\n")
+	defaultResult := runSandbox(projectPath, todo, "default")
+	results = append(results, defaultResult)
+
+	// Run each variation
+	for _, f := range compareFiles {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading variation %s: %v\n", f, err)
+			results = append(results, SandboxResult{
+				Label: filepath.Base(f),
+				Error: fmt.Sprintf("failed to read file: %v", err),
+			})
+			continue
+		}
+
+		// Create a copy of the todo with replaced content
+		varTodo := *todo
+		varTodo.Content = string(data)
+
+		fmt.Fprintf(os.Stderr, "Running variation: %s...\n", filepath.Base(f))
+		result := runSandbox(projectPath, &varTodo, filepath.Base(f))
+		results = append(results, result)
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+
+	// Print each result
+	for _, r := range results {
+		printSandboxResult(r)
+		fmt.Println()
+	}
+
+	// Print comparison summary
+	fmt.Printf("=== Summary ===\n")
+	fmt.Printf("%-20s %-12s %-12s %-10s %s\n", "VARIATION", "TOKENS IN", "TOKENS OUT", "COST", "DURATION")
+	for _, r := range results {
+		dur := fmt.Sprintf("%.1fs", float64(r.DurationMs)/1000)
+		cost := fmt.Sprintf("$%.4f", r.EstimatedCost)
+		errMark := ""
+		if r.Error != "" {
+			errMark = " (error)"
+		}
+		fmt.Printf("%-20s %-12d %-12d %-10s %s%s\n",
+			truncate(r.Label, 20), r.InputTokens, r.OutputTokens, cost, dur, errMark)
+	}
+}
+
+func watchAndRunSandbox(projectPath string, proj *project.Project, todo *project.Todo, jsonOutput bool) {
+	fmt.Fprintf(os.Stderr, "Watching %s for changes (Ctrl+C to stop)...\n", todo.Path)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	var lastMtime time.Time
+	if info, err := os.Stat(todo.Path); err == nil {
+		lastMtime = info.ModTime()
+	}
+
+	// Run once immediately
+	result := runSandbox(projectPath, todo, "default")
+	if jsonOutput {
+		printSandboxResultJSON(result)
+	} else {
+		printSandboxResult(result)
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	lastRun := time.Now()
+
+	for {
+		select {
+		case <-sigCh:
+			fmt.Fprintf(os.Stderr, "\nWatch stopped.\n")
+			return
+		case <-ticker.C:
+			info, err := os.Stat(todo.Path)
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(lastMtime) && time.Since(lastRun) > 500*time.Millisecond {
+				lastMtime = info.ModTime()
+
+				// Reload the task to get updated content
+				reloadedTodos, err := proj.LoadTodos()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error reloading tasks: %v\n", err)
+					continue
+				}
+				reloadedTodo := findTodo(reloadedTodos, todo.Name)
+				if reloadedTodo == nil {
+					fmt.Fprintf(os.Stderr, "Task no longer found after reload: %s\n", todo.Name)
+					continue
+				}
+
+				fmt.Fprintf(os.Stderr, "\n--- File changed, re-running sandbox ---\n")
+				result := runSandbox(projectPath, reloadedTodo, "default")
+				if jsonOutput {
+					printSandboxResultJSON(result)
+				} else {
+					printSandboxResult(result)
+				}
+				lastRun = time.Now()
+			}
+		}
+	}
 }

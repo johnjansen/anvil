@@ -5,6 +5,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 ## Active Technologies
 - Go 1.24.6 + `internal/daemon` (RunningTask, workItem, handlers), `internal/project` (Todo, RunRecord), `internal/config`, `internal/runner` (checkpoint callback) (005-timeout-extension)
 - In-memory for runtime state (RunningTask), JSON files for persistence (RunRecord) (005-timeout-extension)
+- Go 1.24.6 + `internal/runner` (Runner.Run), `internal/project` (Todo, LoadTodos), `internal/config` (cost rates), `cmd/anvil/main.go` (CLI dispatch) (006-prompt-sandbox)
+- N/A (sandbox produces no persistent state) (006-prompt-sandbox)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -24,6 +26,7 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 006-prompt-sandbox: Added Go 1.24.6 + `internal/runner` (Runner.Run), `internal/project` (Todo, LoadTodos), `internal/config` (cost rates), `cmd/anvil/main.go` (CLI dispatch)
 - 005-timeout-extension: Added Go 1.24.6 + `internal/daemon` (RunningTask, workItem, handlers), `internal/project` (Todo, RunRecord), `internal/config`, `internal/runner` (checkpoint callback)
 
 - 002-cli-ecosystem-blog-post: Added Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document)
