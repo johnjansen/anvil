@@ -3328,7 +3328,7 @@ func taskRmCmd(args []string) {
 
 	// Kill if running
 	if daemon.IsDaemonRunning() {
-		if err := daemon.SendKillRequest(todo.ID); err == nil {
+		if err := daemon.SendKillRequest(todo.ID, false); err == nil {
 			fmt.Printf("killed running task %s\n", todo.Name)
 		}
 	}
@@ -3346,13 +3346,17 @@ func taskRunCmd(args []string) {
 		os.Exit(1)
 	}
 
-	// Parse --force flag
+	// Parse flags
 	force := false
+	resumeFlag := false
 	var filtered []string
 	for _, a := range args {
-		if a == "--force" {
+		switch a {
+		case "--force":
 			force = true
-		} else {
+		case "--resume":
+			resumeFlag = true
+		default:
 			filtered = append(filtered, a)
 		}
 	}
@@ -3387,7 +3391,7 @@ func taskRunCmd(args []string) {
 		os.Exit(1)
 	}
 
-	if err := daemon.SendRunRequest(abs, todo.ID, todo.Name, force); err != nil {
+	if err := daemon.SendRunRequest(abs, todo.ID, todo.Name, force, resumeFlag); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to run task: %v\n", err)
 		os.Exit(1)
 	}
@@ -3401,7 +3405,25 @@ func taskRunCmd(args []string) {
 
 func taskKillCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name>\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name> [--graceful|-g] [--force]\n")
+		os.Exit(1)
+	}
+
+	graceful := false
+	var filtered []string
+	for _, a := range args {
+		switch a {
+		case "--graceful", "-g":
+			graceful = true
+		case "--force":
+			graceful = false
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	args = filtered
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name> [--graceful|-g] [--force]\n")
 		os.Exit(1)
 	}
 
@@ -3431,12 +3453,16 @@ func taskKillCmd(args []string) {
 		return
 	}
 
-	if err := daemon.SendKillRequest(todo.ID); err != nil {
+	if err := daemon.SendKillRequest(todo.ID, graceful); err != nil {
 		fmt.Printf("failed to kill task: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("killed task: %s\n", args[0])
+	if graceful {
+		fmt.Printf("gracefully killing task: %s (30s grace period)\n", args[0])
+	} else {
+		fmt.Printf("killed task: %s\n", args[0])
+	}
 }
 
 func taskStopCmd(args []string) {
@@ -8201,4 +8227,49 @@ func loadAllWatched() ([]watchFrontmatter, error) {
 	}
 
 	return result, nil
+}
+
+
+func taskPartialCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task partial <name>\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, args[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		os.Exit(1)
+	}
+
+	records, err := project.ReadAllRunRecords(abs, todo.ID)
+	if err != nil || len(records) == 0 {
+		fmt.Printf("no partial results found for task: %s\n", args[0])
+		return
+	}
+
+	// Find the most recent run with partial results
+	for _, rec := range records {
+		if rec.PartialResults != "" {
+			fmt.Println(rec.PartialResults)
+			return
+		}
+	}
+
+	fmt.Printf("no partial results found for task: %s\n", args[0])
 }

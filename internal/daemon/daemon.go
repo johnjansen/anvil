@@ -170,7 +170,8 @@ type RunningTask struct {
 }
 
 type KillRequest struct {
-	ID string `json:"id"`
+	ID       string `json:"id"`
+	Graceful bool   `json:"graceful,omitempty"`
 }
 
 type TaskInfo struct {
@@ -747,6 +748,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	var checkpointMu sync.Mutex
 	var lastCheckpointData string
 
+	// Track partial results emitted by the task (last one wins)
+	var partialMu sync.Mutex
+	var lastPartialResults string
+
 	// State file path and storage config (used for persisting task state)
 	var stateFilePath string
 	var stateBucket string
@@ -837,6 +842,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 				lastCheckpointData = data
 				checkpointMu.Unlock()
 			}
+		}, func(data string) {
+			partialMu.Lock()
+			lastPartialResults = data
+			partialMu.Unlock()
 		})
 
 		// Success - exit retry loop
@@ -909,6 +918,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	cpData := lastCheckpointData
 	checkpointMu.Unlock()
 
+	partialMu.Lock()
+	partialData := lastPartialResults
+	partialMu.Unlock()
+
 	runRecord := project.RunRecord{
 		RunID:            runID,
 		TaskID:           t.ID,
@@ -929,6 +942,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		SLAViolation:     sla.Violation,
 		SLAMaxDelay:      sla.MaxDelay,
 		RunnerIndex:      usedRunnerIdx,
+		PartialResults:   partialData,
+	}
+
+	// Set termination method
+	if err == nil {
+		runRecord.TerminationMethod = "normal"
+	} else if ctx.Err() == context.DeadlineExceeded {
+		runRecord.TerminationMethod = "timeout"
+	} else if ctx.Err() == context.Canceled {
+		runRecord.TerminationMethod = "force"
 	}
 
 	// Resolve which runner command was actually used for the run record
@@ -1144,6 +1167,9 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 		"ANVIL_RETRY_DELAY="+retryDelay.String(),
 		"ANVIL_WILL_RETRY="+willRetry,
 	)
+	if hookName == "on_kill" {
+		hookCmd.Env = append(hookCmd.Env, "ANVIL_IS_KILLED=true")
+	}
 
 	if hookErr := hookCmd.Run(); hookErr != nil {
 		dlog.Warn("%s hook failed for %s: %v", hookName, t.Name, hookErr)
@@ -1543,10 +1569,62 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancel the task's context
-	found.Cancel()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
+	if req.Graceful {
+		// Graceful kill: send SIGTERM to the child process
+		if found.PID > 0 {
+			if proc, err := os.FindProcess(found.PID); err == nil {
+				proc.Signal(syscall.SIGTERM)
+			}
+		}
+		// Run on_kill hook if defined
+		// Look up the todo to get hook config
+		var todo *project.Todo
+		for _, p := range loadWatchedPaths() {
+			proj, err := project.Load(p)
+			if err != nil {
+				continue
+			}
+			todos, err := proj.LoadTodos()
+			if err != nil {
+				continue
+			}
+			for i := range todos {
+				if todos[i].ID == found.TaskID || todos[i].Name == found.Name {
+					todo = &todos[i]
+					break
+				}
+			}
+			if todo != nil {
+				break
+			}
+		}
+		if todo != nil && todo.OnKill != "" {
+			d.runHook("on_kill", todo.OnKill, found.Project, *todo, found.LogPath, found.SessionID, found.Started, time.Since(found.Started), 0, 0, 0)
+		}
+		// Start grace period timer - force kill after 30 seconds
+		go func() {
+			time.Sleep(30 * time.Second)
+			d.tasksMu.RLock()
+			stillRunning := false
+			for _, t := range d.tasks {
+				if t.TaskID == found.TaskID {
+					stillRunning = true
+					break
+				}
+			}
+			d.tasksMu.RUnlock()
+			if stillRunning {
+				found.Cancel()
+			}
+		}()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "graceful_kill", "name": found.Name})
+	} else {
+		// Force kill: cancel context immediately (existing behavior)
+		found.Cancel()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
+	}
 }
 
 // DaemonStatus holds runtime state about the daemon.
@@ -1794,6 +1872,7 @@ type RunRequest struct {
 	TaskID      string `json:"task_id"`
 	TaskName    string `json:"task_name"`
 	Force       bool   `json:"force,omitempty"`
+	Resume      bool   `json:"resume,omitempty"`
 }
 
 // DrainTaskRequest is the JSON payload for /drain/task.
@@ -1897,6 +1976,17 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 	// Enqueue for immediate dispatch (bypass cron, skip pre_check by clearing it)
 	todo := *found
 	todo.PreCheck = "" // Skip pre_check for forced runs
+
+	// If resume requested, inject partial results from previous run
+	if req.Resume {
+		records, _ := project.ReadAllRunRecords(req.ProjectPath, req.TaskID)
+		if len(records) > 0 && records[0].PartialResults != "" {
+			if todo.Env == nil {
+				todo.Env = make(map[string]string)
+			}
+			todo.Env["ANVIL_PARTIAL_RESULTS"] = records[0].PartialResults
+		}
+	}
 	if req.Force {
 		todo.ForceWindow = true // Bypass time window and quiet hours checks
 	}
@@ -2826,8 +2916,8 @@ func SendDrainTaskRequest(id string) error {
 }
 
 // SendRunRequest asks the daemon to immediately dispatch a task.
-func SendRunRequest(projectPath, taskID, taskName string, force bool) error {
-	data, err := json.Marshal(RunRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName, Force: force})
+func SendRunRequest(projectPath, taskID, taskName string, force bool, resume bool) error {
+	data, err := json.Marshal(RunRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName, Force: force, Resume: resume})
 	if err != nil {
 		return err
 	}
@@ -2887,8 +2977,8 @@ func SendStartRequest(projectPath, taskID, taskName string) error {
 }
 
 // SendKillRequest sends a kill request to the daemon
-func SendKillRequest(id string) error {
-	data, err := json.Marshal(KillRequest{ID: id})
+func SendKillRequest(id string, graceful bool) error {
+	data, err := json.Marshal(KillRequest{ID: id, Graceful: graceful})
 	if err != nil {
 		return err
 	}

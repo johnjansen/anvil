@@ -53,7 +53,7 @@ func New(commands []string, timeout time.Duration) *Runner {
 // output from the last runner attempt (used for token usage parsing), and any error.
 // runnerChainOverride, if non-empty, overrides the default Commands for this execution.
 // runnerOnTimeout is tried if the first runner in the chain times out.
-func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, extraEnv map[string]string, runnerChainOverride []string, runnerOnTimeout string, onStart func(pid int, logPath string, sessionID string), onStatus func(status string), onCheckpoint func(data string)) (usedSessionID string, logPath string, usedRunnerIndex int, stderrOutput string, err error) {
+func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume bool, skipPermissions bool, allowedTools []string, content string, taskLabel string, logDir string, skipIndices map[int]bool, extraEnv map[string]string, runnerChainOverride []string, runnerOnTimeout string, onStart func(pid int, logPath string, sessionID string), onStatus func(status string), onCheckpoint func(data string), onPartial func(data string)) (usedSessionID string, logPath string, usedRunnerIndex int, stderrOutput string, err error) {
 	var lastErr error
 	var lastStderr string
 	var lastRunnerIndex int
@@ -140,15 +140,15 @@ func (r *Runner) Run(ctx context.Context, dir string, sessionID string, resume b
 		var stderrSw *statusWriter
 		if logFile != nil {
 			stdoutBase := io.MultiWriter(&stdout, logFile)
-			sw = newStatusWriter(stdoutBase, onStatus, onCheckpoint)
+			sw = newStatusWriter(stdoutBase, onStatus, onCheckpoint, onPartial)
 			cmd.Stdout = sw
 			stderrBase := io.MultiWriter(&stderr, logFile)
-			stderrSw = newStatusWriter(stderrBase, onStatus, onCheckpoint)
+			stderrSw = newStatusWriter(stderrBase, onStatus, onCheckpoint, onPartial)
 			cmd.Stderr = stderrSw
 		} else {
-			sw = newStatusWriter(&stdout, onStatus, onCheckpoint)
+			sw = newStatusWriter(&stdout, onStatus, onCheckpoint, onPartial)
 			cmd.Stdout = sw
-			stderrSw = newStatusWriter(&stderr, onStatus, onCheckpoint)
+			stderrSw = newStatusWriter(&stderr, onStatus, onCheckpoint, onPartial)
 			cmd.Stderr = stderrSw
 		}
 
@@ -242,15 +242,15 @@ func runSingleRunner(ctx context.Context, dir string, sessionID string, resume b
 	var stderrSw *statusWriter
 	if logFile != nil {
 		stdoutBase := io.MultiWriter(&stdout, logFile)
-		sw = newStatusWriter(stdoutBase, nil, nil)
+		sw = newStatusWriter(stdoutBase, nil, nil, nil)
 		cmd.Stdout = sw
 		stderrBase := io.MultiWriter(&stderr, logFile)
-		stderrSw = newStatusWriter(stderrBase, nil, nil)
+		stderrSw = newStatusWriter(stderrBase, nil, nil, nil)
 		cmd.Stderr = stderrSw
 	} else {
-		sw = newStatusWriter(&stdout, nil, nil)
+		sw = newStatusWriter(&stdout, nil, nil, nil)
 		cmd.Stdout = sw
-		stderrSw = newStatusWriter(&stderr, nil, nil)
+		stderrSw = newStatusWriter(&stderr, nil, nil, nil)
 		cmd.Stderr = stderrSw
 	}
 
@@ -307,6 +307,9 @@ const statusPrefix = "##anvil:status "
 // checkpointPrefix is the magic stdout prefix tasks use to save checkpoint data.
 const checkpointPrefix = "##anvil:checkpoint "
 
+// partialPrefix is the magic stdout prefix tasks use to emit partial results.
+const partialPrefix = "##anvil:partial "
+
 // statusWriter wraps an io.Writer and scans for lines with the statusPrefix
 // or checkpointPrefix. Status lines call onStatus; checkpoint lines call
 // onCheckpoint. Both are stripped from the downstream writer.
@@ -314,11 +317,12 @@ type statusWriter struct {
 	downstream   io.Writer
 	onStatus     func(string)
 	onCheckpoint func(string)
+	onPartial    func(string)
 	buf          []byte // partial line buffer
 }
 
-func newStatusWriter(downstream io.Writer, onStatus func(string), onCheckpoint func(string)) *statusWriter {
-	return &statusWriter{downstream: downstream, onStatus: onStatus, onCheckpoint: onCheckpoint}
+func newStatusWriter(downstream io.Writer, onStatus func(string), onCheckpoint func(string), onPartial func(string)) *statusWriter {
+	return &statusWriter{downstream: downstream, onStatus: onStatus, onCheckpoint: onCheckpoint, onPartial: onPartial}
 }
 
 func (sw *statusWriter) Write(p []byte) (int, error) {
@@ -351,6 +355,15 @@ func (sw *statusWriter) Write(p []byte) (int, error) {
 			continue
 		}
 
+		if strings.HasPrefix(line, partialPrefix) {
+			data := strings.TrimSpace(line[len(partialPrefix):])
+			if data != "" && sw.onPartial != nil {
+				sw.onPartial(data)
+			}
+			// Strip partial lines from downstream output
+			continue
+		}
+
 		// Pass non-status lines through
 		if _, err := sw.downstream.Write([]byte(line + "\n")); err != nil {
 			return n, err
@@ -372,6 +385,11 @@ func (sw *statusWriter) Flush() {
 			data := strings.TrimSpace(line[len(checkpointPrefix):])
 			if data != "" && sw.onCheckpoint != nil {
 				sw.onCheckpoint(data)
+			}
+		} else if strings.HasPrefix(line, partialPrefix) {
+			data := strings.TrimSpace(line[len(partialPrefix):])
+			if data != "" && sw.onPartial != nil {
+				sw.onPartial(data)
 			}
 		} else {
 			sw.downstream.Write(sw.buf)

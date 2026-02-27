@@ -135,6 +135,7 @@ type Todo struct {
 	State                *TaskStateConfig // optional task state management config
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
+	OnKill               string        // shell command to run before task termination during graceful kill
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -163,6 +164,8 @@ type RunRecord struct {
 	SLASkipped       bool          `json:"sla_skipped,omitempty"`       // true if strict mode skipped this run
 	RunnerIndex      int           `json:"runner_index,omitempty"`      // which runner in the chain was used (0-based; 100+ means timeout fallback)
 	RunnerCommand    string        `json:"runner_command,omitempty"`    // the actual runner command that was used
+	PartialResults   string        `json:"partial_results,omitempty"`   // last partial result emitted by task via ##anvil:partial
+	TerminationMethod string       `json:"termination_method,omitempty"` // how the task ended: normal, graceful, force, timeout
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -229,6 +232,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			preCheck := ""
 			onSuccess := ""
 			onFailure := ""
+			onKill := ""
 			disabled := false
 			var timeout time.Duration
 			retry := 0
@@ -294,6 +298,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							Strict   bool   `yaml:"strict"`
 						} `yaml:"sla"`
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
+						OnKill               string            `yaml:"on_kill"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
@@ -312,6 +317,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						preCheck = fmData.PreCheck
 						onSuccess = fmData.OnSuccess
 						onFailure = fmData.OnFailure
+						onKill = fmData.OnKill
 						disabled = fmData.Disabled
 						if fmData.Timeout != "" {
 							timeout, _ = time.ParseDuration(fmData.Timeout)
@@ -379,6 +385,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				PreCheck:             preCheck,
 				OnSuccess:            onSuccess,
 				OnFailure:            onFailure,
+				OnKill:              onKill,
 				IsLocked:             hasLock,
 				Disabled:             disabled,
 				Timeout:              timeout,
