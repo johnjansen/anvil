@@ -136,6 +136,8 @@ type Todo struct {
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 	Runbook              string        // URL or inline markdown with troubleshooting instructions
+	OnRiskHigh           string        // shell command to run when risk transitions to HIGH
+	RiskThreshold        RiskThresholds // risk scoring thresholds
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -164,6 +166,48 @@ type RunRecord struct {
 	SLASkipped       bool          `json:"sla_skipped,omitempty"`       // true if strict mode skipped this run
 	RunnerIndex      int           `json:"runner_index,omitempty"`      // which runner in the chain was used (0-based; 100+ means timeout fallback)
 	RunnerCommand    string        `json:"runner_command,omitempty"`    // the actual runner command that was used
+	RiskFactors     []RiskFactor  `json:"risk_factors,omitempty"`    // detected risk factors for this run
+}
+
+// RiskLevel represents the risk level for a task.
+type RiskLevel string
+
+const (
+	RiskLevelLow    RiskLevel = "LOW"
+	RiskLevelMedium RiskLevel = "MEDIUM"
+	RiskLevelHigh   RiskLevel = "HIGH"
+)
+
+// RiskThresholds defines risk scoring thresholds for a task.
+type RiskThresholds struct {
+	HighThreshold      float64       `yaml:"high_threshold"`
+	MediumThreshold   float64       `yaml:"medium_threshold"`
+	MinRunsForAnalysis int          `yaml:"min_runs_for_analysis"`
+	LookbackPeriod    time.Duration `yaml:"lookback_period"`
+}
+
+// RiskFactor represents a detected risk factor for a task.
+type RiskFactor struct {
+	Type  string  `json:"type"`
+	Value string  `json:"value"`
+	Score float64 `json:"score"`
+}
+
+// TaskHistoricalStats contains aggregated historical statistics.
+type TaskHistoricalStats struct {
+	TotalRuns      int     `json:"total_runs"`
+	SuccessRate    float64 `json:"success_rate"`
+	RecentFailures int     `json:"recent_failures"`
+	TrendDirection string  `json:"trend_direction"`
+}
+
+// TaskRiskState holds the persisted risk state for a task.
+type TaskRiskState struct {
+	CurrentRisk     RiskLevel          `json:"current_risk"`
+	RiskScore       float64            `json:"risk_score"`
+	LastUpdated     time.Time          `json:"last_updated"`
+	HistoricalStats TaskHistoricalStats `json:"historical_stats"`
+	RiskFactors    []RiskFactor       `json:"risk_factors"`
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -972,4 +1016,58 @@ func ListTemplates(projectPath string) ([]Template, error) {
 		}
 	}
 	return templates, nil
+}
+
+// RiskStatePath returns the path to the risk state file for a task.
+func RiskStatePath(projectPath, taskID string) string {
+	return filepath.Join(projectPath, ".anvil", "tasks", taskID, "risk.json")
+}
+
+// ReadRiskState reads the risk state for a task from disk.
+func ReadRiskState(projectPath, taskID string) (*TaskRiskState, error) {
+	path := RiskStatePath(projectPath, taskID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read risk state: %w", err)
+	}
+	var state TaskRiskState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("failed to parse risk state: %w", err)
+	}
+	return &state, nil
+}
+
+// WriteTaskRiskState writes the risk state for a task.
+func WriteTaskRiskState(projectPath, taskID string, state *TaskRiskState) error {
+	riskDir := filepath.Join(projectPath, ".anvil", "tasks", taskID)
+
+	if err := os.MkdirAll(riskDir, 0755); err != nil {
+		return fmt.Errorf("failed to create risk directory: %w", err)
+	}
+
+	riskPath := filepath.Join(riskDir, "risk.json")
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal risk state: %w", err)
+	}
+
+	if err := os.WriteFile(riskPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write risk state: %w", err)
+	}
+
+	return nil
+}
+
+// GetDefaultRiskThresholds returns the default risk thresholds.
+func GetDefaultRiskThresholds() RiskThresholds {
+	return RiskThresholds{
+		HighThreshold:      0.7,
+		MediumThreshold:   0.4,
+		MinRunsForAnalysis: 5,
+		LookbackPeriod:    30 * 24 * time.Hour, // 30 days
+	}
 }

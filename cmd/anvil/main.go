@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -1917,7 +1918,8 @@ func taskCmd(args []string) {
 		taskDryRunCmd(args[1:])
 	case "overlaps":
 		taskOverlapsCmd(args[1:])
-	// case "predict": // TODO: not yet implemented (see spec-input-307)
+	case "predict":
+		taskPredictCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -6742,6 +6744,105 @@ func formatDurationShort(d time.Duration) string {
 		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 	return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
+}
+
+// taskPredictCmd shows failure prediction analysis for a task.
+func taskPredictCmd(args []string) {
+	flags := flag.NewFlagSet("task predict", flag.ContinueOnError)
+	flags.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: anvil task predict <task-name>\n\n")
+		fmt.Fprintf(os.Stderr, "Show failure prediction analysis for a task based on historical runs.\n")
+		flags.PrintDefaults()
+	}
+	if err := flags.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if flags.NArg() != 1 {
+		flags.Usage()
+		os.Exit(1)
+	}
+
+	taskName := flags.Arg(0)
+
+	// Load project
+	proj, err := project.Load(".")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load todos
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Find the task
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	// Load run records
+	runs, err := project.ReadAllRunRecords(proj.Path, todo.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading run records: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(runs) < 5 {
+		fmt.Printf("Insufficient data for prediction (need at least 5 runs, have %d)\n", len(runs))
+		os.Exit(0)
+	}
+
+	// Get thresholds
+	thresholds := todo.RiskThreshold
+	if thresholds.HighThreshold == 0 {
+		thresholds = project.GetDefaultRiskThresholds()
+	}
+
+	// Analyze
+	analyzer := project.NewRiskAnalyzer(proj.Path, todo.ID, thresholds)
+	riskState, err := analyzer.AnalyzeTask(runs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error analyzing risk: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Print analysis
+	fmt.Printf("Analysis of last %d runs:\n", len(runs))
+	fmt.Println(strings.Repeat("─", 44))
+	fmt.Printf("Success rate: %.0f%% (%d/%d)\n", riskState.HistoricalStats.SuccessRate*100,
+		int(riskState.HistoricalStats.SuccessRate*float64(riskState.HistoricalStats.TotalRuns)),
+		riskState.HistoricalStats.TotalRuns)
+	fmt.Printf("Recent failures: %d of last 10 runs\n", riskState.HistoricalStats.RecentFailures)
+	fmt.Printf("Trend: %s\n", riskState.HistoricalStats.TrendDirection)
+	fmt.Println(strings.Repeat("─", 44))
+
+	if len(riskState.RiskFactors) > 0 {
+		fmt.Println("Risk Factors:")
+		for _, f := range riskState.RiskFactors {
+			fmt.Printf("  • %s: %s\n", f.Type, f.Value)
+		}
+		fmt.Println(strings.Repeat("─", 44))
+	}
+
+	riskLabel := string(riskState.CurrentRisk)
+	fmt.Printf("Risk Score: %.2f (%s)\n", riskState.RiskScore, riskLabel)
+	fmt.Printf("Prediction: %s\n", analyzer.GetPrediction(riskState.RiskScore))
+	fmt.Println(strings.Repeat("─", 44))
+
+	// Recommendations
+	if riskState.CurrentRisk == project.RiskLevelHigh {
+		fmt.Println("Recommendation: Task is at high risk. Consider investigating the risk factors above.")
+	} else if riskState.CurrentRisk == project.RiskLevelMedium {
+		fmt.Println("Recommendation: Task shows elevated risk. Monitor closely.")
+	} else {
+		fmt.Println("Recommendation: Task is healthy. Continue monitoring.")
+	}
 }
 
 func templateCmd(args []string) {
