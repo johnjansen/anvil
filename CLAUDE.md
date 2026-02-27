@@ -3,8 +3,10 @@
 Auto-generated from all feature plans. Last updated: 2026-02-25
 
 ## Active Technologies
-- Go 1.24.6 + `internal/cron` (cron parsing with `Prev()`), `internal/project` (Todo/RunRecord), `internal/config`, `internal/daemon` (004-task-sla-tracking)
-- JSON files in `.anvil/runs/<task-id>/` (existing RunRecord system) (004-task-sla-tracking)
+- Go 1.24.6 + gopkg.in/yaml.v3 (frontmatter parsing), os/exec (task execution), filepath (path resolution) (008-workspace-isolation)
+- Filesystem (task files with YAML frontmatter, temp directories) (008-workspace-isolation)
+- Go 1.24.6 + crypto/hmac, crypto/sha256, encoding/json, encoding/hex (all stdlib) (009-audit-log)
+- Filesystem (JSONL audit log, signing key file) (009-audit-log)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -24,7 +26,8 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
-- 004-task-sla-tracking: Added Go 1.24.6 + `internal/cron` (cron parsing with `Prev()`), `internal/project` (Todo/RunRecord), `internal/config`, `internal/daemon`
+- 009-audit-log: Added Go 1.24.6 + crypto/hmac, crypto/sha256, encoding/json, encoding/hex (all stdlib)
+- 008-workspace-isolation: Added Go 1.24.6 + gopkg.in/yaml.v3 (frontmatter parsing), os/exec (task execution), filepath (path resolution)
 
 - 002-cli-ecosystem-blog-post: Added Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document)
 

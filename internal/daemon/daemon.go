@@ -105,7 +105,8 @@ type Daemon struct {
 	socketPath  string
 	tasks       map[string]*RunningTask
 	tasksMu     sync.RWMutex
-	httpServer  *http.Server
+	httpServer   *http.Server
+	healthServer *http.Server
 	draining    int32           // atomic: 1 = stop-on-idle mode active
 	gracefulStop int32          // atomic: 1 = graceful shutdown in progress
 	drainedTasks map[string]bool // taskID -> true: per-task stop-on-idle
@@ -297,6 +298,7 @@ func (d *Daemon) Run() {
 
 	// Start socket server
 	go d.startSocketServer()
+	go d.startHealthServer()
 
 	// Start SIGHUP handler for config reload
 	sighupChan := make(chan os.Signal, 1)
@@ -403,6 +405,9 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	dlog.Stopping()
 	if d.httpServer != nil {
 		d.httpServer.Shutdown(context.Background())
+	}
+	if d.healthServer != nil {
+		d.healthServer.Shutdown(context.Background())
 	}
 	close(d.workQueue)
 	workerWg.Wait()
@@ -1268,6 +1273,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/stop", d.handleStopTask)
 	mux.HandleFunc("/start", d.handleStartTask)
 	mux.HandleFunc("/budget", d.handleBudget)
+	mux.HandleFunc("/ready", d.handleReady)
+	mux.HandleFunc("/live", d.handleLive)
 	mux.HandleFunc("/reset-budget", d.handleResetBudget)
 
 	d.httpServer = &http.Server{
@@ -1279,6 +1286,34 @@ func (d *Daemon) startSocketServer() {
 		dlog.SocketError(err)
 	}
 }
+
+// startHealthServer starts an optional TCP health server for container probes.
+// Only starts if config.HealthPort > 0.
+func (d *Daemon) startHealthServer() {
+	if d.config.HealthPort <= 0 {
+		return
+	}
+
+	addr := fmt.Sprintf(":%d", d.config.HealthPort)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		dlog.Warn("health server: failed to listen on %s: %v", addr, err)
+		return
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ready", d.handleReady)
+	mux.HandleFunc("/live", d.handleLive)
+	mux.HandleFunc("/status", d.handleStatus)
+
+	d.healthServer = &http.Server{Handler: mux}
+
+	dlog.Info("health server listening on %s", addr)
+	if err := d.healthServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		dlog.Warn("health server error: %v", err)
+	}
+}
+
 
 func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1549,6 +1584,41 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "killed", "name": found.Name})
 }
 
+
+// isReady evaluates whether the daemon can accept new tasks.
+// Returns (ready, reason) where reason explains why not ready.
+func (d *Daemon) isReady() (bool, string) {
+	// Check if draining
+	if atomic.LoadInt32(&d.draining) == 1 {
+		return false, "daemon is draining"
+	}
+
+	// Check worker availability
+	maxWorkers := d.config.MaxWorkers
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
+	d.inFlightMu.Lock()
+	inFlight := len(d.inFlight)
+	d.inFlightMu.Unlock()
+	if inFlight >= maxWorkers {
+		return false, fmt.Sprintf("worker pool full (%d/%d slots in use)", inFlight, maxWorkers)
+	}
+
+	// Check projects loaded
+	watchedPaths := loadWatchedPaths()
+	if len(watchedPaths) == 0 {
+		return false, "no projects loaded"
+	}
+
+	return true, ""
+}
+
+// projectCount returns the number of currently watched projects.
+func (d *Daemon) projectCount() int {
+	return len(loadWatchedPaths())
+}
+
 // DaemonStatus holds runtime state about the daemon.
 type DaemonStatus struct {
 	Draining       bool `json:"draining"`
@@ -1562,16 +1632,52 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	status := DaemonStatus{
-		Draining: atomic.LoadInt32(&d.draining) == 1,
+
+	ready, _ := d.isReady()
+	draining := atomic.LoadInt32(&d.draining) == 1
+
+	maxWorkers := d.config.MaxWorkers
+	if maxWorkers < 1 {
+		maxWorkers = 1
 	}
-	// Populate rate limit status if configured
+	d.inFlightMu.Lock()
+	inFlight := len(d.inFlight)
+	d.inFlightMu.Unlock()
+	workersAvailable := maxWorkers - inFlight
+	if workersAvailable < 0 {
+		workersAvailable = 0
+	}
+
+	d.tasksMu.RLock()
+	tasksRunning := len(d.tasks)
+	d.tasksMu.RUnlock()
+
+	d.pendingTasksMu.RLock()
+	pendingTasks := len(d.pendingTasks)
+	d.pendingTasksMu.RUnlock()
+
+	uptime := "unknown"
+	if !d.startedAt.IsZero() {
+		uptime = time.Since(d.startedAt).Round(time.Second).String()
+	}
+
+	status := map[string]any{
+		"ready":         ready,
+		"draining":      draining,
+		"workers":       map[string]int{"available": workersAvailable, "max": maxWorkers},
+		"projects":      d.projectCount(),
+		"running_tasks": tasksRunning,
+		"pending_tasks": pendingTasks,
+		"uptime":        uptime,
+	}
+
+	// Include rate limit info if configured
 	if d.rateLimitSemaphore != nil {
-		status.RateLimited = true
-		status.RateLimitSlots = cap(d.rateLimitSemaphore)
-		// Count slots currently in use (len of channel)
-		status.RateInUse = len(d.rateLimitSemaphore)
+		status["rate_limited"] = true
+		status["rate_limit_slots"] = cap(d.rateLimitSemaphore)
+		status["rate_in_use"] = len(d.rateLimitSemaphore)
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
@@ -1663,6 +1769,34 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+
+// handleReady returns 200 when daemon can accept tasks, 503 when it cannot.
+func (d *Daemon) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	ready, reason := d.isReady()
+	if ready {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"ready": true})
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]any{"ready": false, "reason": reason})
+	}
+}
+
+// handleLive returns 200 as long as the daemon process is running.
+func (d *Daemon) handleLive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"alive": true})
 }
 
 // recordDurationMetric updates histogram buckets and sum for a task duration.

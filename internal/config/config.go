@@ -29,6 +29,7 @@ type Config struct {
 	QuietHours               QuietHoursConfig  `yaml:"quiet_hours"`                // global quiet hours to restrict non-critical task execution
 	SLA                      SLAGlobalConfig   `yaml:"sla"`                        // global SLA defaults for task delay tracking
 	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
+	HealthPort               int                 `yaml:"health_port"`                 // optional TCP port for health probe endpoints (0 = disabled)              // desktop notification settings
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
