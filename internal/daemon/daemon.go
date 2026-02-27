@@ -1237,6 +1237,78 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
+
+	// Evaluate alert rules after run completion
+	if len(t.Alerts) > 0 {
+		d.evaluateAlerts(*proj, t, runRecord, elapsed)
+	}
+}
+
+
+// evaluateAlerts checks all alert rules for a task after a run completes.
+func (d *Daemon) evaluateAlerts(proj project.Project, t project.Todo, rec project.RunRecord, elapsed time.Duration) {
+	for _, rule := range t.Alerts {
+		if !matchAlertCondition(rule.Condition, rec, elapsed) {
+			continue
+		}
+		alertRec := project.AlertRecord{
+			ID:        project.GenerateAlertID(),
+			Timestamp: time.Now(),
+			TaskID:    rec.TaskID,
+			TaskName:  t.Name,
+			RunID:     rec.RunID,
+			AlertName: rule.Name,
+			Severity:  rule.Severity,
+			Message:   rule.Message,
+			Condition: rule.Condition,
+		}
+		if err := project.WriteAlertRecord(proj.Path, alertRec); err != nil {
+			dlog.Warn("failed to write alert for %s: %v", t.Name, err)
+			continue
+		}
+		dlog.Info("alert fired: %s/%s [%s] %s", t.Name, rule.Name, rule.Severity, rule.Condition)
+		// Fire webhook for this alert if configured
+		if rule.Webhook != "" {
+			whPayload := webhook.BuildPayload(t.Name, proj.Path, rec.RunID, rec.Started, rec.Finished, rec.EstimatedCostUSD, rec.Error)
+			d.webhooks.FireURL(rule.Webhook, "alert_fired", whPayload)
+		}
+	}
+}
+
+// matchAlertCondition evaluates a single alert condition against run data.
+// Supported formats: "cost > N", "duration > Xm", "output contains PATTERN"
+func matchAlertCondition(condition string, rec project.RunRecord, elapsed time.Duration) bool {
+	parts := strings.Fields(condition)
+	if len(parts) < 3 {
+		return false
+	}
+	switch parts[0] {
+	case "cost":
+		if parts[1] != ">" || len(parts) < 3 {
+			return false
+		}
+		var threshold float64
+		if _, err := fmt.Sscanf(parts[2], "%f", &threshold); err != nil {
+			return false
+		}
+		return rec.EstimatedCostUSD > threshold
+	case "duration":
+		if parts[1] != ">" || len(parts) < 3 {
+			return false
+		}
+		threshold, err := time.ParseDuration(parts[2])
+		if err != nil {
+			return false
+		}
+		return elapsed > threshold
+	case "output":
+		if parts[1] != "contains" || len(parts) < 3 {
+			return false
+		}
+		pattern := strings.Join(parts[2:], " ")
+		return strings.Contains(rec.OutputSummary, pattern)
+	}
+	return false
 }
 
 // runHook executes a lifecycle hook (on_success or on_failure) as a shell command.

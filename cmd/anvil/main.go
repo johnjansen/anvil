@@ -94,6 +94,8 @@ func main() {
 		stopOnIdleCmd()
 	case "task":
 		taskCmd(os.Args[2:])
+	case "alerts":
+		alertsCmd(os.Args[2:])
 	case "prompt":
 		promptCmd(os.Args[2:])
 	case "project":

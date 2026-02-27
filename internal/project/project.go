@@ -98,6 +98,30 @@ type TaskStateConfig struct {
 	Key    string `yaml:"key"`    // state key (supports {{ .TaskID }} template)
 }
 
+// AlertRule defines a condition-based alerting rule parsed from task frontmatter.
+type AlertRule struct {
+	Name      string `yaml:"name"`
+	Condition string `yaml:"condition"`
+	Severity  string `yaml:"severity"`
+	Message   string `yaml:"message"`
+	Webhook   string `yaml:"webhook"`
+}
+
+// AlertRecord is a single fired alert, stored as JSONL.
+type AlertRecord struct {
+	ID           string    `json:"id"`
+	Timestamp    time.Time `json:"timestamp"`
+	TaskID       string    `json:"task_id"`
+	TaskName     string    `json:"task_name"`
+	RunID        string    `json:"run_id"`
+	AlertName    string    `json:"alert_name"`
+	Severity     string    `json:"severity"`
+	Message      string    `json:"message"`
+	Condition    string    `json:"condition"`
+	Acknowledged bool      `json:"acknowledged"`
+	AckedAt      time.Time `json:"acked_at,omitempty"`
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -140,6 +164,7 @@ type Todo struct {
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 	NodeAffinity         string        // cluster node ID for affinity-based execution (empty = any node)
+	Alerts               []AlertRule   // alert rules from frontmatter
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -266,6 +291,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var allowedWindow AllowedWindow
 			var slaConfig SLAConfig
 			onSLAViolation := ""
+			var alerts []AlertRule
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -312,6 +338,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						} `yaml:"sla"`
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						NodeAffinity         string            `yaml:"node"`
+						Alerts               []AlertRule       `yaml:"alerts"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
@@ -371,6 +398,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							}
 						}
 						onSLAViolation = fmData.OnSLAViolation
+						alerts = fmData.Alerts
 					}
 				}
 			}
@@ -419,6 +447,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				SLA:                  slaConfig,
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
+				Alerts:               alerts,
 			})
 		}
 	}
@@ -1129,4 +1158,132 @@ func ListTemplates(projectPath string) ([]Template, error) {
 		}
 	}
 	return templates, nil
+}
+
+
+// alertsDir returns the path to .anvil/alerts/ in a project.
+func alertsDir(projectPath string) string {
+	return filepath.Join(projectPath, ".anvil", "alerts")
+}
+
+// WriteAlertRecord appends a fired alert to the task's JSONL alert file.
+func WriteAlertRecord(projectPath string, rec AlertRecord) error {
+	dir := alertsDir(projectPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating alerts dir: %w", err)
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshaling alert record: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, rec.TaskID+".jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening alert file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("writing alert record: %w", err)
+	}
+	return nil
+}
+
+// ReadAlertRecords reads all alert records for a specific task.
+func ReadAlertRecords(projectPath, taskID string) ([]AlertRecord, error) {
+	path := filepath.Join(alertsDir(projectPath), taskID+".jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading alert file: %w", err)
+	}
+	var records []AlertRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec AlertRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+// ReadAllAlertRecords reads all alert records across all tasks.
+func ReadAllAlertRecords(projectPath string) ([]AlertRecord, error) {
+	dir := alertsDir(projectPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading alerts dir: %w", err)
+	}
+	var all []AlertRecord
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		taskID := strings.TrimSuffix(e.Name(), ".jsonl")
+		records, err := ReadAlertRecords(projectPath, taskID)
+		if err != nil {
+			continue
+		}
+		all = append(all, records...)
+	}
+	// Sort newest first
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Timestamp.After(all[j].Timestamp)
+	})
+	return all, nil
+}
+
+// AckAlertRecord acknowledges an alert by its ID (prefix match).
+func AckAlertRecord(projectPath, alertID string) error {
+	dir := alertsDir(projectPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading alerts dir: %w", err)
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		modified := false
+		for i, line := range lines {
+			if line == "" {
+				continue
+			}
+			var rec AlertRecord
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				continue
+			}
+			if strings.HasPrefix(rec.ID, alertID) && !rec.Acknowledged {
+				rec.Acknowledged = true
+				rec.AckedAt = time.Now()
+				updated, _ := json.Marshal(rec)
+				lines[i] = string(updated)
+				modified = true
+			}
+		}
+		if modified {
+			return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+		}
+	}
+	return fmt.Errorf("alert %s not found", alertID)
+}
+
+// GenerateAlertID returns a short unique ID for an alert record.
+func GenerateAlertID() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
