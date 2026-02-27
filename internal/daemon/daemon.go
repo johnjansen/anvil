@@ -1298,6 +1298,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/start", d.handleStartTask)
 	mux.HandleFunc("/budget", d.handleBudget)
 	mux.HandleFunc("/reset-budget", d.handleResetBudget)
+	mux.HandleFunc("/cluster/status", d.handleClusterStatus)
+	mux.HandleFunc("/cluster/leave", d.handleClusterLeave)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -1307,6 +1309,39 @@ func (d *Daemon) startSocketServer() {
 	if err := d.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 		dlog.SocketError(err)
 	}
+}
+
+// handleClusterStatus returns the current cluster leadership status.
+func (d *Daemon) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if d.clusterNode == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"enabled": false, "error": "cluster mode not enabled"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(d.clusterNode.Status())
+}
+
+// handleClusterLeave gracefully removes this node from the cluster.
+func (d *Daemon) handleClusterLeave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if d.clusterNode == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"left": false, "error": "cluster mode not enabled"})
+		return
+	}
+	nodeID := d.clusterNode.ID()
+	d.clusterNode.Stop()
+	d.clusterNode = nil
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"left": true, "node_id": nodeID})
 }
 
 func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
@@ -2987,4 +3022,34 @@ func SendResetBudgetRequest(taskKey string) error {
 		return fmt.Errorf("reset budget failed: %s", string(body))
 	}
 	return nil
+}
+
+// SendClusterStatusRequest retrieves the cluster status from the daemon.
+func SendClusterStatusRequest() (map[string]any, error) {
+	resp, err := socketClient().Get("http://daemon/cluster/status")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SendClusterLeaveRequest tells the daemon to leave the cluster.
+func SendClusterLeaveRequest() (map[string]any, error) {
+	resp, err := socketClient().Post("http://daemon/cluster/leave", "application/json", bytes.NewBufferString("{}"))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
