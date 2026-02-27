@@ -1108,8 +1108,6 @@ anvil task analyze [--all]         # analyze task schedules for potential confli
 anvil task pipeline [--dot|--verbose] [--all]  # visualize task dependency pipelines
 anvil task reset-budget <name>    # reset persistent task budget consumption
 anvil task state <name> [--export|--import|--clear]  # view, export, import, or clear task state
-anvil task dry-run <name> [options]  # validate and preview task config without executing
-anvil task sla [--verbose] [--reset] [--json]  # show SLA violations
 anvil task next [name]              # show next scheduled run time (--all for all projects)
 anvil task start <name>              # start a stopped task (re-enable rescheduling)
 anvil task stop <name>               # stop a running task (disable rescheduling)
