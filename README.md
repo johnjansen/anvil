@@ -872,13 +872,47 @@ Any line starting with `##anvil:status ` (note the trailing space) is intercepte
 
 ## Pipeline Visualization
 
-Visualize task dependency pipelines to understand how tasks are connected:
+Pipelines are created by linking tasks together using the `depends_on` frontmatter field. When tasks have dependencies, they form a pipeline that can be visualized:
 
 ```bash
 anvil task pipeline                    # show pipeline for current project
 anvil task pipeline --verbose          # show detailed pipeline info
 anvil task pipeline --dot             # output in GraphViz DOT format
 anvil task pipeline --all             # show pipelines across all watched projects
+```
+
+### Creating Pipelines
+
+Add `depends_on` to your task frontmatter to create pipeline dependencies:
+
+```yaml
+---
+schedule: "0 * * * *"
+depends_on:
+  - fetch-data
+---
+# First task: fetches data from API
+```
+
+```yaml
+---
+schedule: "0 * * * *"
+depends_on:
+  - fetch-data
+---
+# Second task: runs after fetch-data completes
+```
+
+The second task will only run after `fetch-data` has completed successfully. You can chain multiple tasks to create complex pipelines:
+
+```yaml
+---
+schedule: "0 * * * *"
+depends_on:
+  - fetch-data
+  - process-data
+---
+# Third task: runs after both dependencies complete
 ```
 
 Output formats:
