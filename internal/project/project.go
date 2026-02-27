@@ -138,6 +138,7 @@ type Todo struct {
 	Runbook              string        // URL or inline markdown with troubleshooting instructions
 	OnRiskHigh           string        // shell command to run when risk transitions to HIGH
 	RiskThreshold        RiskThresholds // risk scoring thresholds
+	Spawn               []string      // list of task names to spawn in parallel when this task runs
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -167,6 +168,8 @@ type RunRecord struct {
 	RunnerIndex      int           `json:"runner_index,omitempty"`      // which runner in the chain was used (0-based; 100+ means timeout fallback)
 	RunnerCommand    string        `json:"runner_command,omitempty"`    // the actual runner command that was used
 	RiskFactors     []RiskFactor  `json:"risk_factors,omitempty"`    // detected risk factors for this run
+	ParentID        string        `json:"parent_id,omitempty"`        // ID of parent task if this is a spawned child
+	ChildRunIDs     []string      `json:"child_run_ids,omitempty"`   // IDs of spawned child runs
 }
 
 // RiskLevel represents the risk level for a task.

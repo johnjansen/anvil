@@ -1920,6 +1920,8 @@ func taskCmd(args []string) {
 		taskOverlapsCmd(args[1:])
 	case "predict":
 		taskPredictCmd(args[1:])
+	case "tree":
+		taskTreeCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
