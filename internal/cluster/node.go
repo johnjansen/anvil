@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,15 @@ type Node struct {
 
 	// Logging callback (set by daemon)
 	Logf func(format string, args ...any)
+
+	// Worker availability per peer (updated from heartbeat acks)
+	peerWorkers   map[string]int // nodeID -> idle worker count
+	peerWorkersMu sync.RWMutex
+
+	// Task distribution callbacks (set by daemon)
+	WorkerReportFn func() WorkerReport             // returns this node's worker availability
+	OnTaskAssign   func(assignment TaskAssignment)  // called when follower receives task assignment
+	OnTaskResult   func(result TaskResult)          // called when leader receives task result
 }
 
 // Config holds the cluster configuration for a Node.
@@ -64,6 +74,7 @@ func NewNode(dataDir string, cfg Config) (*Node, error) {
 		transport:    NewTransport(cfg.Listen),
 		peers:        cfg.Peers,
 		peerLastSeen: make(map[string]time.Time),
+		peerWorkers:  make(map[string]int),
 		state: ElectionState{
 			Role: Follower,
 		},
@@ -180,6 +191,10 @@ func (n *Node) handleMessage(msg Message) {
 		n.handleHeartbeat(msg)
 	case MsgHeartbeatAck:
 		n.handleHeartbeatAck(msg)
+	case MsgTaskAssign:
+		n.handleTaskAssign(msg)
+	case MsgTaskResult:
+		n.handleTaskResult(msg)
 	}
 }
 
@@ -240,4 +255,96 @@ func (n *Node) Status() ClusterStatus {
 		ClusterSize: len(members),
 		Members:     members,
 	}
+}
+
+// handleTaskAssign processes a task assignment from the leader.
+func (n *Node) handleTaskAssign(msg Message) {
+	if n.OnTaskAssign == nil {
+		return
+	}
+	var assignment TaskAssignment
+	if err := json.Unmarshal(msg.Payload, &assignment); err != nil {
+		n.Logf("failed to unmarshal task assignment: %v", err)
+		return
+	}
+	n.Logf("received task assignment: %s (from leader %s)", assignment.TaskName, msg.FromID)
+	n.OnTaskAssign(assignment)
+}
+
+// handleTaskResult processes a task result from a follower.
+func (n *Node) handleTaskResult(msg Message) {
+	if n.OnTaskResult == nil {
+		return
+	}
+	var result TaskResult
+	if err := json.Unmarshal(msg.Payload, &result); err != nil {
+		n.Logf("failed to unmarshal task result: %v", err)
+		return
+	}
+	n.Logf("received task result: %s from %s (success=%v)", result.TaskName, result.NodeID, result.Success)
+	n.OnTaskResult(result)
+}
+
+// PeerWorkers returns the map of peer node IDs to their idle worker counts.
+func (n *Node) PeerWorkers() map[string]int {
+	n.peerWorkersMu.RLock()
+	defer n.peerWorkersMu.RUnlock()
+	result := make(map[string]int, len(n.peerWorkers))
+	for k, v := range n.peerWorkers {
+		result[k] = v
+	}
+	return result
+}
+
+// AssignTask sends a task assignment to a specific peer node.
+func (n *Node) AssignTask(addr string, assignment TaskAssignment) error {
+	payload, err := json.Marshal(assignment)
+	if err != nil {
+		return err
+	}
+	n.stateMu.RLock()
+	term := n.state.CurrentTerm
+	n.stateMu.RUnlock()
+
+	return n.transport.Send(addr, Message{
+		Type:    MsgTaskAssign,
+		Term:    term,
+		FromID:  n.id,
+		ToID:    assignment.TargetNodeID,
+		Payload: payload,
+	})
+}
+
+// ReportResult sends a task result back to the leader.
+func (n *Node) ReportResult(addr string, result TaskResult) error {
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	n.stateMu.RLock()
+	term := n.state.CurrentTerm
+	n.stateMu.RUnlock()
+
+	return n.transport.Send(addr, Message{
+		Type:    MsgTaskResult,
+		Term:    term,
+		FromID:  n.id,
+		Payload: payload,
+	})
+}
+
+// PeerAddress returns the address for a given peer node ID (empty if unknown).
+func (n *Node) PeerAddress(nodeID string) string {
+	// For now, we use the peers list which is address-based
+	// The mapping from ID to address is tracked via the transport
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
+	// We need to iterate members to find the matching address
+	// Since our peer list is addresses, we track id->addr mapping
+	return ""
+}
+
+// PeerAddresses returns all known peer addresses.
+func (n *Node) PeerAddresses() []string {
+	return n.peers
 }

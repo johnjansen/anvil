@@ -3663,7 +3663,7 @@ func taskHistoryCmd(args []string) {
 	}
 
 	// Print header
-	fmt.Printf("%-20s %10s %10s %-12s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "RUNNER", "STATUS")
+	fmt.Printf("%-20s %10s %10s %-12s %-12s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "RUNNER", "NODE", "STATUS")
 	for _, rec := range records {
 		duration := ""
 		if !rec.Finished.IsZero() {
@@ -3716,7 +3716,14 @@ func taskHistoryCmd(args []string) {
 			runnerLabel = fmt.Sprintf("runner[%d]", rec.RunnerIndex)
 		}
 
-		fmt.Printf("%-20s %10s %10s %-12s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, runnerLabel, status)
+		nodeLabel := "-"
+		if rec.NodeID != "" {
+			nodeLabel = rec.NodeID
+			if len(nodeLabel) > 12 {
+				nodeLabel = nodeLabel[:12]
+			}
+		}
+		fmt.Printf("%-20s %10s %10s %-12s %-12s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, runnerLabel, nodeLabel, status)
 
 		// Print output summary if available
 		if rec.OutputSummary != "" {

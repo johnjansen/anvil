@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -72,13 +73,19 @@ func (n *Node) handleHeartbeat(msg Message) {
 	// Reset election timer — leader is alive
 	n.resetElectionTimer()
 
-	// Send ack
+	// Send ack with worker report
+	var ackPayload json.RawMessage
+	if n.WorkerReportFn != nil {
+		report := n.WorkerReportFn()
+		ackPayload, _ = json.Marshal(report)
+	}
 	for _, addr := range n.peers {
 		n.transport.Send(addr, Message{
-			Type:   MsgHeartbeatAck,
-			Term:   msg.Term,
-			FromID: n.id,
-			ToID:   msg.FromID,
+			Type:    MsgHeartbeatAck,
+			Term:    msg.Term,
+			FromID:  n.id,
+			ToID:    msg.FromID,
+			Payload: ackPayload,
 		})
 	}
 }
@@ -89,4 +96,14 @@ func (n *Node) handleHeartbeatAck(msg Message) {
 	n.peersMu.Lock()
 	n.peerLastSeen[msg.FromID] = time.Now()
 	n.peersMu.Unlock()
+
+	// Parse worker report from payload
+	if len(msg.Payload) > 0 {
+		var report WorkerReport
+		if err := json.Unmarshal(msg.Payload, &report); err == nil {
+			n.peerWorkersMu.Lock()
+			n.peerWorkers[msg.FromID] = report.IdleWorkers
+			n.peerWorkersMu.Unlock()
+		}
+	}
 }
