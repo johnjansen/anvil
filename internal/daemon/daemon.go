@@ -23,6 +23,9 @@ import (
 	"syscall"
 	"time"
 
+	"crypto/sha256"
+
+	"github.com/johnjansen/anvil/internal/audit"
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/workspace"
 	"github.com/johnjansen/anvil/internal/cron"
@@ -122,6 +125,10 @@ type Daemon struct {
 	// Used to implement starvation prevention - after N minutes, persistent tasks yield to higher priority work.
 	starvationTrackers map[string]time.Time
 	starvationTrackersMu sync.Mutex
+
+	// Audit: track task file hashes to detect modifications
+	taskHashesMu sync.Mutex
+	taskHashes   map[string]string // key: task path, value: SHA256 of content
 	// runnerCooldowns tracks runner indices that are temporarily skipped due to failures.
 	// Map value is the time when the cooldown expires.
 	runnerCooldowns map[int]time.Time
@@ -854,6 +861,8 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			d.tasksMu.Unlock()
 			// Fire task_start webhook
 			d.webhooks.Fire(webhook.EventStart, webhook.BuildPayload(t.Name, proj.Path, runID, startTime, time.Time{}, 0, ""))
+			// Emit audit log entry for task.run
+			audit.LogOperationWithActor(proj.Path, audit.OpTaskRun, "daemon", strings.TrimSuffix(t.Name, ".md"), map[string]any{"run_id": runID})
 			if t.Webhook != "" {
 				d.webhooks.FireURL(t.Webhook, webhook.EventStart, webhook.BuildPayload(t.Name, proj.Path, runID, startTime, time.Time{}, 0, ""))
 			}
@@ -1116,6 +1125,14 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			}
 		}
 	}
+
+	// Emit audit log entry for task.completed
+	audit.LogOperationWithActor(proj.Path, audit.OpTaskCompleted, "daemon", strings.TrimSuffix(t.Name, ".md"), map[string]any{
+		"run_id":    runID,
+		"success":   err == nil,
+		"exit_code": func() int { if err == nil { return 0 }; return 1 }(),
+		"elapsed":   elapsed.String(),
+	})
 
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
@@ -2092,6 +2109,22 @@ func (d *Daemon) tick(now time.Time) {
 			continue
 		}
 		totalTodos += len(allTodos)
+
+		// T25: Detect task file modifications and emit audit entries
+		d.taskHashesMu.Lock()
+		for _, t := range allTodos {
+			raw, readErr := os.ReadFile(t.Path)
+			if readErr != nil {
+				continue
+			}
+			hash := fmt.Sprintf("%x", sha256.Sum256(raw))
+			prev, seen := d.taskHashes[t.Path]
+			if seen && prev != hash {
+				audit.LogOperationWithActor(proj.Path, audit.OpTaskModified, "unknown", strings.TrimSuffix(t.Name, ".md"), map[string]any{"source": "file_change"})
+			}
+			d.taskHashes[t.Path] = hash
+		}
+		d.taskHashesMu.Unlock()
 
 		for _, t := range allTodos {
 			// Skip disabled tasks silently

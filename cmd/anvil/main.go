@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/johnjansen/anvil/internal/audit"
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
@@ -94,6 +95,8 @@ func main() {
 		stopOnIdleCmd()
 	case "task":
 		taskCmd(os.Args[2:])
+	case "audit":
+		auditCmd(os.Args[2:])
 	case "project":
 		projectCmd(os.Args[2:])
 	case "template":
@@ -1890,6 +1893,8 @@ func taskCmd(args []string) {
 		taskStateCmd(args[1:])
 	case "pipeline":
 		taskPipelineCmd(args[1:])
+	case "verify-logs":
+		taskVerifyLogsCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -2200,6 +2205,12 @@ func taskCreateCmd(args []string) {
 	}
 
 	fmt.Printf("added %s\n", relPath)
+
+	// Emit audit log entry for task creation
+	audit.LogOperation(abs, audit.OpTaskCreated, strings.TrimSuffix(filepath.Base(relPath), ".md"), map[string]any{
+		"schedule": schedule,
+		"priority": priority,
+	})
 
 	// Show next run time for scheduled tasks.
 	if schedule != "" {
@@ -3170,6 +3181,7 @@ func taskRmCmd(args []string) {
 		log.Fatalf("failed to remove todo: %v", err)
 	}
 
+	audit.LogOperation(abs, audit.OpTaskDeleted, strings.TrimSuffix(todo.Name, ".md"), nil)
 	fmt.Printf("removed p%d/%s\n", todo.Priority, todo.Name)
 }
 
@@ -3359,6 +3371,7 @@ func taskHistoryCmd(args []string) {
 	showStats := false
 	jsonOutput := false
 	followMode := false
+	verifyMode := false
 	i := 0
 	for i < len(args) {
 		switch args[i] {
@@ -3387,13 +3400,16 @@ func taskHistoryCmd(args []string) {
 		case "--json":
 			jsonOutput = true
 			i++
+		case "--verify":
+			verifyMode = true
+			i++
 		default:
 			break
 		}
 	}
 	taskName := strings.Join(args[i:], " ")
 	if taskName == "" {
-		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--retried] [--stats] [--json]\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task history <name> [-n limit] [-f] [--failures] [--retried] [--stats] [--json] [--verify]\n")
 		os.Exit(1)
 	}
 
@@ -3494,7 +3510,11 @@ func taskHistoryCmd(args []string) {
 	}
 
 	// Print header
-	fmt.Printf("%-20s %10s %10s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "STATUS")
+	if verifyMode {
+		fmt.Printf("%-20s %10s %10s %10s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "SIGNATURE", "STATUS")
+	} else {
+		fmt.Printf("%-20s %10s %10s %10s\n", "STARTED", "DURATION", "ATTEMPTS", "STATUS")
+	}
 	for _, rec := range records {
 		duration := ""
 		if !rec.Finished.IsZero() {
@@ -3534,7 +3554,24 @@ func taskHistoryCmd(args []string) {
 			attempts = fmt.Sprintf("%d", rec.Attempt)
 		}
 
-		fmt.Printf("%-20s %10s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, status)
+		if verifyMode {
+			sigStatus := "unsigned"
+			if rec.Signature != "" {
+				abs, _ := filepath.Abs(".")
+				rec2 := rec
+				rec2.Signature = ""
+				recJSON, _ := json.Marshal(rec2)
+				ok, _ := audit.VerifyRunRecord(abs, recJSON, rec.Signature)
+				if ok {
+					sigStatus = "valid"
+				} else {
+					sigStatus = "TAMPERED"
+				}
+			}
+			fmt.Printf("%-20s %10s %10s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, sigStatus, status)
+		} else {
+			fmt.Printf("%-20s %10s %10s %10s\n", rec.Started.Format("2006-01-02 15:04"), duration, attempts, status)
+		}
 
 		// Print output summary if available
 		if rec.OutputSummary != "" {
@@ -4790,6 +4827,7 @@ func taskPauseCmd(args []string) {
 					log.Fatalf("failed to write task file: %v", err)
 				}
 
+				audit.LogOperation(abs, audit.OpTaskPaused, strings.TrimSuffix(todo.Name, ".md"), nil)
 				fmt.Printf("paused: %s\n", args[0])
 				return
 			}
@@ -4807,6 +4845,7 @@ func taskPauseCmd(args []string) {
 		log.Fatalf("failed to write task file: %v", err)
 	}
 
+	audit.LogOperation(abs, audit.OpTaskPaused, strings.TrimSuffix(todo.Name, ".md"), nil)
 	fmt.Printf("paused: %s\n", args[0])
 }
 
@@ -4902,6 +4941,7 @@ func taskResumeCmd(args []string) {
 					log.Fatalf("failed to write task file: %v", err)
 				}
 
+				audit.LogOperation(abs, audit.OpTaskResumed, strings.TrimSuffix(todo.Name, ".md"), nil)
 				fmt.Printf("resumed: %s\n", args[0])
 				return
 			}
@@ -8019,4 +8059,267 @@ func loadAllWatched() ([]watchFrontmatter, error) {
 	}
 
 	return result, nil
+}
+
+
+// taskVerifyLogsCmd verifies run record signatures for a specific task.
+func taskVerifyLogsCmd(args []string) {
+	verbose := false
+	var filtered []string
+	for _, a := range args {
+		if a == "--verbose" || a == "-v" {
+			verbose = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task verify-logs <name> [--verbose]\n")
+		os.Exit(1)
+	}
+	taskName := strings.Join(filtered, " ")
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, taskName)
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
+
+	records, err := project.ReadAllRunRecords(abs, todo.ID)
+	if err != nil {
+		log.Fatalf("failed to read run records: %v", err)
+	}
+
+	if len(records) == 0 {
+		fmt.Println("no run records found")
+		return
+	}
+
+	valid := 0
+	tampered := 0
+	unsigned := 0
+	for _, rec := range records {
+		if rec.Signature == "" {
+			unsigned++
+			if verbose {
+				fmt.Printf("  %s  unsigned\n", rec.RunID)
+			}
+			continue
+		}
+		// Re-serialize without signature for verification
+		rec2 := rec
+		rec2.Signature = ""
+		recJSON, _ := json.Marshal(rec2)
+		ok, _ := audit.VerifyRunRecord(abs, recJSON, rec.Signature)
+		if ok {
+			valid++
+			if verbose {
+				fmt.Printf("  %s  valid\n", rec.RunID)
+			}
+		} else {
+			tampered++
+			if verbose {
+				fmt.Printf("  %s  TAMPERED\n", rec.RunID)
+			}
+		}
+	}
+
+	fmt.Printf("Task: %s\n", strings.TrimSuffix(todo.Name, ".md"))
+	fmt.Printf("Run records: %d\n", len(records))
+	if tampered > 0 {
+		fmt.Printf("Verified: %d/%d valid, %d TAMPERED\n", valid, len(records), tampered)
+		os.Exit(1)
+	}
+	if unsigned > 0 {
+		fmt.Printf("Verified: %d/%d valid, %d unsigned (created before signing was enabled)\n", valid, len(records), unsigned)
+	} else {
+		fmt.Printf("Verified: %d/%d valid\n", valid, len(records))
+	}
+}
+
+// auditCmd handles the `anvil audit` command.
+func auditCmd(args []string) {
+	taskFilter := ""
+	sinceFilter := ""
+	showDiff := false
+	verifyFlag := false
+	jsonFlag := false
+	exportPath := ""
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--task":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "usage: anvil audit [--task name] [--since date] [--show-diff] [--verify] [--json] [--export file]\n")
+				os.Exit(1)
+			}
+			i++
+			taskFilter = args[i]
+		case "--since":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "usage: anvil audit [--task name] [--since date] [--show-diff] [--verify] [--json] [--export file]\n")
+				os.Exit(1)
+			}
+			i++
+			sinceFilter = args[i]
+		case "--show-diff":
+			showDiff = true
+		case "--verify":
+			verifyFlag = true
+		case "--json":
+			jsonFlag = true
+		case "--export":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "usage: anvil audit [--task name] [--since date] [--show-diff] [--verify] [--json] [--export file]\n")
+				os.Exit(1)
+			}
+			i++
+			exportPath = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown audit flag: %s\n", args[i])
+			os.Exit(1)
+		}
+		i++
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	// T21: --verify flag
+	if verifyFlag {
+		valid, errors := audit.VerifyChain(abs)
+		entries, _ := audit.ReadEntries(abs)
+		fmt.Printf("Audit log: %d entries\n", len(entries))
+		if valid {
+			fmt.Println("Chain integrity: VALID")
+			fmt.Println("All signatures: VALID")
+		} else {
+			for _, e := range errors {
+				fmt.Printf("  %s\n", e)
+			}
+			os.Exit(1)
+		}
+		return
+	}
+
+	entries, err := audit.ReadEntries(abs)
+	if err != nil {
+		log.Fatalf("failed to read audit log: %v", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("no audit entries found")
+		return
+	}
+
+	// T19: Filter by task and since
+	if taskFilter != "" {
+		var filtered []audit.AuditEntry
+		for _, e := range entries {
+			if e.TaskName == taskFilter {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
+
+	if sinceFilter != "" {
+		// Try YYYY-MM-DD format first, then RFC3339
+		var sinceTime time.Time
+		if t, err := time.Parse("2006-01-02", sinceFilter); err == nil {
+			sinceTime = t
+		} else if t, err := time.Parse(time.RFC3339, sinceFilter); err == nil {
+			sinceTime = t
+		} else {
+			fmt.Fprintf(os.Stderr, "invalid date format: %s (use YYYY-MM-DD or RFC3339)\n", sinceFilter)
+			os.Exit(1)
+		}
+		var filtered []audit.AuditEntry
+		for _, e := range entries {
+			if t, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+				if !t.Before(sinceTime) {
+					filtered = append(filtered, e)
+				}
+			}
+		}
+		entries = filtered
+	}
+
+	// T23: --export flag
+	if exportPath != "" {
+		f, err := os.Create(exportPath)
+		if err != nil {
+			log.Fatalf("failed to create export file: %v", err)
+		}
+		defer f.Close()
+		for _, e := range entries {
+			data, _ := json.Marshal(e)
+			f.Write(data)
+			f.Write([]byte("\n"))
+		}
+		fmt.Printf("Exported %d entries to %s\n", len(entries), exportPath)
+		return
+	}
+
+	// T22: --json flag
+	if jsonFlag {
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+
+	// T18: Default human-readable table
+	fmt.Printf("%-22s %-16s %-10s %-20s %s\n", "TIMESTAMP", "OPERATION", "ACTOR", "TASK", "CHANGES")
+	for _, e := range entries {
+		ts := e.Timestamp
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			ts = t.Format("2006-01-02 15:04:05")
+		}
+
+		changes := ""
+		if len(e.Details) > 0 && showDiff {
+			var parts []string
+			for k, v := range e.Details {
+				parts = append(parts, fmt.Sprintf("%s: %v", k, v))
+			}
+			changes = strings.Join(parts, ", ")
+		} else if len(e.Details) > 0 {
+			// Show a brief summary
+			var parts []string
+			for k, v := range e.Details {
+				s := fmt.Sprintf("%v", v)
+				if len(s) > 20 {
+					s = s[:20] + "..."
+				}
+				parts = append(parts, fmt.Sprintf("%s: %s", k, s))
+			}
+			changes = strings.Join(parts, ", ")
+			if len(changes) > 40 {
+				changes = changes[:40] + "..."
+			}
+		}
+
+		fmt.Printf("%-22s %-16s %-10s %-20s %s\n", ts, e.Operation, e.Actor, e.TaskName, changes)
+	}
 }

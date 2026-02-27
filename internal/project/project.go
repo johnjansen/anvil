@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
+	"github.com/johnjansen/anvil/internal/audit"
 	"github.com/johnjansen/anvil/internal/workspace"
 	"github.com/johnjansen/anvil/internal/cron"
 	"gopkg.in/yaml.v3"
@@ -136,6 +137,7 @@ type RunRecord struct {
 	Attempt          int       `json:"attempt,omitempty"`           // final attempt number (1-based), 0 if no retries configured
 	MaxRetries       int       `json:"max_retries,omitempty"`       // configured max retries for this task
 	RetryDelay       string    `json:"retry_delay,omitempty"`       // configured base delay between retries
+	Signature        string    `json:"signature,omitempty"`         // HMAC-SHA256 signature for tamper detection
 }
 
 // Load reads a project's .anvil/config.yaml and returns a Project.
@@ -630,6 +632,13 @@ func WriteRunRecord(projectPath string, rec RunRecord) error {
 	dir := runsDir(projectPath, rec.TaskID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating runs dir: %w", err)
+	}
+
+	// Sign the run record before writing (best-effort: don't fail on signing errors)
+	rec.Signature = "" // clear before signing
+	unsigned, _ := json.Marshal(rec)
+	if sig, signErr := audit.SignRunRecord(projectPath, unsigned); signErr == nil {
+		rec.Signature = sig
 	}
 
 	data, err := json.Marshal(rec)
