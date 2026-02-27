@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/johnjansen/anvil/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // Dependency represents a single dependency which may be local or cross-project.
@@ -52,15 +54,26 @@ func (d Dependency) ResolveTaskName() string {
 	return d.Task + ".md"
 }
 
+// watchedFrontmatter is the YAML frontmatter in watched project entry files.
+type watchedFrontmatter struct {
+	Path string `yaml:"path"`
+}
+
 // GetProjectPath returns the absolute path to the project for this dependency.
 // If IsLocal is true, returns the currentProjectPath.
-// Otherwise, looks up the project in the watched directory.
+// Otherwise, looks up the project in the watched directory and resolves its
+// actual filesystem path from the watched entry's frontmatter.
 func (d Dependency) GetProjectPath(currentProjectPath string) (string, error) {
 	if d.IsLocal {
 		return currentProjectPath, nil
 	}
 
-	// Look up project in watched directory
+	return ResolveWatchedProjectPath(d.Project)
+}
+
+// ResolveWatchedProjectPath looks up a project by name in ~/.anvil/watched/
+// and returns the actual filesystem path from the watched entry's frontmatter.
+func ResolveWatchedProjectPath(projectName string) (string, error) {
 	watchedDir := filepath.Join(config.Dir(), "watched")
 	entries, err := os.ReadDir(watchedDir)
 	if err != nil {
@@ -68,21 +81,66 @@ func (d Dependency) GetProjectPath(currentProjectPath string) (string, error) {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || entry.Name() != projectName {
 			continue
 		}
-		// Check if directory name matches project name
-		if entry.Name() == d.Project {
-			return filepath.Join(watchedDir, entry.Name()), nil
+
+		// Read the latest .md file from the project's watched directory
+		dirPath := filepath.Join(watchedDir, entry.Name())
+		mdEntries, err := os.ReadDir(dirPath)
+		if err != nil {
+			return "", fmt.Errorf("cannot read watched project directory %s: %w", projectName, err)
 		}
+
+		// Sort descending to get latest file first (same as loadWatchedPaths)
+		sort.Slice(mdEntries, func(i, j int) bool {
+			return mdEntries[i].Name() > mdEntries[j].Name()
+		})
+
+		for _, e := range mdEntries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+
+			data, err := os.ReadFile(filepath.Join(dirPath, e.Name()))
+			if err != nil {
+				return "", fmt.Errorf("cannot read watched entry for %s: %w", projectName, err)
+			}
+
+			p := parseWatchedProjectPath(string(data))
+			if p != "" {
+				return p, nil
+			}
+			break
+		}
+
+		return "", fmt.Errorf("project %s has no valid watched entry", projectName)
 	}
 
-	return "", fmt.Errorf("project not found: %s", d.Project)
+	return "", fmt.Errorf("project not found in watched directory: %s", projectName)
+}
+
+// parseWatchedProjectPath extracts the path field from a watched entry's YAML frontmatter.
+func parseWatchedProjectPath(content string) string {
+	start := strings.Index(content, "---\n")
+	if start == -1 {
+		return ""
+	}
+	end := strings.Index(content[start+4:], "\n---")
+	if end == -1 {
+		return ""
+	}
+
+	var fm watchedFrontmatter
+	if err := yaml.Unmarshal([]byte(content[start+4:start+4+end]), &fm); err != nil {
+		return ""
+	}
+	return fm.Path
 }
 
 // ValidateDependency validates that a dependency is valid:
-// - Local dependencies must exist in the project
-// - Cross-project dependencies must reference an existing watched project
+// - The referenced project must exist (for cross-project deps, must be in watched directory)
+// - The referenced task file must exist in the project's todos directory
 func ValidateDependency(dep Dependency, projectPath string) error {
 	projectPathForDep, err := dep.GetProjectPath(projectPath)
 	if err != nil {
@@ -91,25 +149,82 @@ func ValidateDependency(dep Dependency, projectPath string) error {
 
 	// Check that the project directory exists
 	if _, err := os.Stat(projectPathForDep); os.IsNotExist(err) {
-		return fmt.Errorf("project not found: %s", dep.Project)
-	}
-
-	// For local dependencies, verify the task file exists
-	if dep.IsLocal {
-		todosDir := filepath.Join(projectPathForDep, ".anvil", "todos")
-		taskFile := dep.ResolveTaskName()
-
-		// Check in all priority directories p0-p9
-		for pri := 0; pri <= 9; pri++ {
-			taskPath := filepath.Join(todosDir, fmt.Sprintf("p%d", pri), taskFile)
-			if _, err := os.Stat(taskPath); err == nil {
-				return nil // Found
-			}
+		if dep.IsLocal {
+			return fmt.Errorf("project path not found: %s", projectPathForDep)
 		}
-		return fmt.Errorf("task not found in project %s: %s", dep.Project, dep.Task)
+		return fmt.Errorf("project not found: %s (path: %s)", dep.Project, projectPathForDep)
 	}
 
-	return nil
+	// Verify the task file exists in the project's todos directory
+	todosDir := filepath.Join(projectPathForDep, ".anvil", "todos")
+	taskFile := dep.ResolveTaskName()
+
+	for pri := 0; pri <= 9; pri++ {
+		taskPath := filepath.Join(todosDir, fmt.Sprintf("p%d", pri), taskFile)
+		if _, err := os.Stat(taskPath); err == nil {
+			return nil // Found
+		}
+	}
+
+	projectLabel := "local"
+	if !dep.IsLocal {
+		projectLabel = dep.Project
+	}
+	return fmt.Errorf("task not found in project %s: %s", projectLabel, dep.Task)
+}
+
+// FindTaskIDByName loads a project's todos and returns the task ID (UUID) for the given task name.
+// The task name may or may not have the .md extension.
+func FindTaskIDByName(projectPath string, taskName string) (string, error) {
+	proj, err := Load(projectPath)
+	if err != nil {
+		return "", fmt.Errorf("loading project %s: %w", projectPath, err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		return "", fmt.Errorf("loading todos from %s: %w", projectPath, err)
+	}
+
+	// Normalize: ensure we compare with .md extension
+	if !strings.HasSuffix(taskName, ".md") {
+		taskName += ".md"
+	}
+
+	for _, todo := range todos {
+		name := todo.Name
+		if !strings.HasSuffix(name, ".md") {
+			name += ".md"
+		}
+		if name == taskName {
+			if todo.ID == "" {
+				return "", fmt.Errorf("task %s has no ID in project %s", taskName, projectPath)
+			}
+			return todo.ID, nil
+		}
+	}
+
+	return "", fmt.Errorf("task %s not found in project %s", taskName, projectPath)
+}
+
+// ResolveDependencyRunRecord resolves a dependency string (local or cross-project) to a RunRecord.
+// For cross-project deps (project:task), it resolves the project path and task ID.
+// For local deps, it resolves the task ID within the current project.
+func ResolveDependencyRunRecord(currentProjectPath string, dep string) (RunRecord, error) {
+	parsed := ParseDependency(dep)
+
+	projectPath, err := parsed.GetProjectPath(currentProjectPath)
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("resolving project for dependency %s: %w", dep, err)
+	}
+
+	taskName := parsed.ResolveTaskName()
+	taskID, err := FindTaskIDByName(projectPath, taskName)
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("resolving task ID for dependency %s: %w", dep, err)
+	}
+
+	return ReadCurrentRunRecord(projectPath, taskID)
 }
 
 // DependencyGraph represents a graph of task dependencies for cycle detection.

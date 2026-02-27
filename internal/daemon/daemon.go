@@ -138,6 +138,10 @@ type Daemon struct {
 	// persistent task during this daemon lifetime.  Resets on daemon restart.
 	persistentBudgetUsed   map[string]time.Duration
 	persistentBudgetUsedMu sync.Mutex
+	// costBudgetUsed tracks cumulative USD cost consumed by each
+	// task during this daemon lifetime. Resets on daemon restart.
+	costBudgetUsed   map[string]float64
+	costBudgetUsedMu sync.Mutex
 	webhooks *webhook.Sender
 	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
 	rateLimitSemaphore chan struct{}
@@ -527,14 +531,13 @@ type depFailInfo struct {
 }
 
 // checkDependenciesMet verifies all dependencies have completed successfully in the current cycle.
+// Supports both local dependencies ("task.md") and cross-project dependencies ("project:task.md").
 // Returns (true, nil) if all dependencies are met, (false, info) if not.
 func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, info *depFailInfo) {
 	for _, dep := range dependsOn {
-		// dep is the task name (e.g., "fetch-data.md")
-		// We need to find the task ID from the project todos directory
-		runRecord, err := project.ReadCurrentRunRecord(projectPath, dep)
+		runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
 		if err != nil {
-			// No run record found - dependency hasn't run yet
+			// No run record found - dependency hasn't run yet or can't be resolved
 			return false, &depFailInfo{
 				Reason:  "dependency not run: " + dep,
 				DepName: dep,
@@ -2094,11 +2097,39 @@ func (d *Daemon) tick(now time.Time) {
 	totalTodos := 0
 	totalMatched := 0
 
+	// Load all todos for cross-project cycle detection and validation
+	allProjectTodos := make(map[string][]project.Todo)
 	for _, proj := range projects {
 		projName := filepath.Base(proj.Path)
 		allTodos, err := proj.LoadTodos()
 		if err != nil {
 			dlog.Warn("%s: error loading todos: %v", projName, err)
+			continue
+		}
+		allProjectTodos[projName] = allTodos
+
+		// Validate cross-project dependencies
+		for _, t := range allTodos {
+			for _, dep := range t.DependsOn {
+				parsed := project.ParseDependency(dep)
+				if !parsed.IsLocal {
+					if err := project.ValidateDependency(parsed, proj.Path); err != nil {
+						dlog.Warn("%s/%s: invalid cross-project dependency %q: %v", projName, t.Name, dep, err)
+					}
+				}
+			}
+		}
+	}
+
+	// Detect cross-project circular dependencies
+	if hasCycle, cyclePath := project.DetectCrossProjectCycles(allProjectTodos); hasCycle {
+		dlog.Warn("cross-project circular dependency detected: %s", strings.Join(cyclePath, " -> "))
+	}
+
+	for _, proj := range projects {
+		projName := filepath.Base(proj.Path)
+		allTodos := allProjectTodos[projName]
+		if allTodos == nil {
 			continue
 		}
 		totalTodos += len(allTodos)
