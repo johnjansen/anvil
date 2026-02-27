@@ -3,6 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2026-02-25
 
 ## Active Technologies
+- Go 1.24.6 + gopkg.in/yaml.v3 (frontmatter parsing), os/exec (task execution), filepath (path resolution) (008-workspace-isolation)
+- Filesystem (task files with YAML frontmatter, temp directories) (008-workspace-isolation)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -22,6 +24,7 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 008-workspace-isolation: Added Go 1.24.6 + gopkg.in/yaml.v3 (frontmatter parsing), os/exec (task execution), filepath (path resolution)
 
 - 002-cli-ecosystem-blog-post: Added Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document)
 

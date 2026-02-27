@@ -2620,6 +2620,13 @@ func taskGetCmd(args []string) {
 			BudgetRemaining string          `json:"budget_remaining,omitempty"`
 			BudgetPercent   float64         `json:"budget_percent,omitempty"`
 			BudgetExhausted bool            `json:"budget_exhausted,omitempty"`
+		Workspace       *struct {
+			Type         string   `json:"type"`
+			AllowedPaths []string `json:"allowed_paths,omitempty"`
+			ReadOnly     []string `json:"read_only,omitempty"`
+			BlockedPaths []string `json:"blocked_paths,omitempty"`
+			Size         string   `json:"size,omitempty"`
+		} `json:"workspace,omitempty"`
 		}
 		detail := taskDetailJSON{
 			File:            todo.Path,
@@ -2711,6 +2718,27 @@ func taskGetCmd(args []string) {
 			detail.BudgetPercent = pct
 			detail.BudgetExhausted = budgetUsed >= todo.PersistentBudget
 		}
+		// Add workspace info
+		wsj := &struct {
+			Type         string   `json:"type"`
+			AllowedPaths []string `json:"allowed_paths,omitempty"`
+			ReadOnly     []string `json:"read_only,omitempty"`
+			BlockedPaths []string `json:"blocked_paths,omitempty"`
+			Size         string   `json:"size,omitempty"`
+		}{Type: todo.Workspace.EffectiveType()}
+		if len(todo.Workspace.AllowedPaths) > 0 {
+			wsj.AllowedPaths = todo.Workspace.AllowedPaths
+		}
+		if len(todo.Workspace.ReadOnly) > 0 {
+			wsj.ReadOnly = todo.Workspace.ReadOnly
+		}
+		if len(todo.Workspace.BlockedPaths) > 0 {
+			wsj.BlockedPaths = todo.Workspace.BlockedPaths
+		}
+		if todo.Workspace.Size != "" {
+			wsj.Size = todo.Workspace.Size
+		}
+		detail.Workspace = wsj
 		data, err := json.MarshalIndent(detail, "", "  ")
 		if err != nil {
 			log.Fatalf("failed to marshal JSON: %v", err)
@@ -2810,6 +2838,25 @@ func taskGetCmd(args []string) {
 		} else {
 			fmt.Printf("          EXHAUSTED\n")
 		}
+	}
+	// Show workspace configuration
+	wsType := todo.Workspace.EffectiveType()
+	if !todo.Workspace.IsZero() {
+		fmt.Printf("Workspace: %s\n", wsType)
+		if len(todo.Workspace.AllowedPaths) > 0 {
+			fmt.Printf("  Allowed:   %s\n", strings.Join(todo.Workspace.AllowedPaths, ", "))
+		}
+		if len(todo.Workspace.ReadOnly) > 0 {
+			fmt.Printf("  Read-only: %s\n", strings.Join(todo.Workspace.ReadOnly, ", "))
+		}
+		if len(todo.Workspace.BlockedPaths) > 0 {
+			fmt.Printf("  Blocked:   %s\n", strings.Join(todo.Workspace.BlockedPaths, ", "))
+		}
+		if todo.Workspace.Size != "" {
+			fmt.Printf("  Size limit: %s\n", todo.Workspace.Size)
+		}
+	} else {
+		fmt.Printf("Workspace: project (default)\n")
 	}
 	fmt.Printf("\n%s", todo.Content)
 }

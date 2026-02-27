@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
+	"github.com/johnjansen/anvil/internal/workspace"
 	"github.com/johnjansen/anvil/internal/cron"
 	"gopkg.in/yaml.v3"
 )
@@ -39,7 +40,8 @@ type TaskDefaults struct {
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 	PersistentBudget     string   `yaml:"persistent_budget"`
 	MaxLogSize           string   `yaml:"max_log_size"`
-	Runner               string   `yaml:"runner"`
+	Runner               string           `yaml:"runner"`
+	Workspace            *workspace.Config `yaml:"workspace"`
 }
 
 // ConfigPath returns the path to the project config file.
@@ -110,8 +112,9 @@ type Todo struct {
 	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
 	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
-	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
-	ParseError           string        // non-empty if frontmatter failed to parse; task is preserved but should not be executed
+	ForceWindow          bool             // if true, bypass time window and quiet hours checks (set by force-run)
+	Workspace            workspace.Config // workspace isolation settings (zero value = project type)
+	ParseError           string           // non-empty if frontmatter failed to parse; task is preserved but should not be executed
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -214,6 +217,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var dependsOn []string
 			checkpoint := false
 			var allowedWindow AllowedWindow
+			var wsConfig workspace.Config
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -314,7 +318,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Apply project defaults for fields not explicitly set in frontmatter.
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
-				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride)
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride,
+				&wsConfig)
 
 			// Resolve env: prefixed values from the current environment
 			resolvedEnv := resolveEnvVars(envVars)
@@ -349,6 +354,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
 				Window:               allowedWindow,
+				Workspace:            wsConfig,
 			})
 		}
 	}
@@ -364,7 +370,8 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
 	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
-	persistentBudget *time.Duration, maxLogSize *int64, runnerOverride *string) {
+	persistentBudget *time.Duration, maxLogSize *int64, runnerOverride *string,
+	wsConfig *workspace.Config) {
 
 	has := func(key string) bool {
 		if fmKeys == nil {
@@ -427,6 +434,9 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	}
 	if !has("runner") && defaults.Runner != "" {
 		*runnerOverride = defaults.Runner
+	}
+	if !has("workspace") && defaults.Workspace != nil && wsConfig.IsZero() {
+		*wsConfig = *defaults.Workspace
 	}
 }
 

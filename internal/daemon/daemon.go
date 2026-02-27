@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
+	"github.com/johnjansen/anvil/internal/workspace"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
@@ -759,6 +760,41 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 		// Merge global config env with task-specific env (task overrides global)
 		mergedEnv := mergeEnv(d.config.Env, t.Env)
 
+		// Inject workspace environment variables (T009/T010/T011)
+		wsEnv := workspace.EnvVars(proj.Path, t.Workspace)
+		if mergedEnv == nil {
+			mergedEnv = make(map[string]string)
+		}
+		for k, v := range wsEnv {
+			mergedEnv[k] = v
+		}
+
+		// Determine working directory: temp workspace overrides project path
+		workDir := proj.Path
+		if t.Workspace.EffectiveType() == workspace.TypeTemp {
+			tmpDir, cleanup, tmpErr := workspace.CreateTempWorkspace(t.Name)
+			if tmpErr != nil {
+				dlog.Warn("workspace: failed to create temp dir for %s: %v", taskKey, tmpErr)
+			} else {
+				workDir = tmpDir
+				mergedEnv["ANVIL_WORKSPACE_ROOT"] = tmpDir
+				defer func() {
+					if t.Workspace.Size != "" {
+						maxBytes, _ := workspace.ParseSize(t.Workspace.Size)
+						actual, exceeded := workspace.CheckSize(tmpDir, maxBytes)
+						if exceeded {
+							dlog.Warn("workspace: temp dir for %s used %d bytes (limit %d)", taskKey, actual, maxBytes)
+						}
+					}
+					cleanup()
+				}()
+			}
+		}
+
+		if t.Workspace.EffectiveType() != workspace.TypeProject {
+			dlog.Info("workspace: %s type=%s", taskKey, t.Workspace.EffectiveType())
+		}
+
 		// If checkpoint is enabled, inject the latest checkpoint data as an env var
 		if t.Checkpoint {
 			cpData := project.LatestCheckpointData(proj.Path, t.ID)
@@ -807,7 +843,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo) {
 			}
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, func(pid int, lp string, sid string) {
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, workDir, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[taskKey]; ok {
