@@ -151,7 +151,7 @@ Add options:
   -t, --template name        Use a template for task configuration
   -                          Read task content from stdin
       --pre-check string    Shell command to skip task if non-zero exit
-      --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read")
+      --allowed-tools string  Comma-separated tool allowlist (e.g. "Bash,Read") or scoped (e.g. "Bash(gh:*)")
       --max-concurrent int    Max parallel instances (default 1)
       --skip-permissions     Bypass all tool permission prompts
       --strict               Fail if schedule conflicts with existing tasks
@@ -1640,7 +1640,7 @@ Options:
   -o, --once              Create a one-shot task (no schedule)
   -n, --dry-run          Validate schedule without creating task
   --pre-check cmd        Command to run before task execution
-  --allowed-tools tools  Comma-separated list of allowed tools
+  --allowed-tools tools  Comma-separated list of allowed tools (e.g. "Bash,Read" or scoped "Bash(gh:*)", "Read(.claude/commands/*)")
   --max-concurrent n     Max concurrent runs (default: 1)
   --skip-permissions     Skip permission checks
   --strict               Fail if schedule conflicts with existing tasks
