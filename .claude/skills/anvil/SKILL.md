@@ -553,6 +553,74 @@ Triage GitHub issues...
 
 The per-task webhook URL receives the same payload as global webhooks. It fires in addition to any globally configured webhooks.
 
+## Task Subscriptions
+
+Trigger tasks from external event sources instead of (or in addition to) cron schedules:
+
+```yaml
+# Webhook subscription - trigger via HTTP
+---
+schedule: "0 9 * * *"  # optional: also run on cron schedule
+subscription:
+  type: webhook
+  path: /webhooks/github-events
+  method: POST
+  secret: my-secret-token
+---
+Triage GitHub events from webhook...
+```
+
+```yaml
+# AMQP subscription - trigger on message queue events
+---
+subscription:
+  type: amqp
+  url: amqp://localhost:5672
+  path: my-queue
+---
+Process queue messages...
+```
+
+```yaml
+# File system subscription - trigger on file changes
+---
+subscription:
+  type: fs
+  path: /data/*.json
+  events:
+    - create
+    - modify
+---
+Process new data files...
+```
+
+**Subscription types:**
+
+| Type | Configuration | Trigger |
+|------|--------------|---------|
+| `webhook` | `path`, `method`, `secret` | HTTP POST to daemon's webhook endpoint |
+| `amqp` | `url`, `path` (queue name) | Messages published to queue |
+| `fs` | `path` (glob pattern), `events` | Files matching pattern created/modified/deleted |
+
+**Environment variables available:**
+
+| Variable | Description |
+|----------|-------------|
+| `ANVIL_WEBHOOK_PAYLOAD` | Raw request body for webhook triggers |
+| `ANVIL_AMQP_MESSAGE` | Message body for AMQP triggers |
+| `ANVIL_FS_PATH` | File path that triggered the event |
+| `ANVIL_FS_EVENT` | Event type: `create`, `modify`, or `delete` |
+
+**CLI management:**
+
+```bash
+anvil subscription ls                # List all subscriptions
+anvil subscription pause <task>      # Pause a subscription
+anvil subscription resume <task>     # Resume a paused subscription
+```
+
+Paused subscriptions persist across daemon restarts.
+
 ## Desktop Notifications
 
 Configure desktop notifications in `~/.anvil/config.yaml`:
@@ -734,6 +802,26 @@ Run with a $5 budget cap.
 ```
 
 Once the cumulative estimated cost exceeds the budget, the task stops. Reset with `anvil task reset-budget <name>`.
+
+## Priority Aging
+
+Automatically boost the priority of tasks that wait too long in the queue. Configure in `~/.anvil/config.yaml`:
+
+```yaml
+priority_aging:
+  enabled: true
+  threshold: 30m      # after waiting 30 minutes
+  boost_by: 2          # lower priority by 2 levels (p5 → p3)
+  max_boost: 4         # never boost more than 4 levels
+```
+
+Example: A p5 task that waits 45 minutes with threshold=30m, boost_by=2:
+- boost = (45-30)/30 = 0.5 → 1 × 2 = 2
+- effective_priority = 5 - 2 = p3
+
+Disable per-task with `priority_aging: false` in frontmatter.
+
+View effective priority with `anvil task queue` (shows "p3 (aged)" suffix).
 
 ## Failure Prediction
 
