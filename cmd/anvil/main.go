@@ -1640,7 +1640,8 @@ Options:
   -s, --schedule cron     Cron schedule (e.g., "*/15 * * * *")
   -t, --template name    Use a template for task configuration
   -o, --once              Create a one-shot task (no schedule)
-  -n, --dry-run          Validate schedule without creating task
+  -n, --dry-run          Show impact analysis (conflicts, load) without creating task
+  --json                 Output impact analysis as JSON (with --dry-run)
   --pre-check cmd        Command to run before task execution
   --allowed-tools tools  Comma-separated list of allowed tools (e.g. "Bash,Read" or scoped "Bash(gh:*)", "Read(.claude/commands/*)")
   --max-concurrent n     Max concurrent runs (default: 1)
@@ -1941,6 +1942,7 @@ func taskCreateCmd(args []string) {
 	dryRun := false
 	strict := false
 	noOverlapCheck := false
+	dryRunJSON := false
 	templateName := ""
 	var dependsOn []string
 
@@ -1988,6 +1990,8 @@ func taskCreateCmd(args []string) {
 			onceFlag = true
 		case "-n", "--dry-run":
 			dryRun = true
+		case "--json":
+			dryRunJSON = true
 		case "--pre-check":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for --pre-check")
@@ -2052,21 +2056,23 @@ func taskCreateCmd(args []string) {
 		scheduleSet = true
 	}
 
-	// Handle --dry-run: validate schedule without creating task.
+	// Handle --dry-run: show impact analysis without creating task.
 	if dryRun {
+		abs, err := filepath.Abs(".")
+		if err != nil {
+			log.Fatalf("bad path: %v", err)
+		}
+		var todos []project.Todo
 		if schedule != "" {
-			if _, err := cron.Parse(schedule); err != nil {
-				log.Fatalf("invalid cron expression: %s (%v)", schedule, err)
+			if proj, err := project.Load(abs); err == nil {
+				todos, _ = proj.LoadTodos()
 			}
-			// Show next run time
-			if p, err := cron.Parse(schedule); err == nil {
-				if next, err := p.Next(time.Now()); err == nil {
-					until := time.Until(next).Round(time.Minute)
-					fmt.Printf("Schedule is valid. Next run: %s (%s from now)\n", next.Format("Mon Jan 2 15:04:05"), until)
-				}
-			}
+		}
+		report := analyzeImpact(schedule, todos)
+		if dryRunJSON {
+			printImpactJSON(report)
 		} else {
-			fmt.Println("No schedule specified (one-shot task)")
+			printImpactReport(report)
 		}
 		return
 	}
@@ -2162,45 +2168,16 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to load project: %v", err)
 	}
 
-	// Check for schedule overlaps with existing tasks.
+	// Check for schedule overlaps with existing tasks using shared conflict detection.
 	if schedule != "" && !noOverlapCheck {
-		if newParser, parseErr := cron.Parse(schedule); parseErr == nil {
+		if _, parseErr := cron.Parse(schedule); parseErr == nil {
 			todos, _ := proj.LoadTodos()
-			now := time.Now().Truncate(time.Minute)
-			var overlapping []string
-			for _, t := range todos {
-				if t.Schedule == "" || t.Schedule == "persistent" || t.Disabled {
-					continue
+			conflicts := computeConflicts(schedule, todos)
+			if len(conflicts) > 0 {
+				var overlapping []string
+				for _, c := range conflicts {
+					overlapping = append(overlapping, fmt.Sprintf("%s (%s)", c.TaskName, c.Schedule))
 				}
-				existParser, err := cron.Parse(t.Schedule)
-				if err != nil {
-					continue
-				}
-				// Check next 30 occurrences for overlap within 1 minute
-				cur := now
-				for k := 0; k < 30; k++ {
-					newNext, e1 := newParser.Next(cur)
-					existNext, e2 := existParser.Next(cur)
-					if e1 != nil || e2 != nil {
-						break
-					}
-					diff := newNext.Sub(existNext)
-					if diff < 0 {
-						diff = -diff
-					}
-					if diff <= time.Minute {
-						name := strings.TrimSuffix(t.Name, ".md")
-						overlapping = append(overlapping, fmt.Sprintf("%s (%s)", name, t.Schedule))
-						break
-					}
-					if newNext.Before(existNext) {
-						cur = newNext
-					} else {
-						cur = existNext
-					}
-				}
-			}
-			if len(overlapping) > 0 {
 				if strict {
 					fmt.Fprintf(os.Stderr, "Error: Schedule overlaps with %d existing task(s):\n", len(overlapping))
 					for _, o := range overlapping {
@@ -2212,14 +2189,14 @@ func taskCreateCmd(args []string) {
 				}
 				// Non-strict: warn but continue
 				severity := "Note"
-				if len(overlapping) >= 3 {
+				if len(conflicts) >= 3 {
 					severity = "Warning"
 				}
-				fmt.Fprintf(os.Stderr, "%s: This schedule overlaps with %d existing task(s) that run at similar times:\n", severity, len(overlapping))
+				fmt.Fprintf(os.Stderr, "%s: This schedule overlaps with %d existing task(s) that run at similar times:\n", severity, len(conflicts))
 				for _, o := range overlapping {
 					fmt.Fprintf(os.Stderr, "  - %s\n", o)
 				}
-				suggestStagger(schedule, len(overlapping))
+				suggestStagger(schedule, len(conflicts))
 				fmt.Fprintln(os.Stderr)
 			}
 		}
