@@ -85,9 +85,10 @@ func removePIDFile() {
 
 // workItem is a single unit of work dispatched to the worker pool.
 type workItem struct {
-	project *project.Project
-	todo    project.Todo
-	sla     slaResult // SLA check result from dispatch time
+	project          *project.Project
+	todo             project.Todo
+	sla              slaResult                // SLA check result from dispatch time
+	remoteAssignment *cluster.TaskAssignment  // non-nil if this is a remote task from leader
 }
 
 type Daemon struct {
@@ -320,6 +321,82 @@ func (d *Daemon) Run() {
 			} else {
 				d.clusterNode = node
 				dlog.Info("cluster: node %s started", node.ID())
+
+				// T13: Worker report callback
+				node.WorkerReportFn = func() cluster.WorkerReport {
+					total := cap(d.workQueue) / 4 // pool size = cap/4
+					busy := len(d.workQueue)
+					return cluster.WorkerReport{
+						TotalWorkers: total,
+						BusyWorkers:  busy,
+						IdleWorkers:  total - busy,
+					}
+				}
+
+				// T14: Task assignment callback (follower receives task from leader)
+				node.OnTaskAssign = func(assignment cluster.TaskAssignment) {
+					dlog.Info("cluster: received task %s from leader", assignment.TaskName)
+					// Create a minimal Todo for local execution
+					todo := project.Todo{
+						Name:    assignment.TaskName,
+						ID:      assignment.TaskID,
+						Content: assignment.Content,
+						Runner:  assignment.Runner,
+						RunnerChain: assignment.RunnerChain,
+						Timeout: assignment.Timeout,
+						Env:     assignment.Env,
+						Priority: assignment.Priority,
+						Labels:  assignment.Labels,
+					}
+					// Load the project if it exists locally, otherwise create a minimal one
+					proj, err := project.Load(assignment.ProjectPath)
+					if err != nil {
+						dlog.Warn("cluster: cannot load project %s: %v", assignment.ProjectPath, err)
+						// Send failure result back
+						if d.clusterNode != nil {
+							for _, addr := range d.clusterNode.PeerAddresses() {
+								d.clusterNode.ReportResult(addr, cluster.TaskResult{
+									AssignmentID: assignment.AssignmentID,
+									TaskName:     assignment.TaskName,
+									TaskID:       assignment.TaskID,
+									NodeID:       node.ID(),
+									ProjectPath:  assignment.ProjectPath,
+									Success:      false,
+									Error:        "cannot load project: " + err.Error(),
+									Started:      time.Now(),
+									Finished:     time.Now(),
+								})
+							}
+						}
+						return
+					}
+					// Enqueue for local execution
+					select {
+					case d.workQueue <- workItem{project: proj, todo: todo, remoteAssignment: &assignment}:
+						dlog.Info("cluster: enqueued task %s for local execution", assignment.TaskName)
+					default:
+						dlog.Warn("cluster: work queue full, rejecting task %s", assignment.TaskName)
+					}
+				}
+
+				// T15: Task result callback (leader receives result from follower)
+				node.OnTaskResult = func(result cluster.TaskResult) {
+					dlog.Info("cluster: received result for %s from %s (success=%v)", result.TaskName, result.NodeID, result.Success)
+					// Write RunRecord on the leader
+					rec := project.RunRecord{
+						RunID:         result.AssignmentID,
+						TaskID:        result.TaskID,
+						Started:       result.Started,
+						Finished:      result.Finished,
+						Success:       result.Success,
+						Error:         result.Error,
+						OutputSummary: result.OutputSummary,
+						NodeID:        result.NodeID,
+					}
+					if err := project.WriteRunRecord(result.ProjectPath, rec); err != nil {
+						dlog.Warn("cluster: failed to write run record: %v", err)
+					}
+				}
 			}
 		}
 	}
@@ -529,7 +606,24 @@ func (d *Daemon) worker(id int) {
 			if d.rateLimitSemaphore != nil {
 				<-d.rateLimitSemaphore
 			}
-			dlog.WorkerIdle(id)
+			// T17: Report result to leader if this was a remote assignment
+		if item.remoteAssignment != nil && d.clusterNode != nil {
+			result := cluster.TaskResult{
+				AssignmentID: item.remoteAssignment.AssignmentID,
+				TaskName:     item.todo.Name,
+				TaskID:       item.todo.ID,
+				NodeID:       d.clusterNode.ID(),
+				ProjectPath:  item.remoteAssignment.ProjectPath,
+				Success:      true, // Will be updated from run record
+				Started:      time.Now(), // Approximate
+				Finished:     time.Now(),
+			}
+			// Send to all peers (leader will process)
+			for _, addr := range d.clusterNode.PeerAddresses() {
+				d.clusterNode.ReportResult(addr, result)
+			}
+		}
+		dlog.WorkerIdle(id)
 		}
 	}
 }
@@ -958,6 +1052,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		SLAViolation:     sla.Violation,
 		SLAMaxDelay:      sla.MaxDelay,
 		RunnerIndex:      usedRunnerIdx,
+	}
+	// T18: Set NodeID for cluster tracking
+	if d.clusterNode != nil {
+		runRecord.NodeID = d.clusterNode.ID()
 	}
 
 	// Resolve which runner command was actually used for the run record
@@ -2528,6 +2626,100 @@ func (d *Daemon) tick(now time.Time) {
 
 		dlog.Dispatch(projName, pt.todo.Name, pt.todo.Priority, pt.todo.Schedule)
 
+		// T16+T19+T20: Check for remote dispatch via cluster
+		if d.clusterNode != nil && d.clusterNode.IsLeader() {
+			assignedRemotely := false
+			peerWorkers := d.clusterNode.PeerWorkers()
+
+			// T19: Check node affinity
+			if pt.todo.NodeAffinity != "" {
+				// Must run on specific node
+				if pt.todo.NodeAffinity == d.clusterNode.ID() {
+					// T20: Affinity matches leader, dispatch locally
+					// Fall through to local dispatch below
+				} else {
+					// Must run on a specific remote node
+					for _, addr := range d.clusterNode.PeerAddresses() {
+						// Try to send to any peer (we track by address, not ID currently)
+						assignment := cluster.TaskAssignment{
+							AssignmentID: fmt.Sprintf("%s-%d", pt.todo.Name, time.Now().UnixNano()),
+							TaskName:     pt.todo.Name,
+							TaskID:       pt.todo.ID,
+							ProjectPath:  pt.proj.Path,
+							Content:      pt.todo.Content,
+							Runner:       pt.todo.Runner,
+							RunnerChain:  pt.todo.RunnerChain,
+							Timeout:      pt.todo.Timeout,
+							Env:          pt.todo.Env,
+							Priority:     pt.todo.Priority,
+							Labels:       pt.todo.Labels,
+							NodeAffinity: pt.todo.NodeAffinity,
+							TargetNodeID: pt.todo.NodeAffinity,
+						}
+						if err := d.clusterNode.AssignTask(addr, assignment); err == nil {
+							assignedRemotely = true
+							break
+						}
+					}
+					if !assignedRemotely {
+						d.pendingTasksMu.Lock()
+						d.pendingTasks[taskKey] = "affinity node unavailable"
+						d.pendingTasksMu.Unlock()
+						d.inFlightMu.Lock()
+						d.inFlight[taskKey]--
+						if d.inFlight[taskKey] <= 0 {
+							delete(d.inFlight, taskKey)
+						}
+						d.inFlightMu.Unlock()
+					}
+					if assignedRemotely {
+						dispatched++
+					}
+					continue
+				}
+			} else {
+				// No affinity: find best node (most idle workers)
+				bestAddr := ""
+				bestIdle := 0
+				for _, addr := range d.clusterNode.PeerAddresses() {
+					// Look up idle count by iterating peerWorkers
+					for nodeID, idle := range peerWorkers {
+						_ = nodeID
+						if idle > bestIdle {
+							bestIdle = idle
+							bestAddr = addr
+						}
+					}
+				}
+
+				// Check local capacity
+				localIdle := cap(d.workQueue)/4 - len(d.workQueue)
+				if bestIdle > localIdle && bestAddr != "" {
+					assignment := cluster.TaskAssignment{
+						AssignmentID: fmt.Sprintf("%s-%d", pt.todo.Name, time.Now().UnixNano()),
+						TaskName:     pt.todo.Name,
+						TaskID:       pt.todo.ID,
+						ProjectPath:  pt.proj.Path,
+						Content:      pt.todo.Content,
+						Runner:       pt.todo.Runner,
+						RunnerChain:  pt.todo.RunnerChain,
+						Timeout:      pt.todo.Timeout,
+						Env:          pt.todo.Env,
+						Priority:     pt.todo.Priority,
+						Labels:       pt.todo.Labels,
+					}
+					if err := d.clusterNode.AssignTask(bestAddr, assignment); err == nil {
+						assignedRemotely = true
+						dispatched++
+					}
+				}
+			}
+			if assignedRemotely {
+				continue
+			}
+		}
+
+		// Local dispatch (original behavior)
 		// Non-blocking send; if queue is full, clear in-flight and warn
 		select {
 		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo, sla: slaCheck}:

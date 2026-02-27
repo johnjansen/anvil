@@ -39,6 +39,8 @@ const (
 	MsgVoteResponse MessageType = "vote_response"
 	MsgHeartbeat    MessageType = "heartbeat"
 	MsgHeartbeatAck MessageType = "heartbeat_ack"
+	MsgTaskAssign   MessageType = "task_assign"
+	MsgTaskResult   MessageType = "task_result"
 )
 
 // Message is the protocol message exchanged between cluster nodes.
@@ -47,7 +49,8 @@ type Message struct {
 	Term    uint64      `json:"term"`
 	FromID  string      `json:"from_id"`
 	ToID    string      `json:"to_id,omitempty"`
-	Granted bool        `json:"granted,omitempty"`
+	Granted bool            `json:"granted,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // ElectionState tracks the election protocol state for a node.
