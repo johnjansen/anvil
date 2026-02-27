@@ -924,6 +924,40 @@ kill -HUP $(cat ~/.anvil/daemon.pid)
 
 The daemon will reload `~/.anvil/config.yaml` and apply changes to `max_workers`, `timeout`, `runners`, and `tick_interval`. Running tasks are not affected unless `--graceful` is used — in that case, the daemon waits for running tasks to complete before reloading.
 
+### Cluster Coordination
+
+Run multiple anvil daemons in a cluster with automatic leader election:
+
+```yaml
+cluster:
+  enabled: true
+  name: "my-cluster"           # cluster name for identification
+  listen: ":9091"              # TCP address for cluster protocol (default: ":9091")
+  peers:                       # static peer list (optional, can use multicast)
+    - "192.168.1.10:9091"
+    - "192.168.1.11:9091"
+  heartbeat_interval: 5s       # leader heartbeat interval (default: 5s)
+  election_timeout: 30s        # follower election timeout (default: 30s)
+  # Or use multicast for automatic peer discovery:
+  multicast_addr: "239.255.0.1:9090"
+  multicast_iface: ""          # network interface (empty = auto)
+```
+
+**How cluster mode works:**
+
+- Only the leader daemon dispatches tasks — followers stay idle but healthy
+- If the leader fails, followers automatically elect a new leader (Raft-inspired)
+- Leader sends heartbeats; followers trigger election if heartbeats stop
+- Majority voting ensures split-brain prevention
+
+**Node identity:** Each node gets a unique ID persisted in `.anvil/node-id` in the project directory.
+
+**Leadership visibility:** Query cluster status via the daemon socket:
+
+```bash
+curl --unix-socket ~/.anvil/daemon.sock http://daemon/cluster/status
+```
+
 ### Rate Limiting
 
 Configure rate limiting for LLM API calls to prevent exceeding provider limits:
