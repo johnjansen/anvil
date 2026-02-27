@@ -29,6 +29,8 @@ type Config struct {
 	QuietHours               QuietHoursConfig  `yaml:"quiet_hours"`                // global quiet hours to restrict non-critical task execution
 	SLA                      SLAGlobalConfig   `yaml:"sla"`                        // global SLA defaults for task delay tracking
 	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
+	HealthPort               int                 `yaml:"health_port"`                 // optional TCP port for health probe endpoints (0 = disabled)
+	Cluster                  ClusterConfig       `yaml:"cluster"`                     // multi-daemon cluster coordination
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
@@ -42,6 +44,17 @@ type NotificationsConfig struct {
 	Command        string `yaml:"command"`          // custom notification command
 	OnSuccess      bool   `yaml:"on_success"`       // notify on task success
 	OnFailure      bool   `yaml:"on_failure"`       // notify on task failure
+}
+
+
+// ClusterConfig defines multi-daemon cluster coordination settings.
+type ClusterConfig struct {
+	Enabled           bool          `yaml:"enabled"`
+	Name              string        `yaml:"name"`
+	Listen            string        `yaml:"listen"`              // TCP address for cluster protocol (default: ":9091")
+	Peers             []string      `yaml:"peers"`              // static peer list
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"` // leader heartbeat interval (default: 5s)
+	ElectionTimeout   time.Duration `yaml:"election_timeout"`   // follower election timeout (default: 30s)
 }
 
 // QuietHoursConfig defines a global time window during which only high-priority tasks may run.

@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/johnjansen/anvil/internal/cluster"
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
@@ -142,7 +143,8 @@ type Daemon struct {
 	// task during this daemon lifetime. Resets on daemon restart.
 	costBudgetUsed   map[string]float64
 	costBudgetUsedMu sync.Mutex
-	webhooks *webhook.Sender
+	webhooks    *webhook.Sender
+	clusterNode *cluster.Node // nil when cluster mode disabled
 	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
 	rateLimitSemaphore chan struct{}
 	// Metrics counters for Prometheus endpoint
@@ -235,6 +237,7 @@ func New(cfg *config.Config) *Daemon {
 	}
 }
 
+
 func (d *Daemon) Run() {
 	defer close(d.done)
 
@@ -297,6 +300,29 @@ func (d *Daemon) Run() {
 
 	// Start socket server
 	go d.startSocketServer()
+
+	// Start cluster node if enabled
+	if d.config.Cluster.Enabled {
+		node, err := cluster.NewNode(config.Dir(), cluster.Config{
+			Listen:            d.config.Cluster.Listen,
+			Peers:             d.config.Cluster.Peers,
+			HeartbeatInterval: d.config.Cluster.HeartbeatInterval,
+			ElectionTimeout:   d.config.Cluster.ElectionTimeout,
+		})
+		if err != nil {
+			dlog.Warn("cluster: failed to create node: %v", err)
+		} else {
+			node.Logf = func(format string, args ...any) {
+				dlog.Info(format, args...)
+			}
+			if err := node.Start(); err != nil {
+				dlog.Warn("cluster: failed to start: %v", err)
+			} else {
+				d.clusterNode = node
+				dlog.Info("cluster: node %s started", node.ID())
+			}
+		}
+	}
 
 	// Start SIGHUP handler for config reload
 	sighupChan := make(chan os.Signal, 1)
@@ -403,6 +429,9 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	dlog.Stopping()
 	if d.httpServer != nil {
 		d.httpServer.Shutdown(context.Background())
+	}
+	if d.clusterNode != nil {
+		d.clusterNode.Stop()
 	}
 	close(d.workQueue)
 	workerWg.Wait()
@@ -2087,6 +2116,11 @@ func (d *Daemon) tick(now time.Time) {
 	d.pendingTasksMu.Lock()
 	d.pendingTasks = make(map[string]string)
 	d.pendingTasksMu.Unlock()
+
+	// T20: Skip scheduling if cluster enabled and not leader
+	if d.clusterNode != nil && !d.clusterNode.IsLeader() {
+		return
+	}
 
 	// Collect all due todos across all projects for global priority ordering
 	type projectTodo struct {
