@@ -31,11 +31,18 @@ type Config struct {
 	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
 	HealthPort               int                 `yaml:"health_port"`                 // optional TCP port for health probe endpoints (0 = disabled)
 	Cluster                  ClusterConfig       `yaml:"cluster"`                     // multi-daemon cluster coordination
+	Alerts                  AlertGlobalConfig  `yaml:"alerts"`                      // global alert settings
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
 type SLAGlobalConfig struct {
 	DefaultMaxDelay string `yaml:"default_max_delay"` // default max_delay for tasks without per-task SLA (e.g., "30m")
+}
+
+// AlertGlobalConfig defines global alert settings.
+type AlertGlobalConfig struct {
+	Enabled          bool   `yaml:"enabled"`           // whether alerts are globally enabled
+	DefaultWebhook   string `yaml:"default_webhook"`   // default webhook URL for all alerts
 }
 
 // NotificationsConfig defines desktop notification settings.
