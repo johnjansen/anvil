@@ -508,14 +508,19 @@ func (d *Daemon) Done() <-chan struct{} {
 
 // startAMQPSubscriptions starts AMQP subscriptions for all tasks with AMQP subscriptions
 func (d *Daemon) startAMQPSubscriptions(projects []*project.Project) {
+	dlog.Info("Starting AMQP subscriptions for %d projects", len(projects))
 	for _, proj := range projects {
+		dlog.Info("Loading todos for project: %s", proj.Path)
 		todos, err := proj.LoadTodos()
 		if err != nil {
+			dlog.Warn("Failed to load todos for project %s: %v", proj.Path, err)
 			continue
 		}
+		dlog.Info("Loaded %d todos for project: %s", len(todos), proj.Path)
 
 		for _, todo := range todos {
 			if todo.Subscription != nil && todo.Subscription.Type == "amqp" {
+				dlog.Info("Starting AMQP subscription for task: %s", todo.Name)
 				if err := d.amqpConsumer.StartSubscription(proj, todo); err != nil {
 					dlog.Warn("Failed to start AMQP subscription for task %s: %v", todo.Name, err)
 				}

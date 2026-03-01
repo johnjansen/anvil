@@ -68,20 +68,26 @@ func (ac *AMQPConsumer) StartSubscription(proj *project.Project, task project.To
 	}
 
 	// Connect to AMQP
+	log.Printf("Attempting to connect to AMQP at %s for task %s", task.Subscription.URL, task.Name)
 	conn, err := amqp.Dial(task.Subscription.URL)
 	if err != nil {
+		log.Printf("Failed to connect to AMQP for task %s: %v", task.Name, err)
 		cancel()
 		return fmt.Errorf("failed to connect to AMQP: %w", err)
 	}
+	log.Printf("Successfully connected to AMQP for task %s", task.Name)
 	c.conn = conn
 
 	// Create channel
+	log.Printf("Creating AMQP channel for task %s", task.Name)
 	ch, err := conn.Channel()
 	if err != nil {
+		log.Printf("Failed to create AMQP channel for task %s: %v", task.Name, err)
 		conn.Close()
 		cancel()
 		return fmt.Errorf("failed to create AMQP channel: %w", err)
 	}
+	log.Printf("Successfully created AMQP channel for task %s", task.Name)
 	c.ch = ch
 
 	// Set prefetch count (default to 1)
@@ -97,6 +103,7 @@ func (ac *AMQPConsumer) StartSubscription(proj *project.Project, task project.To
 	}
 
 	// Declare queue
+	log.Printf("Declaring AMQP queue %s for task %s", task.Subscription.Queue, task.Name)
 	q, err := ch.QueueDeclare(
 		task.Subscription.Queue, // name
 		true,                    // durable
@@ -106,13 +113,16 @@ func (ac *AMQPConsumer) StartSubscription(proj *project.Project, task project.To
 		nil,                     // arguments
 	)
 	if err != nil {
+		log.Printf("Failed to declare AMQP queue %s for task %s: %v", task.Subscription.Queue, task.Name, err)
 		ch.Close()
 		conn.Close()
 		cancel()
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
+	log.Printf("Successfully declared AMQP queue %s for task %s", task.Subscription.Queue, task.Name)
 
 	// Start consuming messages
+	log.Printf("Starting to consume messages from AMQP queue %s for task %s", task.Subscription.Queue, task.Name)
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
@@ -123,11 +133,13 @@ func (ac *AMQPConsumer) StartSubscription(proj *project.Project, task project.To
 		nil,    // args
 	)
 	if err != nil {
+		log.Printf("Failed to start consuming messages from AMQP queue %s for task %s: %v", task.Subscription.Queue, task.Name, err)
 		ch.Close()
 		conn.Close()
 		cancel()
 		return fmt.Errorf("failed to start consuming: %w", err)
 	}
+	log.Printf("Successfully started consuming messages from AMQP queue %s for task %s", task.Subscription.Queue, task.Name)
 
 	// Store consumer
 	ac.consumers[task.ID] = c
