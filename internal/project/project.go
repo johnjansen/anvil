@@ -728,6 +728,97 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 	return fmt.Sprintf("p%d/%s", priority, filename), nil
 }
 
+// AddTodoWithID creates a new task and returns both the relative path and the task ID.
+// This is useful for commands that need to track the task after creation.
+func (p *Project) AddTodoWithID(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string, dependsOn []string) (string, string, error) {
+	if priority < 0 || priority > 9 {
+		return "", "", fmt.Errorf("priority must be 0-9, got %d", priority)
+	}
+	if strings.TrimSpace(content) == "" {
+		return "", "", fmt.Errorf("task content must not be empty")
+	}
+
+	// Validate cron expression before writing the task file.
+	// Skip validation for "persistent" since it's a special keyword, not a cron expression.
+	if schedule != "" && schedule != "persistent" {
+		if _, err := cron.Parse(schedule); err != nil {
+			return "", "", fmt.Errorf("invalid schedule %q: %w", schedule, err)
+		}
+	}
+
+	dir := filepath.Join(p.Path, ".anvil", "todos", fmt.Sprintf("p%d", priority))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", "", fmt.Errorf("creating todos/p%d: %w", priority, err)
+	}
+
+	base := slugify(content)
+	filename := base + ".md"
+	// Avoid silent overwrites on slug collision: append -2, -3, ... if file exists.
+	fullCheck := filepath.Join(dir, filename)
+	if _, err := os.Stat(fullCheck); err == nil {
+		for i := 2; ; i++ {
+			candidate := fmt.Sprintf("%s-%d.md", base, i)
+			if _, err := os.Stat(filepath.Join(dir, candidate)); os.IsNotExist(err) {
+				filename = candidate
+				break
+			}
+		}
+	}
+	id := newUUID()
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("id: %q\n", id))
+	sb.WriteString(fmt.Sprintf("schedule: %q\n", schedule))
+	// One-shot tasks: empty schedule means run once and delete after completion
+	// Set resume: false explicitly for one-shot tasks
+	if schedule == "" {
+		sb.WriteString("resume: false\n")
+	}
+	if preCheck != "" {
+		sb.WriteString(fmt.Sprintf("pre_check: %q\n", preCheck))
+	}
+	if allowedTools != "" {
+		sb.WriteString(fmt.Sprintf("allowed_tools: %q\n", allowedTools))
+	}
+	if maxConcurrent != 0 {
+		sb.WriteString(fmt.Sprintf("max_concurrent: %d\n", maxConcurrent))
+	}
+	if skipPermissions {
+		sb.WriteString("skip_permissions: true\n")
+	}
+	if runnerCmd != "" {
+		sb.WriteString(fmt.Sprintf("runner: %q\n", runnerCmd))
+	}
+	if len(dependsOn) > 0 {
+		sb.WriteString("depends_on:\n")
+		for _, dep := range dependsOn {
+			sb.WriteString(fmt.Sprintf("  - %q\n", dep))
+		}
+	}
+	sb.WriteString("---\n")
+	sb.WriteString(content)
+	if !strings.HasSuffix(content, "\n") {
+		sb.WriteString("\n")
+	}
+
+	fullPath := filepath.Join(dir, filename)
+	if err := os.WriteFile(fullPath, []byte(sb.String()), 0644); err != nil {
+		return "", "", fmt.Errorf("writing todo file: %w", err)
+	}
+
+	// Log task creation activity
+	WriteActivity(p.Path, ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "created",
+		TaskID:    id,
+		TaskName:  strings.TrimSuffix(filename, ".md"),
+		Details:   map[string]string{"priority": fmt.Sprintf("%d", priority), "schedule": schedule},
+	})
+
+	return fmt.Sprintf("p%d/%s", priority, filename), id, nil
+}
+
 // newUUID generates a random UUID v4.
 func newUUID() string {
 	var b [16]byte

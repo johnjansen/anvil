@@ -74,6 +74,8 @@ func main() {
 		registerCmd(os.Args[2:])
 	case "add":
 		addCmd(os.Args[2:])
+	case "dispatch":
+		dispatchCmd(os.Args[2:])
 	case "list":
 		fmt.Fprintln(os.Stderr, "'anvil list' has been removed. Did you mean 'anvil task ls'?")
 		os.Exit(1)
@@ -134,6 +136,7 @@ Commands:
   watch --status           Show system service status
   watch --stop [--graceful] Stop the daemon (--graceful waits for tasks, --force kills)
   add [options] <task>     Add a task to the current project
+  dispatch [options] <task>  Add a one-shot task and wait for completion, returning the result
   logs [<name>]            Raw worker output (all tasks if no name given)
   ps [--json] [-w|--watch] Show running tasks (--watch for live dashboard)
   status [--json]          Show watched projects and daemon status
@@ -2240,6 +2243,290 @@ func taskCreateCmd(args []string) {
 	// Warn if daemon is not running (only for scheduled tasks)
 	if schedule != "" && !daemon.IsDaemonRunning() {
 		fmt.Fprintf(os.Stderr, "⚠ Daemon is not running. Run 'anvil watch' to start executing tasks.\n")
+	}
+}
+
+func dispatchCmd(args []string) {
+	// Handle -h/--help before creating task
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			fmt.Fprintf(os.Stderr, `usage: anvil dispatch [-p priority] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [--timeout DURATION] [--json] [--quiet] [--no-wait] [-f file | -] <task text>
+
+Add a one-shot task and wait for completion, returning the result.
+
+Options:
+  -p, --priority n           Priority 0-9 (default: 1)
+  -o, --once                 Create a one-shot task (default for dispatch)
+  --pre-check cmd            Command to run before task execution
+  --allowed-tools tools      Comma-separated list of allowed tools (e.g. "Bash,Read" or scoped "Bash(gh:*)", "Read(.claude/commands/*)")
+  --max-concurrent n         Max concurrent runs (default: 1)
+  --skip-permissions         Skip permission checks
+  --timeout DURATION         Max wait time before exit code 2 (default: 30m)
+  --json                     Output full RunRecord JSON instead of just summary
+  --quiet                    Suppress progress/status on stderr
+  --no-wait                  Just add the task and print the UUID (for async use)
+  --depends-on dep           Task dependency (repeatable; use project:task for cross-project)
+  -f, --file path            Read task content from a file
+  -                          Read task content from stdin
+
+Examples:
+  anvil dispatch --skip-permissions "Review PR #42"
+  anvil dispatch --timeout 10m --skip-permissions "Run the test suite"
+  anvil dispatch --no-wait --skip-permissions "Long running analysis"
+  anvil dispatch --json --skip-permissions "Analyze codebase" | jq '.output_summary'
+  anvil dispatch --skip-permissions -f complex-prompt.md
+  echo "prompt" | anvil dispatch --skip-permissions -
+`)
+			os.Exit(0)
+		}
+	}
+
+	// Parse command line arguments
+	priority := 1
+	preCheck := ""
+	allowedTools := ""
+	maxConcurrent := 1
+	skipPermissions := false
+	filePath := ""
+	readStdin := false
+	timeoutDur := 30 * time.Minute
+	jsonOutput := false
+	quiet := false
+	noWait := false
+	var dependsOn []string
+
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-p", "--priority":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -p/--priority")
+			}
+			i++
+			n := 0
+			for _, c := range args[i] {
+				if c < '0' || c > '9' {
+					log.Fatalf("invalid priority: %s (must be 0-9)", args[i])
+				}
+				n = n*10 + int(c-'0')
+			}
+			if n > 9 {
+				log.Fatalf("priority must be 0-9, got %d", n)
+			}
+			priority = n
+		case "--pre-check":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --pre-check")
+			}
+			i++
+			preCheck = args[i]
+		case "--allowed-tools":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --allowed-tools")
+			}
+			i++
+			allowedTools = args[i]
+		case "--max-concurrent":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --max-concurrent")
+			}
+			i++
+			n := 0
+			for _, c := range args[i] {
+				if c < '0' || c > '9' {
+					log.Fatalf("invalid max-concurrent: %s (must be a number)", args[i])
+				}
+				n = n*10 + int(c-'0')
+			}
+			maxConcurrent = n
+		case "--skip-permissions":
+			skipPermissions = true
+		case "--timeout":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --timeout")
+			}
+			i++
+			var err error
+			timeoutDur, err = time.ParseDuration(args[i])
+			if err != nil {
+				log.Fatalf("invalid timeout duration: %v", err)
+			}
+		case "--json":
+			jsonOutput = true
+		case "--quiet":
+			quiet = true
+		case "--no-wait":
+			noWait = true
+		case "--depends-on":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for --depends-on")
+			}
+			i++
+			dependsOn = append(dependsOn, args[i])
+		case "-f", "--file":
+			if i+1 >= len(args) {
+				log.Fatal("missing value for -f/--file")
+			}
+			i++
+			filePath = args[i]
+		case "-":
+			readStdin = true
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+
+	var taskText string
+
+	switch {
+	case filePath != "":
+		// Read task content from file.
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Fatalf("reading file %s: %v", filePath, err)
+		}
+		taskText = string(data)
+	case readStdin:
+		// Read task content from stdin.
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatalf("reading stdin: %v", err)
+		}
+		taskText = string(data)
+	default:
+		if len(rest) == 0 {
+			log.Fatal("usage: anvil dispatch [-p priority] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [--timeout DURATION] [--json] [--quiet] [--no-wait] [-f file | -] <task text>")
+		}
+		taskText = strings.Join(rest, " ")
+	}
+
+	// If file/stdin content has positional args too, that's an error.
+	if (filePath != "" || readStdin) && len(rest) > 0 {
+		log.Fatal("cannot combine file/stdin input with positional task text")
+	}
+
+	if strings.TrimSpace(taskText) == "" {
+		log.Fatal("task content must not be empty")
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(abs, ".anvil", "todos")); os.IsNotExist(err) {
+		if _, err := project.Init(abs, tools.FS, false); err != nil {
+			log.Fatalf("failed to init project: %v", err)
+		}
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	// Create the one-shot task using AddTodoWithID to get both path and ID
+	relPath, taskID, err := proj.AddTodoWithID(priority, "", taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "", dependsOn)
+	if err != nil {
+		log.Fatalf("failed to add todo: %v", err)
+	}
+
+	// Print the task ID to stderr immediately
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "added task %s with ID %s\n", relPath, taskID)
+	}
+
+	// If --no-wait is specified, just print the task ID and exit
+	if noWait {
+		fmt.Println(taskID)
+		return
+	}
+
+	// Wait for the task to complete
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "waiting for task completion...\n")
+	}
+
+	// Set up timeout if specified
+	var deadline <-chan time.Time
+	if timeoutDur > 0 {
+		deadline = time.After(timeoutDur)
+	}
+
+	// Poll until the task is no longer running or timeout occurs
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline:
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "timed out after %s\n", timeoutDur)
+			}
+			os.Exit(2)
+		case <-ticker.C:
+			// Check if the task is still running
+			tasks, err := daemon.SendPsRequest()
+			if err != nil {
+				// Daemon may have gone away — treat as task completed
+				if !quiet {
+					fmt.Fprintf(os.Stderr, "daemon unreachable, assuming task completed\n")
+				}
+				// Try to get the result anyway
+				exitCode := checkTaskResult(relPath)
+				if exitCode == 0 {
+					if !quiet {
+						fmt.Fprintf(os.Stderr, "task completed successfully\n")
+					}
+				} else {
+					if !quiet {
+						fmt.Fprintf(os.Stderr, "task failed\n")
+					}
+				}
+				os.Exit(exitCode)
+			}
+
+			// Check if our task is still running
+			stillRunning := false
+			for _, t := range tasks {
+				if t.Name == filepath.Base(relPath) {
+					stillRunning = true
+					break
+				}
+			}
+
+			if !stillRunning {
+				// Task is no longer running — check last run record for exit status and output
+				rec, err := project.ReadCurrentRunRecord(abs, taskID)
+				if err != nil {
+					// No record found — assume success
+					if jsonOutput {
+						fmt.Printf("{\"success\":true,\"output_summary\":\"Task completed successfully but no detailed record available\"}\n")
+					} else {
+						fmt.Println("Task completed successfully but no detailed record available")
+					}
+					os.Exit(0)
+				}
+
+				if jsonOutput {
+					// Output the full RunRecord as JSON
+					jsonData, err := json.Marshal(rec)
+					if err != nil {
+						log.Fatalf("failed to marshal run record: %v", err)
+					}
+					fmt.Println(string(jsonData))
+				} else {
+					// Output just the summary
+					fmt.Println(rec.OutputSummary)
+				}
+
+				if rec.Success {
+					os.Exit(0)
+				} else {
+					os.Exit(1)
+				}
+			}
+		}
 	}
 }
 
