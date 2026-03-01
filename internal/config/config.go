@@ -190,11 +190,18 @@ func DaemonLogPath() string {
 	return filepath.Join(Dir(), "daemon.log")
 }
 
+func CircuitsDir() string {
+	return filepath.Join(Dir(), "circuits")
+}
+
 func EnsureDir() error {
 	if err := os.MkdirAll(Dir(), 0755); err != nil {
 		return err
 	}
-	return os.MkdirAll(WatchedDir(), 0755)
+	if err := os.MkdirAll(WatchedDir(), 0755); err != nil {
+		return err
+	}
+	return os.MkdirAll(CircuitsDir(), 0755)
 }
 
 // EnsureConfig creates ~/.anvil/config.yaml with sensible defaults if it does not exist.

@@ -1911,6 +1911,8 @@ func taskCmd(args []string) {
 		taskSlaCmd(args[1:])
 	case "alerts":
 		taskAlertsCmd(args[1:])
+	case "circuit":
+		taskCircuitCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -3087,6 +3089,156 @@ func taskAlertsCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "unknown alerts subcommand: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Usage: anvil task alerts [list|history|ack <id>]\n")
 		os.Exit(1)
+	}
+}
+
+func taskCircuitCmd(args []string) {
+	// Parse flags first
+	reset := false
+	open := false
+	close := false
+	taskName := ""
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--reset" {
+			reset = true
+		} else if a == "--open" {
+			open = true
+		} else if a == "--close" {
+			close = true
+		} else if !strings.HasPrefix(a, "-") {
+			taskName = a
+		}
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	circuitStorage := daemon.NewCircuitStorage(filepath.Join(abs, ".anvil", "circuits"))
+
+	// Handle manual operations
+	if reset || open || close {
+		if taskName == "" {
+			fmt.Fprintf(os.Stderr, "error: task name required for --reset, --open, --close\n")
+			os.Exit(1)
+		}
+
+		// Find the task
+		found := false
+		for _, t := range todos {
+			if t.Name == taskName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.Fatalf("task not found: %s", taskName)
+		}
+
+		if reset {
+			if err := circuitStorage.DeleteCircuit(taskName); err != nil {
+				log.Fatalf("failed to reset circuit: %v", err)
+			}
+			fmt.Printf("Circuit reset for %s\n", taskName)
+		} else if open {
+			record := &daemon.CircuitBreakerRecord{
+				TaskID:       taskName,
+				State:        daemon.CircuitStateOpen,
+				FailureCount: 999,
+			}
+			now := time.Now()
+			record.OpenedAt = &now
+			if err := circuitStorage.SaveCircuit(taskName, record); err != nil {
+				log.Fatalf("failed to open circuit: %v", err)
+			}
+			fmt.Printf("Circuit opened for %s\n", taskName)
+		} else if close {
+			record := &daemon.CircuitBreakerRecord{
+				TaskID:       taskName,
+				State:        daemon.CircuitStateClosed,
+				FailureCount: 0,
+			}
+			if err := circuitStorage.SaveCircuit(taskName, record); err != nil {
+				log.Fatalf("failed to close circuit: %v", err)
+			}
+			fmt.Printf("Circuit closed for %s\n", taskName)
+		}
+		return
+	}
+
+	type circuitEntry struct {
+		Name         string `json:"name"`
+		State        string `json:"state"`
+		Failures     int    `json:"failures"`
+		LastFailure  string `json:"last_failure,omitempty"`
+		NextRetry    string `json:"next_retry,omitempty"`
+	}
+
+	var entries []circuitEntry
+
+	for _, t := range todos {
+		// Check if task has circuit breaker configured
+		if t.CircuitBreaker.Failures <= 0 && t.CircuitBreaker.Timeout <= 0 {
+			continue
+		}
+
+		record, err := circuitStorage.GetCircuit(t.Name)
+		if err != nil {
+			continue
+		}
+
+		entry := circuitEntry{
+			Name:     t.Name,
+			Failures: record.FailureCount,
+		}
+
+		if record != nil {
+			entry.State = string(record.State)
+			if record.LastFailure != nil {
+				entry.LastFailure = record.LastFailure.Format("2006-01-02 15:04")
+			}
+			if record.State == daemon.CircuitStateOpen && record.OpenedAt != nil {
+				nextRetry := record.OpenedAt.Add(t.CircuitBreaker.Timeout)
+				entry.NextRetry = nextRetry.Format("2006-01-02 15:04")
+			}
+		} else {
+			entry.State = "closed"
+		}
+
+		entries = append(entries, entry)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No tasks with circuit breaker configured")
+		return
+	}
+
+	// Print table
+	fmt.Printf("%-20s %-10s %-8s %-20s %-20s\n", "TASK", "STATE", "FAILURES", "LAST_FAILURE", "NEXT_RETRY")
+	fmt.Println(strings.Repeat("-", 88))
+	for _, e := range entries {
+		lastFailure := "-"
+		if e.LastFailure != "" {
+			lastFailure = e.LastFailure
+		}
+		nextRetry := "-"
+		if e.NextRetry != "" {
+			nextRetry = e.NextRetry
+		}
+		fmt.Printf("%-20s %-10s %-8d %-20s %-20s\n", e.Name, e.State, e.Failures, lastFailure, nextRetry)
 	}
 }
 

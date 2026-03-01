@@ -120,6 +120,13 @@ type AlertConfig struct {
 	Rules []AlertRule `yaml:"rules"` // list of alert rules for this task
 }
 
+// CircuitBreakerConfig defines per-task circuit breaker configuration.
+type CircuitBreakerConfig struct {
+	Failures     int           `yaml:"failures"`      // number of consecutive failures before opening circuit
+	Timeout      time.Duration `yaml:"timeout"`       // time to wait before attempting recovery
+	HalfOpenMax  int           `yaml:"half_open_max"` // max test requests in half-open state
+}
+
 // TaskStateConfig defines per-task state management configuration.
 type TaskStateConfig struct {
 	Bucket string `yaml:"bucket"` // state bucket name
@@ -165,6 +172,9 @@ type Todo struct {
 	SLA                  SLAConfig     // per-task SLA tracking configuration
 	OnSLAViolation       string        // shell command to run when SLA is violated
 	Alerts               AlertConfig   // per-task alert configuration
+	CircuitBreaker       CircuitBreakerConfig // per-task circuit breaker configuration
+	OnCircuitOpen        string        // shell command to run when circuit opens
+	OnCircuitClose       string        // shell command to run when circuit closes
 	State                *TaskStateConfig // optional task state management config
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)

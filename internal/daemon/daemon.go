@@ -1273,6 +1273,18 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
+	// Update circuit breaker state based on run result
+	circuitStorage := NewCircuitStorage(filepath.Join(proj.Path, ".anvil", "circuits"))
+	if runRecord.Success {
+		if err := recordSuccess(t, circuitStorage, time.Now()); err != nil {
+			dlog.Warn("failed to record circuit breaker success for %s: %v", t.Name, err)
+		}
+	} else {
+		if err := recordFailure(t, circuitStorage, time.Now()); err != nil {
+			dlog.Warn("failed to record circuit breaker failure for %s: %v", t.Name, err)
+		}
+	}
+
 	// Log run activity
 	runDetails := map[string]string{
 		"run_id":    runID,
@@ -2663,6 +2675,23 @@ func (d *Daemon) tick(now time.Time) {
 				d.inFlightMu.Unlock()
 				continue
 			}
+		}
+
+		// Check circuit breaker: skip if circuit is open
+		circuitStorage := NewCircuitStorage(filepath.Join(pt.proj.Path, ".anvil", "circuits"))
+		circuitCheck := checkCircuit(pt.todo, circuitStorage, now)
+		if !circuitCheck.ShouldRun {
+			dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, circuitCheck.Message)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = circuitCheck.Message
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
 		}
 
 		// Starvation prevention: if a persistent task has been waiting too long,
