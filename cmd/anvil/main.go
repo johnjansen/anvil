@@ -191,6 +191,8 @@ Task subcommands:
   state <name>              View, export, import, or clear task state
   dry-run <name> [options]   Validate and preview task config without executing
   activity <name> [options]  Show task activity history (--type, --since, --limit, --export, --json)
+  snapshot <name> [--run <id>] [--file <filename>]  View task execution snapshots for debugging
+  snapshot-diff <name> --run1 <id1> --run2 <id2>  Compare two task execution snapshots
   sla [--verbose] [--reset] [--json]  Show SLA violations (--verbose for all, --reset to clear)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
