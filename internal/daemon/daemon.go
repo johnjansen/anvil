@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/johnjansen/anvil/internal/cache"
 	"github.com/johnjansen/anvil/internal/cluster"
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
@@ -896,6 +897,31 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	var stateBucket string
 	var stateKey string
 
+	// Check cache before running task
+	if cache.IsCacheEnabled(t) {
+		cacheKey, err := cache.CalculateCacheKey(t, proj.Path)
+		if err == nil {
+			cacheEntry, err := cache.GetCache(proj.Path, cacheKey)
+			if err == nil && cacheEntry != nil {
+				// Cache hit - use cached output instead of running the task
+				taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+				dlog.Info("cache HIT for %s (expires in %v)", taskLabel, time.Until(cacheEntry.ExpiresAt).Round(time.Second))
+
+				// Set the cached output as if it came from the runner
+				stderrOutput = cacheEntry.Content
+				usedSessionID = "cached-" + cacheKey[:8]
+				logPath = ""
+				usedRunnerIdx = -1
+				err = nil
+
+				// Skip the retry loop since we have cached output
+				goto skipExecution
+			} else {
+				dlog.Info("cache MISS for %s", filepath.Base(proj.Path)+"/"+t.Name)
+			}
+		}
+	}
+
 	for attempt := 0; ; attempt++ {
 		finalAttempt = attempt
 		// Check if context is already cancelled before attempting
@@ -1013,6 +1039,8 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
+skipExecution:
+
 	// For one-shot tasks with retry: write lock file on final failure
 	// (after all retries exhausted)
 	if t.Schedule == "" && t.Retry > 0 && err != nil && finalFailureLockPath != "" {
@@ -1035,6 +1063,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 
 	// Parse token usage from runner stderr
 	tokenUsage := runner.ParseTokenUsage(stderrOutput)
+
+	// Cache the output if caching is enabled and the task succeeded
+	if cache.IsCacheEnabled(t) && err == nil {
+		cacheKey, calcErr := cache.CalculateCacheKey(t, proj.Path)
+		if calcErr == nil {
+			ttl, ttlErr := cache.GetCacheTTL(t)
+			if ttlErr == nil {
+				cacheErr := cache.PutCache(proj.Path, cacheKey, stderrOutput, ttl)
+				if cacheErr != nil {
+					dlog.Warn("failed to cache output for %s: %v", filepath.Base(proj.Path)+"/"+t.Name, cacheErr)
+				} else {
+					dlog.Info("cached output for %s (TTL: %v)", filepath.Base(proj.Path)+"/"+t.Name, ttl)
+				}
+			}
+		}
+	}
 
 	// Calculate estimated cost using configured or default rates
 	inputRate := d.config.InputTokenRate

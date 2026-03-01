@@ -134,6 +134,13 @@ type TaskStateConfig struct {
 	Key    string `yaml:"key"`    // state key (supports {{ .TaskID }} template)
 }
 
+// CacheConfig defines per-task output caching configuration.
+type CacheConfig struct {
+	Enabled bool   `yaml:"enabled"` // whether caching is enabled for this task
+	Key     string `yaml:"key"`     // cache key template (supports {{ .GitSHA }}, {{ .FileHash:pattern }}, {{ .Environment:name }})
+	TTL     string `yaml:"ttl"`     // cache time-to-live (e.g., "1h", "30m", "24h")
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -182,6 +189,7 @@ type Todo struct {
 	NodeAffinity         string        // cluster node ID for affinity-based execution (empty = any node)
 	OnRollback           string        // shell command to run before rollback (supports {{ .RunID }}, {{ .TaskName }} templates)
 	HealthCheck          string        // optional shell command; task is healthy if it exits with code 0
+	Cache                *CacheConfig  // optional cache configuration
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -310,6 +318,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var slaConfig SLAConfig
 			onSLAViolation := ""
 			onRollback := ""
+			var cacheConfig *CacheConfig
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -358,6 +367,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
+						Cache                *CacheConfig      `yaml:"cache"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
@@ -419,6 +429,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						onSLAViolation = fmData.OnSLAViolation
 						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
+						cacheConfig = fmData.Cache
 					}
 				}
 			}
@@ -469,6 +480,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
 				OnRollback:           onRollback,
+				Cache:                cacheConfig,
 			})
 		}
 	}
