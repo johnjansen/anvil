@@ -1935,6 +1935,8 @@ func taskCmd(args []string) {
 		taskDryRunCmd(args[1:])
 	case "activity":
 		taskActivityCmd(args[1:])
+	case "snapshot":
+		taskSnapshotCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")

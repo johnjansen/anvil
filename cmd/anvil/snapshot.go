@@ -8,76 +8,100 @@ import (
 	"strings"
 
 	"github.com/johnjansen/anvil/internal/project"
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
-// taskSnapshotCmd represents the snapshot command
-var taskSnapshotCmd = &cobra.Command{
-	Use:   "snapshot [task-name]",
-	Short: "View task execution snapshots for debugging",
-	Long: `View task execution snapshots to debug failed runs.
+// taskSnapshotCmd implements the 'anvil task snapshot' command
+func taskSnapshotCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task snapshot <task-name> [--run <id>] [--file <filename>]\n")
+		os.Exit(1)
+	}
 
-Snapshots capture the complete execution context including:
-- Task configuration (frontmatter)
-- Resolved environment variables
-- Expanded prompt
-- Directory listing at start
-- Run metadata
-
-Examples:
-  anvil task snapshot my-task          # View latest snapshot
-  anvil task snapshot my-task --run abc123  # View specific run
-  anvil task snapshot my-task --file prompt.txt  # View specific file`,
-	Args: cobra.ExactArgs(1),
-	RunE: taskSnapshotRun,
-}
-
-func init() {
-	taskSnapshotCmd.Flags().String("run", "", "View snapshot for specific run ID")
-	taskSnapshotCmd.Flags().String("file", "", "View specific file from snapshot")
-	taskCmd.AddCommand(taskSnapshotCmd)
-}
-
-func taskSnapshotRun(cmd *cobra.Command, args []string) error {
 	taskName := args[0]
-	runID, _ := cmd.Flags().GetString("run")
-	fileName, _ := cmd.Flags().GetString("file")
+	var runID, fileName string
+
+	// Parse flags
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--run":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "error: --run requires a run ID\n")
+				os.Exit(1)
+			}
+			i++
+			runID = args[i]
+		case "--file":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "error: --file requires a filename\n")
+				os.Exit(1)
+			}
+			i++
+			fileName = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
 
 	// Find the project root
-	proj, err := project.LoadFromCwd()
+	proj, err := project.Load(".")
 	if err != nil {
-		return fmt.Errorf("failed to load project: %w", err)
+		fmt.Fprintf(os.Stderr, "failed to load project: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Find the task by name to get its ID
-	todo, err := proj.LoadTodoByName(taskName)
+	todos, err := proj.LoadTodos()
 	if err != nil {
-		return fmt.Errorf("task not found: %s", taskName)
+		fmt.Fprintf(os.Stderr, "failed to load tasks: %v\n", err)
+		os.Exit(1)
 	}
 
-	taskID := todo.ID
+	var taskID string
+	for _, todo := range todos {
+		if todo.Name == taskName {
+			taskID = todo.ID
+			break
+		}
+	}
+
+	if taskID == "" {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", taskName)
+		os.Exit(1)
+	}
 
 	// If no run ID specified, find the latest run
 	if runID == "" {
-		runs, err := project.ListRuns(proj.Path, taskID)
+		runs, err := project.ReadAllRunRecords(proj.Path, taskID)
 		if err != nil {
-			return fmt.Errorf("failed to list runs: %w", err)
+			fmt.Fprintf(os.Stderr, "failed to list runs: %v\n", err)
+			os.Exit(1)
 		}
 		if len(runs) == 0 {
-			return fmt.Errorf("no runs found for task %s", taskName)
+			fmt.Fprintf(os.Stderr, "no runs found for task %s\n", taskName)
+			os.Exit(1)
 		}
-		// Sort runs by timestamp and get the latest
-		runID = runs[len(runs)-1].RunID
+		// Sort runs by timestamp and get the latest (they're already sorted newest first)
+		runID = runs[0].RunID
 	}
 
 	// If specific file requested, just show that file
 	if fileName != "" {
-		return showSnapshotFile(proj.Path, taskID, runID, fileName)
+		err := showSnapshotFile(proj.Path, taskID, runID, fileName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Show the full snapshot
-	return showFullSnapshot(proj.Path, taskID, runID)
+	err = showFullSnapshot(proj.Path, taskID, runID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func showSnapshotFile(projectPath, taskID, runID, fileName string) error {
