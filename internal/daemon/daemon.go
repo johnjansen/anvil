@@ -1013,22 +1013,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
-	// Create snapshot of the execution context
-	// This captures the context after the task has run but before post-processing
-	snapshotErr := project.WriteSnapshot(
-		proj.Path,
-		t.ID,
-		runID,
-		t,                    // task config (frontmatter)
-		mergedEnv,            // resolved environment variables
-		t.Content,            // expanded prompt
-		proj.Path,            // working directory for file listing
-		nil,                  // run record (will be captured separately after completion)
-	)
-	if snapshotErr != nil {
-		dlog.Warn("failed to create snapshot for %s: %v", t.Name, snapshotErr)
-	}
-
 	// For one-shot tasks with retry: write lock file on final failure
 	// (after all retries exhausted)
 	if t.Schedule == "" && t.Retry > 0 && err != nil && finalFailureLockPath != "" {
@@ -1120,20 +1104,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
-	// Create snapshot of the execution context
-	snapshotErr := project.WriteSnapshot(
-		proj.Path,
-		t.ID,
-		runID,
-		t,                    // task config (frontmatter)
-		mergedEnv,            // resolved environment variables
-		t.Content,            // expanded prompt
-		proj.Path,            // working directory for file listing
-		runRecord,            // run record
-	)
-	if snapshotErr != nil {
-		dlog.Warn("failed to create snapshot for %s: %v", t.Name, snapshotErr)
-	}
 
 	// Write run record after creating snapshot
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
@@ -1345,20 +1315,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
 
-	// Create snapshot of the execution context
-	snapshotErr := project.WriteSnapshot(
-		proj.Path,
-		t.ID,
-		runID,
-		t,                    // task config (frontmatter)
-		mergedEnv,            // resolved environment variables
-		t.Content,            // expanded prompt
-		proj.Path,            // working directory for file listing
-		runRecord,            // run record
-	)
-	if snapshotErr != nil {
-		dlog.Warn("failed to create snapshot for %s: %v", t.Name, snapshotErr)
-	}
 
 	// Evaluate alert rules and execute actions for fired alerts
 	if len(t.Alerts.Rules) > 0 {
