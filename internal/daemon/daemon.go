@@ -1085,6 +1085,20 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
+	// Evaluate alerts after run completion
+	alertCheck := checkAlerts(t, runRecord, d.config.Alerts)
+	if len(alertCheck.AlertsFired) > 0 {
+		dlog.Info("alerts triggered for task %s: %d alert(s)", t.Name, len(alertCheck.AlertsFired))
+		alertStorage := NewAlertStorage(filepath.Join(proj.Path, ".anvil", "alerts"))
+		for _, alert := range alertCheck.AlertsFired {
+			if err := alertStorage.SaveAlert(t.Name, alert); err != nil {
+				dlog.Warn("failed to save alert for %s: %v", t.Name, err)
+			}
+			// Execute alert actions asynchronously
+			go ExecuteAlertAction(alert, getAlertAction(t, alert.RuleName), d.config.Alerts.DefaultWebhook)
+		}
+	}
+
 	// Truncate oversized log files to keep disk usage bounded.
 	// Uses per-task max_log_size if set, otherwise falls back to global retention config.
 	if logPath != "" {
@@ -1236,6 +1250,27 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
+	}
+
+	// Evaluate alert rules and execute actions for fired alerts
+	if len(t.Alerts.Rules) > 0 {
+		alertResult := checkAlerts(t, runRecord, d.config.Alerts)
+		if len(alertResult.AlertsFired) > 0 {
+			alertStorage := NewAlertStorage(filepath.Join(proj.Path, ".anvil", "alerts"))
+			for _, alert := range alertResult.AlertsFired {
+				if err := alertStorage.SaveAlert(t.Name, alert); err != nil {
+					dlog.Warn("failed to save alert for %s: %v", t.Name, err)
+				}
+				// Execute alert actions (async)
+				for _, rule := range t.Alerts.Rules {
+					if rule.Name == alert.RuleName {
+						go ExecuteAlertAction(alert, rule.Action, d.config.Alerts.DefaultWebhook)
+						break
+					}
+				}
+			}
+			dlog.Info("alerts fired for %s: %d alerts", t.Name, len(alertResult.AlertsFired))
+		}
 	}
 
 	// Log run activity

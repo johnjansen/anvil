@@ -1909,6 +1909,8 @@ func taskCmd(args []string) {
 		taskPipelineCmd(args[1:])
 	case "sla":
 		taskSlaCmd(args[1:])
+	case "alerts":
+		taskAlertsCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
@@ -3059,6 +3061,102 @@ func taskSlaCmd(args []string) {
 			fmt.Printf("  (last: %s delay)", e.LastDelay)
 		}
 		fmt.Println()
+	}
+}
+
+func taskAlertsCmd(args []string) {
+	// Handle subcommands: list, ack, history
+	if len(args) == 0 {
+		// Default: show active alerts (list)
+		showAlerts(false)
+		return
+	}
+
+	switch args[0] {
+	case "list":
+		showAlerts(false)
+	case "history":
+		showAlerts(true)
+	case "ack":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "usage: anvil task alerts ack <alert-id>\n")
+			os.Exit(1)
+		}
+		acknowledgeAlert(args[1])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown alerts subcommand: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Usage: anvil task alerts [list|history|ack <id>]\n")
+		os.Exit(1)
+	}
+}
+
+func showAlerts(showHistory bool) {
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	alertStorage := daemon.NewAlertStorage(filepath.Join(abs, ".anvil", "alerts"))
+	allAlerts, err := alertStorage.LoadAllAlerts()
+	if err != nil {
+		log.Fatalf("failed to load alerts: %v", err)
+	}
+
+	if len(allAlerts) == 0 {
+		fmt.Println("No alerts found")
+		return
+	}
+
+	for taskID, alerts := range allAlerts {
+		for _, alert := range alerts {
+			if !showHistory && alert.Acknowledged {
+				continue
+			}
+			fmt.Printf("[%s] %s | %s | %s | %s\n",
+				alert.ID[:8],
+				taskID,
+				alert.RuleName,
+				alert.Severity,
+				alert.Message)
+			if alert.Acknowledged && alert.AcknowledgedAt != nil {
+				fmt.Printf("  Acknowledged: %s\n", alert.AcknowledgedAt.Format(time.RFC3339))
+			}
+		}
+	}
+}
+
+func acknowledgeAlert(alertID string) {
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	alertStorage := daemon.NewAlertStorage(filepath.Join(abs, ".anvil", "alerts"))
+	allAlerts, err := alertStorage.LoadAllAlerts()
+	if err != nil {
+		log.Fatalf("failed to load alerts: %v", err)
+	}
+
+	// Find the alert and its task
+	found := false
+	for taskID, alerts := range allAlerts {
+		for _, alert := range alerts {
+			if alert.ID == alertID || alert.ID[:8] == alertID {
+				if err := alertStorage.AcknowledgeAlert(taskID, alert.ID); err != nil {
+					log.Fatalf("failed to acknowledge alert: %v", err)
+				}
+				fmt.Printf("Alert %s acknowledged\n", alert.ID[:8])
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+
+	if !found {
+		log.Fatalf("alert not found: %s", alertID)
 	}
 }
 

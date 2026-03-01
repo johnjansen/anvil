@@ -92,6 +92,34 @@ type SLAConfig struct {
 	Strict   bool          // if true, skip task instead of running late
 }
 
+// AlertCondition defines when an alert should trigger.
+type AlertCondition struct {
+	Type      string `yaml:"type"`       // "cost", "duration", or "output"
+	Threshold string `yaml:"threshold"`   // threshold value
+	Pattern   string `yaml:"pattern"`   // regex pattern for output type
+}
+
+// AlertAction defines what happens when an alert fires.
+type AlertAction struct {
+	Webhook string   `yaml:"webhook"` // URL to POST alert payload
+	Notify  []string `yaml:"notify"`  // list of recipients to notify
+	Retry   int      `yaml:"retry"`   // webhook retry count
+}
+
+// AlertRule defines a complete alert with condition and action.
+type AlertRule struct {
+	Name      string        `yaml:"name"`       // unique identifier
+	Condition AlertCondition `yaml:"condition"` // when to trigger
+	Message   string        `yaml:"message"`   // human-readable message
+	Severity  string        `yaml:"severity"`  // "warning", "error", or "critical"
+	Action    AlertAction   `yaml:"action"`    // what to do when triggered
+}
+
+// AlertConfig defines per-task alert configuration.
+type AlertConfig struct {
+	Rules []AlertRule `yaml:"rules"` // list of alert rules for this task
+}
+
 // TaskStateConfig defines per-task state management configuration.
 type TaskStateConfig struct {
 	Bucket string `yaml:"bucket"` // state bucket name
@@ -136,6 +164,7 @@ type Todo struct {
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 	SLA                  SLAConfig     // per-task SLA tracking configuration
 	OnSLAViolation       string        // shell command to run when SLA is violated
+	Alerts               AlertConfig   // per-task alert configuration
 	State                *TaskStateConfig // optional task state management config
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
