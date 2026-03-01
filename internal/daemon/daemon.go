@@ -26,6 +26,7 @@ import (
 	"github.com/johnjansen/anvil/internal/cluster"
 	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
+	"github.com/johnjansen/anvil/internal/health"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/runner"
 	"github.com/johnjansen/anvil/internal/updater"
@@ -160,6 +161,9 @@ type Daemon struct {
 	metricsDurBucket900  int64 // atomic: tasks completing in ≤900s
 	metricsDurBucketInf  int64 // atomic: all completed tasks (≤+Inf)
 	metricsDurSum        int64 // atomic: sum of all durations in milliseconds
+
+	// HealthManager handles task health checks
+	healthManager *health.Manager
 }
 
 type RunningTask struct {
@@ -219,7 +223,7 @@ func New(cfg *config.Config) *Daemon {
 	if poolSize < 1 {
 		poolSize = 1
 	}
-	return &Daemon{
+	d := &Daemon{
 		config:       cfg,
 		runner:       runner.New(cfg.Runners, cfg.Timeout),
 		workQueue:    make(chan workItem, poolSize*4),
@@ -241,6 +245,11 @@ func New(cfg *config.Config) *Daemon {
 		persistentBudgetUsed: make(map[string]time.Duration),
 		webhooks:             webhook.New(cfg.Webhooks),
 	}
+
+	// Initialize health manager
+	d.healthManager = health.NewManager()
+
+	return d
 }
 
 
@@ -282,6 +291,10 @@ func (d *Daemon) Run() {
 
 	ticker := time.NewTicker(d.config.TickInterval)
 	defer ticker.Stop()
+
+	// Set up health check ticker (run every 30 seconds)
+	healthTicker := time.NewTicker(30 * time.Second)
+	defer healthTicker.Stop()
 
 	dlog.Startup(d.config.TickInterval.String(), strings.Join(d.config.Runners, ", "), poolSize)
 
@@ -447,6 +460,9 @@ func (d *Daemon) Run() {
 			d.reloadConfig()
 		case now := <-ticker.C:
 			d.tick(now)
+		case <-healthTicker.C:
+			// Run health checks in a goroutine to avoid blocking the main loop
+			go d.healthManager.RunAllHealthChecks(context.Background(), loadWatchedPaths())
 		}
 	}
 }
@@ -1854,7 +1870,17 @@ type HealthResponse struct {
 	TasksRunning     int               `json:"tasks_running"`
 	Uptime           string            `json:"daemon_uptime,omitempty"`
 	Components       map[string]string `json:"components,omitempty"`
+	TaskHealth       []*TaskHealth     `json:"task_health,omitempty"`
 	Detailed         bool              `json:"-"`
+}
+
+// TaskHealth represents the health status of a single task
+type TaskHealth struct {
+	Name       string    `json:"name"`
+	Healthy    bool      `json:"healthy"`
+	LastCheck  time.Time `json:"last_check"`
+	ExitCode   int       `json:"exit_code"`
+	Error      string    `json:"error,omitempty"`
 }
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1922,6 +1948,43 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		if draining {
 			resp.Components["daemon_status"] = "draining"
 			resp.Healthy = false
+		}
+	}
+
+	// Include task health if configured
+	if d.config.Health.IncludeTasks {
+		// Get all task health statuses
+		taskHealthMap := d.healthManager.GetAllHealthStatus()
+
+		// Convert to slice for JSON serialization
+		var taskHealth []*TaskHealth
+		unhealthyCount := 0
+
+		for taskName, healthStatus := range taskHealthMap {
+			taskHealthItem := &TaskHealth{
+				Name:       taskName,
+				Healthy:    healthStatus.Healthy,
+				LastCheck:  healthStatus.LastCheck,
+				ExitCode:   healthStatus.ExitCode,
+				Error:      healthStatus.Error,
+			}
+			taskHealth = append(taskHealth, taskHealthItem)
+
+			if !healthStatus.Healthy {
+				unhealthyCount++
+			}
+		}
+
+		// Add task health to response
+		resp.TaskHealth = taskHealth
+
+		// Override daemon health if unhealthy threshold is exceeded
+		if d.config.Health.UnhealthyThreshold > 0 && unhealthyCount >= d.config.Health.UnhealthyThreshold {
+			resp.Healthy = false
+			if resp.Components == nil {
+				resp.Components = make(map[string]string)
+			}
+			resp.Components["task_health"] = fmt.Sprintf("unhealthy tasks: %d (threshold: %d)", unhealthyCount, d.config.Health.UnhealthyThreshold)
 		}
 	}
 
@@ -3360,6 +3423,22 @@ func SendBudgetRequest() (map[string]float64, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// SendHealthRequest queries the daemon's /health endpoint.
+func SendHealthRequest() (*HealthResponse, error) {
+	resp, err := socketClient().Get("http://daemon/health")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var health HealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return nil, err
+	}
+
+	return &health, nil
 }
 
 // SendResetBudgetRequest resets the budget usage for a task.

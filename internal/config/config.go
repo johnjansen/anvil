@@ -30,6 +30,7 @@ type Config struct {
 	SLA                      SLAGlobalConfig   `yaml:"sla"`                        // global SLA defaults for task delay tracking
 	Notifications            NotificationsConfig `yaml:"notifications"`              // desktop notification settings
 	HealthPort               int                 `yaml:"health_port"`                 // optional TCP port for health probe endpoints (0 = disabled)
+	Health                   HealthConfig        `yaml:"health"`                      // health check configuration
 	Cluster                  ClusterConfig       `yaml:"cluster"`                     // multi-daemon cluster coordination
 	Alerts                  AlertGlobalConfig  `yaml:"alerts"`                      // global alert settings
 	CircuitBreaker          CircuitBreakerGlobalConfig `yaml:"circuit_breaker"`         // global circuit breaker defaults
@@ -51,6 +52,12 @@ type CircuitBreakerGlobalConfig struct {
 	DefaultFailures    int           `yaml:"default_failures"`    // default failures threshold (0 = disabled)
 	DefaultTimeout     time.Duration `yaml:"default_timeout"`     // default timeout duration
 	DefaultHalfOpenMax int           `yaml:"default_half_open_max"` // default half-open test requests
+}
+
+// HealthConfig defines health check configuration.
+type HealthConfig struct {
+	IncludeTasks       bool `yaml:"include_tasks"`        // whether to include task health in daemon health endpoint
+	UnhealthyThreshold int  `yaml:"unhealthy_threshold"`  // mark daemon unhealthy if this many tasks are unhealthy (0 = disabled)
 }
 
 // NotificationsConfig defines desktop notification settings.
@@ -178,6 +185,10 @@ func Default() *Config {
 			DefaultFailures:    0, // disabled by default
 			DefaultTimeout:     30 * time.Minute,
 			DefaultHalfOpenMax: 3,
+		},
+		Health: HealthConfig{
+			IncludeTasks:       false, // disabled by default
+			UnhealthyThreshold: 0,     // disabled by default
 		},
 	}
 }

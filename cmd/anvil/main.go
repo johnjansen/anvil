@@ -1914,6 +1914,8 @@ func taskCmd(args []string) {
 		taskSlaCmd(args[1:])
 	case "alerts":
 		taskAlertsCmd(args[1:])
+	case "health":
+		taskHealthCmd(args[1:])
 	case "find":
 		// "find" is an alias for "ls --match" - inject the pattern as --match flag
 		if len(args) < 2 {
