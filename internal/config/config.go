@@ -32,6 +32,7 @@ type Config struct {
 	HealthPort               int                 `yaml:"health_port"`                 // optional TCP port for health probe endpoints (0 = disabled)
 	Cluster                  ClusterConfig       `yaml:"cluster"`                     // multi-daemon cluster coordination
 	Alerts                  AlertGlobalConfig  `yaml:"alerts"`                      // global alert settings
+	CircuitBreaker          CircuitBreakerGlobalConfig `yaml:"circuit_breaker"`         // global circuit breaker defaults
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
@@ -43,6 +44,13 @@ type SLAGlobalConfig struct {
 type AlertGlobalConfig struct {
 	Enabled          bool   `yaml:"enabled"`           // whether alerts are globally enabled
 	DefaultWebhook   string `yaml:"default_webhook"`   // default webhook URL for all alerts
+}
+
+// CircuitBreakerGlobalConfig defines global circuit breaker defaults.
+type CircuitBreakerGlobalConfig struct {
+	DefaultFailures    int           `yaml:"default_failures"`    // default failures threshold (0 = disabled)
+	DefaultTimeout     time.Duration `yaml:"default_timeout"`     // default timeout duration
+	DefaultHalfOpenMax int           `yaml:"default_half_open_max"` // default half-open test requests
 }
 
 // NotificationsConfig defines desktop notification settings.
@@ -166,6 +174,11 @@ func Default() *Config {
 		Runner:       "echo",
 		Timeout:      5 * time.Minute,
 		MaxWorkers:   1,
+		CircuitBreaker: CircuitBreakerGlobalConfig{
+			DefaultFailures:    0, // disabled by default
+			DefaultTimeout:     30 * time.Minute,
+			DefaultHalfOpenMax: 3,
+		},
 	}
 }
 
@@ -194,7 +207,10 @@ func EnsureDir() error {
 	if err := os.MkdirAll(Dir(), 0755); err != nil {
 		return err
 	}
-	return os.MkdirAll(WatchedDir(), 0755)
+	if err := os.MkdirAll(WatchedDir(), 0755); err != nil {
+		return err
+	}
+	return os.MkdirAll(filepath.Join(Dir(), "circuits"), 0755)
 }
 
 // EnsureConfig creates ~/.anvil/config.yaml with sensible defaults if it does not exist.

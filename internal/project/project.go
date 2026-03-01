@@ -92,6 +92,14 @@ type SLAConfig struct {
 	Strict   bool          // if true, skip task instead of running late
 }
 
+// CircuitBreakerConfig defines per-task circuit breaker configuration.
+// When Failures > 0, the daemon tracks consecutive failures and opens circuit after threshold.
+type CircuitBreakerConfig struct {
+	Failures    int           `yaml:"failures"`     // number of consecutive failures before opening circuit
+	Timeout     time.Duration `yaml:"timeout"`      // duration to wait before attempting recovery
+	HalfOpenMax int           `yaml:"half_open_max"` // maximum test requests in half-open state
+}
+
 // AlertCondition defines when an alert should trigger.
 type AlertCondition struct {
 	Type      string `yaml:"type"`       // "cost", "duration", or "output"
@@ -164,6 +172,9 @@ type Todo struct {
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 	SLA                  SLAConfig     // per-task SLA tracking configuration
 	OnSLAViolation       string        // shell command to run when SLA is violated
+	CircuitBreaker       CircuitBreakerConfig // per-task circuit breaker configuration
+	OnCircuitOpen        string        // shell command to run when circuit opens
+	OnCircuitClose       string        // shell command to run when circuit closes
 	Alerts               AlertConfig   // per-task alert configuration
 	State                *TaskStateConfig // optional task state management config
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)

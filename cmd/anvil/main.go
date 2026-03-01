@@ -2548,7 +2548,30 @@ func taskLsCmd(args []string) {
 				bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", 10-filled)
 				budgetStr = fmt.Sprintf("  %s %.0f%%", bar, pct)
 			}
-			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr, budgetStr)
+			// Add circuit breaker status indicator
+			circuitStr := ""
+			if t.CircuitBreaker.Failures > 0 {
+				if daemon.IsDaemonRunning() {
+					circuitStorage := daemon.NewCircuitBreakerStorage(filepath.Join(config.Dir(), "circuits"))
+					record, err := circuitStorage.LoadCircuit(t.ID)
+					if err == nil {
+						switch record.State {
+						case daemon.Open:
+							circuitStr = "  🔴"
+						case daemon.HalfOpen:
+							circuitStr = "  🟡"
+						case daemon.Closed:
+							if record.FailureCount > 0 {
+								circuitStr = fmt.Sprintf("  ⚠️ %d", record.FailureCount)
+							} else {
+								circuitStr = "  ✅"
+							}
+						}
+					}
+				}
+			}
+
+			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s%s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr, budgetStr, circuitStr)
 		}
 	}
 }
@@ -2893,6 +2916,43 @@ func taskGetCmd(args []string) {
 			}
 		}
 	}
+
+	// Show circuit breaker status
+	if todo.CircuitBreaker.Failures > 0 {
+		fmt.Printf("Circuit:  %d failures → OPEN, timeout %v\n", todo.CircuitBreaker.Failures, todo.CircuitBreaker.Timeout)
+		if todo.CircuitBreaker.HalfOpenMax > 0 {
+			fmt.Printf("          half-open test requests: %d\n", todo.CircuitBreaker.HalfOpenMax)
+		}
+
+		// Load circuit breaker state
+		if daemon.IsDaemonRunning() {
+			circuitStorage := daemon.NewCircuitBreakerStorage(filepath.Join(config.Dir(), "circuits"))
+			record, err := circuitStorage.LoadCircuit(todo.ID)
+			if err == nil {
+				fmt.Printf("          state: %s", record.State.String())
+				if record.State == daemon.Closed {
+					if record.FailureCount > 0 {
+						fmt.Printf(" (%d consecutive failures)", record.FailureCount)
+					}
+				} else if record.State == daemon.Open {
+					if record.OpenedAt != nil {
+						fmt.Printf(" (since %s)", record.OpenedAt.Format("15:04:05"))
+					}
+					if record.NextRetryAt != nil {
+						fmt.Printf(", retry at %s", record.NextRetryAt.Format("15:04:05"))
+					}
+				} else if record.State == daemon.HalfOpen {
+					fmt.Printf(" (%d test requests)", record.HalfOpenCount)
+				}
+				fmt.Printf("\n")
+
+				if record.LastFailureAt != nil {
+					fmt.Printf("          last failure: %s\n", record.LastFailureAt.Format("2006-01-02 15:04:05"))
+				}
+			}
+		}
+	}
+
 	fmt.Printf("\n%s", todo.Content)
 }
 

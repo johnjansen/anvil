@@ -136,6 +136,8 @@ type Daemon struct {
 	// Stopped tasks are not re-dispatched until started again via /start.
 	stoppedTasks map[string]bool // taskID -> true
 	stoppedMu    sync.Mutex
+	// circuitBreakerStorage handles circuit breaker state persistence
+	circuitBreakerStorage *CircuitBreakerStorage
 	// persistentBudgetUsed tracks cumulative wall-clock time consumed by each
 	// persistent task during this daemon lifetime.  Resets on daemon restart.
 	persistentBudgetUsed   map[string]time.Duration
@@ -235,6 +237,7 @@ func New(cfg *config.Config) *Daemon {
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
 		stoppedTasks:         make(map[string]bool),
+		circuitBreakerStorage: NewCircuitBreakerStorage(filepath.Join(config.Dir(), "circuits")),
 		persistentBudgetUsed: make(map[string]time.Duration),
 		webhooks:             webhook.New(cfg.Webhooks),
 	}
@@ -1115,6 +1118,46 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	// Detect force-cycle: persistent task hit its max runtime (context deadline exceeded)
 	forceCycled := t.IsPersistent() && err != nil && ctx.Err() == context.DeadlineExceeded
 	whPayload := webhook.BuildPayload(t.Name, proj.Path, runID, startTime, runRecord.Finished, runRecord.EstimatedCostUSD, runRecord.Error)
+
+	// Record circuit breaker state for this task run
+	if t.CircuitBreaker.Failures > 0 || d.config.CircuitBreaker.DefaultFailures > 0 {
+		record, cbErr := d.circuitBreakerStorage.LoadCircuit(t.ID)
+		if cbErr == nil {
+			now := time.Now()
+			if err != nil {
+				// Record failure
+				oldState := record.State
+				recordFailure(t, record, now, d.config.CircuitBreaker)
+				newState := record.State
+
+				// Save updated circuit state
+				if saveErr := d.circuitBreakerStorage.SaveCircuit(t.ID, *record); saveErr != nil {
+					dlog.Warn("failed to save circuit breaker state for %s: %v", t.Name, saveErr)
+				}
+
+				// Execute on_circuit_open hook if circuit just opened
+				if oldState != Open && newState == Open {
+					go runCircuitOpenHook(t, record)
+				}
+			} else {
+				// Record success
+				oldState := record.State
+				recordSuccess(t, record, now, d.config.CircuitBreaker)
+				newState := record.State
+
+				// Save updated circuit state
+				if saveErr := d.circuitBreakerStorage.SaveCircuit(t.ID, *record); saveErr != nil {
+					dlog.Warn("failed to save circuit breaker state for %s: %v", t.Name, saveErr)
+				}
+
+				// Execute on_circuit_close hook if circuit just closed
+				if oldState == Open && newState == Closed {
+					go runCircuitCloseHook(t, record)
+				}
+			}
+		}
+	}
+
 	if forceCycled {
 		// Force-cycle is a normal lifecycle event, not a failure.
 		// Log it clearly and skip failure backoff/runner cooldown.
@@ -2546,6 +2589,27 @@ func (d *Daemon) tick(now time.Time) {
 			dlog.Info("SLA violation %s/%s — %v late (max %v)", projName, pt.todo.Name, slaCheck.Delay.Round(time.Second), slaCheck.MaxDelay)
 			if pt.todo.OnSLAViolation != "" {
 				go d.runSLAViolationHook(pt.todo, pt.proj.Path, slaCheck)
+			}
+		}
+
+		// Check circuit breaker: skip task if circuit is open
+		if pt.todo.CircuitBreaker.Failures > 0 || d.config.CircuitBreaker.DefaultFailures > 0 {
+			record, err := d.circuitBreakerStorage.LoadCircuit(pt.todo.ID)
+			if err == nil {
+				now := time.Now()
+				if checkCircuit(pt.todo, record, now, d.config.CircuitBreaker) {
+					dlog.Info("skip %s/%s — circuit breaker OPEN", projName, pt.todo.Name)
+					d.pendingTasksMu.Lock()
+					d.pendingTasks[taskKey] = "circuit breaker OPEN"
+					d.pendingTasksMu.Unlock()
+					d.inFlightMu.Lock()
+					d.inFlight[taskKey]--
+					if d.inFlight[taskKey] <= 0 {
+						delete(d.inFlight, taskKey)
+					}
+					d.inFlightMu.Unlock()
+					continue
+				}
 			}
 		}
 
