@@ -134,6 +134,25 @@ type TaskStateConfig struct {
 	Key    string `yaml:"key"`    // state key (supports {{ .TaskID }} template)
 }
 
+// SubscriptionConfig defines per-task subscription configuration for external event triggers.
+type SubscriptionConfig struct {
+	Type string `yaml:"type"` // subscription type: webhook, amqp, fs
+
+	// Webhook subscription options
+	Path   string `yaml:"path,omitempty"`   // HTTP path for webhook
+	Method string `yaml:"method,omitempty"` // HTTP method (default: POST)
+	Secret string `yaml:"secret,omitempty"` // HMAC secret for verification
+
+	// AMQP subscription options
+	Queue     string `yaml:"queue,omitempty"`     // Queue name to consume from
+	URL       string `yaml:"url,omitempty"`       // Connection URL
+	Prefetch  int    `yaml:"prefetch,omitempty"`  // Number of messages to prefetch (default: 1)
+
+	// File system subscription options
+	FsPath  string   `yaml:"fs_path,omitempty"`  // Path pattern to watch
+	Events  []string `yaml:"events,omitempty"`   // Events to watch (create, modify, delete)
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -181,7 +200,8 @@ type Todo struct {
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 	NodeAffinity         string        // cluster node ID for affinity-based execution (empty = any node)
 	OnRollback           string        // shell command to run before rollback (supports {{ .RunID }}, {{ .TaskName }} templates)
-	HealthCheck          string        // optional shell command; task is healthy if it exits with code 0
+	HealthCheck          string             // optional shell command; task is healthy if it exits with code 0
+	Subscription         *SubscriptionConfig // optional subscription configuration for external event triggers
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -307,6 +327,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			checkpoint := false
 			healthCheck := ""
 			var allowedWindow AllowedWindow
+			var subscription *SubscriptionConfig
 			var slaConfig SLAConfig
 			onSLAViolation := ""
 			onRollback := ""
@@ -358,6 +379,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
+						Subscription         *SubscriptionConfig `yaml:"subscription"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
@@ -419,6 +441,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						onSLAViolation = fmData.OnSLAViolation
 						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
+						subscription = fmData.Subscription
 					}
 				}
 			}
@@ -469,6 +492,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
 				OnRollback:           onRollback,
+				Subscription:         subscription,
 			})
 		}
 	}
