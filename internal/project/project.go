@@ -181,6 +181,7 @@ type Todo struct {
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 	NodeAffinity         string        // cluster node ID for affinity-based execution (empty = any node)
 	OnRollback           string        // shell command to run before rollback (supports {{ .RunID }}, {{ .TaskName }} templates)
+	HealthCheck          string        // optional shell command; task is healthy if it exits with code 0
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -304,6 +305,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var envVars map[string]string
 			var dependsOn []string
 			checkpoint := false
+			healthCheck := ""
 			var allowedWindow AllowedWindow
 			var slaConfig SLAConfig
 			onSLAViolation := ""
@@ -347,6 +349,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
 						Checkpoint           bool              `yaml:"checkpoint"`
+						HealthCheck          string            `yaml:"health_check"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
 						SLA                  *struct {
 							MaxDelay string `yaml:"max_delay"`
@@ -414,6 +417,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							}
 						}
 						onSLAViolation = fmData.OnSLAViolation
+						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
 					}
 				}
@@ -459,6 +463,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
 				Checkpoint:           checkpoint,
+				HealthCheck:          healthCheck,
 				Window:               allowedWindow,
 				SLA:                  slaConfig,
 				OnSLAViolation:       onSLAViolation,
