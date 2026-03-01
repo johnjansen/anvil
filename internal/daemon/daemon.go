@@ -1148,7 +1148,11 @@ skipExecution:
 		}
 	}
 
-	// Evaluate alerts after run completion
+
+	// Write run record after creating snapshot
+	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
+		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
+	}
 	alertCheck := checkAlerts(t, runRecord, d.config.Alerts)
 	if len(alertCheck.AlertsFired) > 0 {
 		dlog.Info("alerts triggered for task %s: %d alert(s)", t.Name, len(alertCheck.AlertsFired))
@@ -1354,6 +1358,7 @@ skipExecution:
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
+
 
 	// Evaluate alert rules and execute actions for fired alerts
 	if len(t.Alerts.Rules) > 0 {
