@@ -169,6 +169,7 @@ type Todo struct {
 	NotifyOnFailure      *bool         // per-task override for failure notifications (nil = use global)
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 	NodeAffinity         string        // cluster node ID for affinity-based execution (empty = any node)
+	OnRollback           string        // shell command to run before rollback (supports {{ .RunID }}, {{ .TaskName }} templates)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -295,6 +296,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var allowedWindow AllowedWindow
 			var slaConfig SLAConfig
 			onSLAViolation := ""
+			onRollback := ""
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -340,6 +342,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							Strict   bool   `yaml:"strict"`
 						} `yaml:"sla"`
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
+						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
@@ -400,6 +403,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							}
 						}
 						onSLAViolation = fmData.OnSLAViolation
+						onRollback = fmData.OnRollback
 					}
 				}
 			}
@@ -448,6 +452,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				SLA:                  slaConfig,
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
+				OnRollback:           onRollback,
 			})
 		}
 	}

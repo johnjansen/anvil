@@ -1922,6 +1922,8 @@ func taskCmd(args []string) {
 		taskDiffCmd(args[1:])
 	case "restore":
 		taskRestoreCmd(args[1:])
+	case "rollback":
+		taskRollbackCmd(args[1:])
 	case "blame":
 		taskBlameCmd(args[1:])
 	case "dry-run":
