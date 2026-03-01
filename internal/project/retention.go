@@ -11,9 +11,10 @@ import (
 
 // PruneResult holds the outcome of a pruning operation.
 type PruneResult struct {
-	LogsDeleted int
-	RunsDeleted int
-	Errors      []error
+	LogsDeleted     int
+	RunsDeleted     int
+	SnapshotsDeleted int
+	Errors          []error
 }
 
 // PruneOptions controls what gets pruned.
@@ -85,7 +86,7 @@ func pruneTask(logsBase, runsBase, taskID string, opts PruneOptions) PruneResult
 	logDir := filepath.Join(logsBase, taskID)
 	runDir := filepath.Join(runsBase, taskID)
 
-	// Prune runs (and corresponding logs)
+	// Prune runs (and corresponding logs and snapshots)
 	runFiles := listDataFiles(runDir, ".json")
 	logFiles := listDataFiles(logDir, ".log")
 
@@ -143,6 +144,20 @@ func pruneTask(logsBase, runsBase, taskID string, opts PruneOptions) PruneResult
 			}
 			delete(logByRunID, runID)
 		}
+
+		// Delete corresponding snapshot directory
+		snapshotDir := filepath.Join(runsBase, taskID, runID, "snapshot")
+		if _, err := os.Stat(snapshotDir); err == nil {
+			if !opts.DryRun {
+				if err := os.RemoveAll(snapshotDir); err != nil && !os.IsNotExist(err) {
+					result.Errors = append(result.Errors, fmt.Errorf("removing snapshot %s: %w", snapshotDir, err))
+				} else {
+					result.SnapshotsDeleted++
+				}
+			} else {
+				result.SnapshotsDeleted++
+			}
+		}
 	}
 
 	// Also prune orphan log files (logs without a corresponding run record)
@@ -165,6 +180,45 @@ func pruneTask(logsBase, runsBase, taskID string, opts PruneOptions) PruneResult
 			}
 		} else {
 			result.LogsDeleted++
+		}
+	}
+
+	// Also prune orphan snapshot directories (snapshots without a corresponding run record)
+	if snapshotDirs, err := os.ReadDir(filepath.Join(runsBase, taskID)); err == nil {
+		for _, sd := range snapshotDirs {
+			if !sd.IsDir() {
+				continue
+			}
+
+			runID := sd.Name()
+			runRecordPath := filepath.Join(runsBase, taskID, runID+".json")
+
+			// Check if run record exists
+			if _, err := os.Stat(runRecordPath); os.IsNotExist(err) {
+				// This is an orphaned snapshot directory
+				snapshotDir := filepath.Join(runsBase, taskID, runID, "snapshot")
+				if _, err := os.Stat(snapshotDir); err == nil {
+					// Check if it should be pruned based on age
+					if info, err := sd.Info(); err == nil {
+						shouldPrune := false
+						if opts.MaxAge > 0 && opts.Now.Sub(info.ModTime()) > opts.MaxAge {
+							shouldPrune = true
+						}
+
+						if shouldPrune {
+							if !opts.DryRun {
+								if err := os.RemoveAll(snapshotDir); err != nil && !os.IsNotExist(err) {
+									result.Errors = append(result.Errors, fmt.Errorf("removing orphan snapshot %s: %w", snapshotDir, err))
+								} else {
+									result.SnapshotsDeleted++
+								}
+							} else {
+								result.SnapshotsDeleted++
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
