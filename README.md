@@ -243,6 +243,31 @@ Temporarily paused task...
 
 The task is skipped during tick evaluation but remains in the system. Set `disabled: false` or remove the line to resume.
 
+### Message Queue Subscriptions
+
+Trigger tasks based on messages from AMQP-compatible message queues (like RabbitMQ):
+
+```yaml
+---
+schedule: "@every 1h"
+subscription:
+  type: amqp
+  queue: task-queue
+  url: amqp://localhost:5672
+  prefetch: 1
+---
+```
+
+When a message is published to the specified queue, the task will be triggered immediately. The message payload is available in the `ANVIL_AMQP_PAYLOAD` environment variable.
+
+Supported subscription fields:
+- `type` - Subscription type (currently only "amqp")
+- `queue` - Queue name to consume messages from
+- `url` - AMQP broker connection URL
+- `prefetch` - Number of messages to prefetch (default: 1)
+
+**Note:** Tasks with subscriptions will be triggered by messages regardless of their schedule. The schedule only determines when the task would run if triggered by cron.
+
 ### Task timeout
 
 Override the global timeout for a specific task:
