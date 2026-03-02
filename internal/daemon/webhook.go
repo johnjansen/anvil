@@ -61,7 +61,23 @@ func (ws *WebhookServer) Stop(ctx context.Context) error {
 
 // StartSubscription starts handling webhook requests for a task
 func (ws *WebhookServer) StartSubscription(proj *project.Project, task project.Todo) error {
-	if task.Subscription == nil || task.Subscription.Type != "webhook" {
+	if task.Subscription == nil {
+		return nil // No subscription configured
+	}
+
+	// Handle simplified webhook configuration (subscription.webhook: "/path")
+	if task.Subscription.Webhook != "" {
+		// Auto-configure as webhook type
+		task.Subscription.Type = "webhook"
+		task.Subscription.WebhookPath = task.Subscription.Webhook
+		// Default to POST method for simplified configuration
+		if task.Subscription.WebhookMethod == "" {
+			task.Subscription.WebhookMethod = "POST"
+		}
+	}
+
+	// Check if this is a webhook subscription
+	if task.Subscription.Type != "webhook" {
 		return nil // Not a webhook subscription
 	}
 

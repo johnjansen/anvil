@@ -38,7 +38,7 @@ func TestWebhookServer(t *testing.T) {
 	// Give server time to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Test creating a subscription
+	// Test creating a subscription with standard configuration
 	proj := &project.Project{
 		Path: "./test-project",
 	}
@@ -52,10 +52,24 @@ func TestWebhookServer(t *testing.T) {
 		},
 	}
 
-	// Test starting subscription
+	// Test starting subscription with standard configuration
 	err := ws.StartSubscription(proj, task)
 	if err != nil {
 		t.Errorf("Failed to start webhook subscription: %v", err)
+	}
+
+	// Test creating a subscription with simplified configuration
+	task2 := project.Todo{
+		Name: "test-webhook-task-simple",
+		Subscription: &project.SubscriptionConfig{
+			Webhook: "/test-webhook-simple",
+		},
+	}
+
+	// Test starting subscription with simplified configuration
+	err = ws.StartSubscription(proj, task2)
+	if err != nil {
+		t.Errorf("Failed to start simplified webhook subscription: %v", err)
 	}
 
 	// Test stopping server

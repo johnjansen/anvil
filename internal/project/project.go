@@ -172,6 +172,8 @@ type SubscriptionConfig struct {
 	WebhookPath   string `yaml:"webhook_path"`   // HTTP path for webhook endpoint (for webhook type)
 	WebhookMethod string `yaml:"webhook_method"` // HTTP method for webhook endpoint (default: POST)
 	WebhookSecret string `yaml:"webhook_secret"` // secret for webhook authentication (can be env var reference)
+	// Simplified webhook configuration (alternative to type: webhook)
+	Webhook string `yaml:"webhook"` // simplified webhook URL for direct webhook triggering
 }
 
 // AssertConfig defines per-task output assertion configuration.

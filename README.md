@@ -304,6 +304,8 @@ Supported subscription fields:
 
 Trigger tasks based on HTTP webhook requests from external systems:
 
+#### Standard Configuration
+
 ```yaml
 ---
 schedule: "@every 1h"
@@ -315,6 +317,16 @@ subscription:
 ---
 ```
 
+#### Simplified Configuration
+
+```yaml
+---
+schedule: "@every 1h"
+subscription:
+  webhook: /webhooks/my-task
+---
+```
+
 When an HTTP request is sent to the webhook endpoint, the task will be triggered immediately. The request payload is available in the `ANVIL_WEBHOOK_PAYLOAD` environment variable.
 
 Supported subscription fields:
@@ -322,6 +334,7 @@ Supported subscription fields:
 - `webhook_path` - HTTP path for the webhook endpoint
 - `webhook_method` - HTTP method to accept (default: "POST")
 - `webhook_secret` - Secret for webhook authentication (can reference environment variables with `env:VAR_NAME`)
+- `webhook` - Simplified webhook path (equivalent to `type: webhook` with `webhook_path: <value>`)
 
 Webhook authentication supports HMAC-SHA256 signatures via headers:
 - `X-Signature: sha256=<signature>`
