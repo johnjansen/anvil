@@ -903,6 +903,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
+	// Precondition check: if set, evaluate all conditions and skip if any fail.
+	// Both pre_check and precondition must pass for task to run.
+	if t.Precondition != nil {
+		if shouldProceed, skipReason := t.EvaluatePrecondition(proj.Path); !shouldProceed {
+			taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+			dlog.Info("precondition skipped %s: %s", taskLabel, skipReason)
+			return
+		}
+	}
+
 	// Run the task with retry support
 	projName := filepath.Base(proj.Path)
 	taskLabel := projName + "/" + t.Name
