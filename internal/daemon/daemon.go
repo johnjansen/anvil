@@ -160,6 +160,14 @@ type Daemon struct {
 	// rateLimitCounters tracks execution counts for rate limiting per task
 	rateLimitCounters   map[string]*RateLimitCounter // taskID -> counter
 	rateLimitCountersMu sync.Mutex
+	// groupInFlight tracks how many tasks from each concurrency group are currently running
+	// Map value is the count of running tasks in that group
+	groupInFlight   map[string]int // groupName -> count
+	groupInFlightMu sync.Mutex
+	// groupRateLimits tracks API call counts for rate limiting per group
+	// Map value is the counter for that group
+	groupRateLimits   map[string]*RateLimitCounter // groupName -> counter
+	groupRateLimitsMu sync.Mutex
 	// Metrics counters for Prometheus endpoint
 	metricsSuccessCount int64 // atomic: total successful task runs
 	metricsFailureCount int64 // atomic: total failed task runs
@@ -254,6 +262,7 @@ func New(cfg *config.Config) *Daemon {
 		runner:       runner.New(cfg.Runners, cfg.Timeout),
 		workQueue:    make(chan workItem, poolSize*4),
 		inFlight:     make(map[string]int),
+		groupInFlight: make(map[string]int),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
 		reload:       make(chan struct{}, 1),
@@ -263,7 +272,7 @@ func New(cfg *config.Config) *Daemon {
 		persistentFailures: make(map[string]int),
 		taskHashes:         make(map[string]string),
 		persistentCooldowns: make(map[string]time.Time),
-	starvationTrackers: make(map[string]time.Time),
+		starvationTrackers: make(map[string]time.Time),
 		runnerCooldowns: make(map[int]time.Time),
 		pendingTasks:  make(map[string]string),
 		stoppedTasks:         make(map[string]bool),
@@ -273,6 +282,7 @@ func New(cfg *config.Config) *Daemon {
 		priorityAgingQueueTimes: make(map[string]time.Time),
 		webhooks:             webhook.New(cfg.Webhooks),
 		rateLimitCounters:    make(map[string]*RateLimitCounter),
+		groupRateLimits:      make(map[string]*RateLimitCounter),
 	}
 
 	// Initialize health manager
@@ -882,6 +892,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			delete(d.inFlight, taskKey)
 		}
 		d.inFlightMu.Unlock()
+
+		// Decrement group in-flight count if task belongs to a group
+		if t.ConcurrencyGroup != "" {
+			d.groupInFlightMu.Lock()
+			d.groupInFlight[t.ConcurrencyGroup]--
+			if d.groupInFlight[t.ConcurrencyGroup] <= 0 {
+				delete(d.groupInFlight, t.ConcurrencyGroup)
+			}
+			d.groupInFlightMu.Unlock()
+		}
 	}()
 
 	// Use task-specific timeout if set, otherwise fall back to global config
@@ -2959,6 +2979,65 @@ func (d *Daemon) tick(now time.Time) {
 		taskKey := fmt.Sprintf("%s/%s", pt.proj.Path, pt.todo.Name)
 		projName := filepath.Base(pt.proj.Path)
 
+		// Check concurrency group limits if task belongs to a group
+		if pt.todo.ConcurrencyGroup != "" {
+			groupName := pt.todo.ConcurrencyGroup
+			groupConfig, exists := d.config.ConcurrencyGroups[groupName]
+
+			if exists {
+				// Check group max_concurrent limit
+				if groupConfig.MaxConcurrent > 0 {
+					d.groupInFlightMu.Lock()
+					groupInFlight := d.groupInFlight[groupName]
+					d.groupInFlightMu.Unlock()
+
+					if groupInFlight >= groupConfig.MaxConcurrent {
+						dlog.Info("skip %s/%s — group %s at max concurrent (%d)", projName, pt.todo.Name, groupName, groupConfig.MaxConcurrent)
+						d.pendingTasksMu.Lock()
+						d.pendingTasks[taskKey] = fmt.Sprintf("group %s at max concurrent", groupName)
+						d.pendingTasksMu.Unlock()
+						continue
+					}
+				}
+
+				// Check if respecting min_available would leave enough workers for non-group tasks
+				if groupConfig.MinAvailable > 0 {
+					// Get current in-flight counts
+					d.inFlightMu.Lock()
+					totalInFlight := 0
+					for _, count := range d.inFlight {
+						totalInFlight += count
+					}
+					d.inFlightMu.Unlock()
+
+					d.groupInFlightMu.Lock()
+					totalGroupInFlight := 0
+					for _, count := range d.groupInFlight {
+						totalGroupInFlight += count
+					}
+					d.groupInFlightMu.Unlock()
+
+					// Calculate available workers
+					availableWorkers := d.config.MaxWorkers - totalInFlight
+
+					// Check if adding this task would violate min_available
+					if availableWorkers-groupConfig.MinAvailable < 0 {
+						dlog.Info("skip %s/%s — would violate min_available for non-group tasks", projName, pt.todo.Name)
+						d.pendingTasksMu.Lock()
+						d.pendingTasks[taskKey] = "would violate min_available for non-group tasks"
+						d.pendingTasksMu.Unlock()
+						continue
+					}
+				}
+
+				// Check group rate limits if configured
+				if groupConfig.RateLimit.RequestsPerMinute > 0 || groupConfig.RateLimit.TokenRateLimit > 0 {
+					// For now, we'll skip the detailed rate limit implementation
+					// This would need a more complex counter system similar to individual task rate limits
+				}
+			}
+		}
+
 		// Determine how many instances we can dispatch
 		maxConcurrent := pt.todo.MaxConcurrent
 		if maxConcurrent < 1 {
@@ -3438,6 +3517,14 @@ func (d *Daemon) tick(now time.Time) {
 				d.inFlight[taskKey]++
 				d.inFlightMu.Unlock()
 			}
+
+			// Increment group in-flight counter if task belongs to a group
+			if pt.todo.ConcurrencyGroup != "" {
+				d.groupInFlightMu.Lock()
+				d.groupInFlight[pt.todo.ConcurrencyGroup]++
+				d.groupInFlightMu.Unlock()
+			}
+
 			// Non-blocking send; if queue is full, clear in-flight and warn
 			select {
 			case d.workQueue <- workItem{project: pt.proj, todo: pt.todo, sla: slaCheck}:
@@ -4107,6 +4194,23 @@ func (d *Daemon) incrementRateCounters(taskID string, now time.Time) {
 	// Increment daily counter
 	dayKey := now.Format("2006-01-02")
 	counter.Daily[dayKey]++
+}
+
+// getGroupRateLimitCounter gets or creates a rate limit counter for a concurrency group
+func (d *Daemon) getGroupRateLimitCounter(groupName string) (*RateLimitCounter, error) {
+	d.groupRateLimitsMu.Lock()
+	defer d.groupRateLimitsMu.Unlock()
+
+	counter, exists := d.groupRateLimits[groupName]
+	if !exists {
+		counter = &RateLimitCounter{
+			Hourly: make(map[string]int),
+			Daily:  make(map[string]int),
+		}
+		d.groupRateLimits[groupName] = counter
+	}
+
+	return counter, nil
 }
 // checkForTimedOutProcesses checks all running tasks and kills any that have exceeded their timeout.
 // This prevents zombie worker processes from running indefinitely.
