@@ -153,6 +153,9 @@ type Daemon struct {
 	clusterNode *cluster.Node // nil when cluster mode disabled
 	// rateLimitSemaphore limits concurrent LLM API calls (nil = no limit)
 	rateLimitSemaphore chan struct{}
+	// rateLimitCounters tracks execution counts for rate limiting per task
+	rateLimitCounters   map[string]*RateLimitCounter // taskID -> counter
+	rateLimitCountersMu sync.Mutex
 	// Metrics counters for Prometheus endpoint
 	metricsSuccessCount int64 // atomic: total successful task runs
 	metricsFailureCount int64 // atomic: total failed task runs
@@ -168,6 +171,14 @@ type Daemon struct {
 
 	// AMQPConsumer handles AMQP message queue subscriptions
 	amqpConsumer *AMQPConsumer
+}
+
+// RateLimitCounter tracks execution counts for rate limiting per task
+type RateLimitCounter struct {
+	// Hourly counters (keyed by YYYY-MM-DD HH)
+	Hourly map[string]int
+	// Daily counters (keyed by YYYY-MM-DD)
+	Daily map[string]int
 }
 
 type RunningTask struct {
@@ -248,6 +259,7 @@ func New(cfg *config.Config) *Daemon {
 		circuitBreakerStorage: NewCircuitBreakerStorage(filepath.Join(config.Dir(), "circuits")),
 		persistentBudgetUsed: make(map[string]time.Duration),
 		webhooks:             webhook.New(cfg.Webhooks),
+		rateLimitCounters:    make(map[string]*RateLimitCounter),
 	}
 
 	// Initialize health manager
@@ -1613,6 +1625,8 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/start", d.handleStartTask)
 	mux.HandleFunc("/budget", d.handleBudget)
 	mux.HandleFunc("/reset-budget", d.handleResetBudget)
+	mux.HandleFunc("/rate-limits", d.handleRateLimits)
+	mux.HandleFunc("/reset-rate-limits", d.handleResetRateLimits)
 	mux.HandleFunc("/cluster/status", d.handleClusterStatus)
 	mux.HandleFunc("/cluster/leave", d.handleClusterLeave)
 
@@ -1870,6 +1884,105 @@ func (d *Daemon) handleResetBudget(w http.ResponseWriter, r *http.Request) {
 	d.stoppedMu.Unlock()
 
 	fmt.Fprintf(w, "budget reset for %s", req.TaskKey)
+}
+
+// RateLimitStatus represents the rate limit status for a task
+type RateLimitStatus struct {
+	TaskName  string `json:"task_name"`
+	ThisHour  string `json:"this_hour"`
+	HourLimit string `json:"hour_limit"`
+	ThisDay   string `json:"this_day"`
+	DayLimit  string `json:"day_limit"`
+}
+
+// handleRateLimits returns rate limit status for all tasks
+func (d *Daemon) handleRateLimits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	d.rateLimitCountersMu.Lock()
+	defer d.rateLimitCountersMu.Unlock()
+
+	var statuses []RateLimitStatus
+
+	// Get all watched projects to find tasks
+	paths := loadWatchedPaths()
+	now := time.Now()
+	hourKey := now.Format("2006-01-02 15")
+	dayKey := now.Format("2006-01-02")
+
+	for _, path := range paths {
+		proj, err := project.Load(path)
+		if err != nil {
+			continue
+		}
+
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			continue
+		}
+
+		for _, todo := range todos {
+			if todo.RateLimit.MaxPerHour == 0 && todo.RateLimit.MaxPerDay == 0 {
+				continue // Skip tasks without rate limits
+			}
+
+			status := RateLimitStatus{
+				TaskName: strings.TrimSuffix(todo.Name, ".md"),
+			}
+
+			// Get counter for this task
+			counter, exists := d.rateLimitCounters[todo.ID]
+			if !exists {
+				counter = &RateLimitCounter{
+					Hourly: make(map[string]int),
+					Daily:  make(map[string]int),
+				}
+			}
+
+			// Format hourly status
+			thisHour := counter.Hourly[hourKey]
+			if todo.RateLimit.MaxPerHour > 0 {
+				status.ThisHour = fmt.Sprintf("%d/%d", thisHour, todo.RateLimit.MaxPerHour)
+				status.HourLimit = fmt.Sprintf("%.0f%%", float64(thisHour)/float64(todo.RateLimit.MaxPerHour)*100)
+			} else {
+				status.ThisHour = fmt.Sprintf("%d/unlimited", thisHour)
+				status.HourLimit = "0%"
+			}
+
+			// Format daily status
+			thisDay := counter.Daily[dayKey]
+			if todo.RateLimit.MaxPerDay > 0 {
+				status.ThisDay = fmt.Sprintf("%d/%d", thisDay, todo.RateLimit.MaxPerDay)
+				status.DayLimit = fmt.Sprintf("%.0f%%", float64(thisDay)/float64(todo.RateLimit.MaxPerDay)*100)
+			} else {
+				status.ThisDay = fmt.Sprintf("%d/unlimited", thisDay)
+				status.DayLimit = "0%"
+			}
+
+			statuses = append(statuses, status)
+		}
+	}
+
+	json.NewEncoder(w).Encode(statuses)
+}
+
+// handleResetRateLimits resets all rate limit counters
+func (d *Daemon) handleResetRateLimits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	d.rateLimitCountersMu.Lock()
+	defer d.rateLimitCountersMu.Unlock()
+
+	// Clear all counters
+	d.rateLimitCounters = make(map[string]*RateLimitCounter)
+
+	fmt.Fprintf(w, "rate limit counters reset")
 }
 
 func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
@@ -3052,6 +3165,25 @@ func (d *Daemon) tick(now time.Time) {
 			}
 		}
 
+		// Check rate limiting: skip task if hourly or daily limit would be exceeded
+		if pt.todo.RateLimit.MaxPerHour > 0 || pt.todo.RateLimit.MaxPerDay > 0 {
+			if d.isRateLimited(pt.todo, time.Now()) {
+				dlog.Info("skip %s/%s — rate limit exceeded", projName, pt.todo.Name)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "rate limit exceeded"
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
+			// Increment counters for this execution
+			d.incrementRateCounters(pt.todo.ID, time.Now())
+		}
+
 		// Local dispatch (original behavior)
 		// Dispatch up to instancesToDispatch instances of this task.
 		// The first slot was already reserved above; reserve additional slots as we go.
@@ -3604,4 +3736,95 @@ func SendClusterLeaveRequest() (map[string]any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// SendRateLimitsRequest retrieves rate limit status for all tasks
+func SendRateLimitsRequest() ([]RateLimitStatus, error) {
+	resp, err := socketClient().Get("http://daemon/rate-limits")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("rate limits request failed: %s", string(body))
+	}
+
+	var result []RateLimitStatus
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SendResetRateLimitsRequest resets all rate limit counters
+func SendResetRateLimitsRequest() error {
+	resp, err := socketClient().Post("http://daemon/reset-rate-limits", "application/json", bytes.NewBufferString("{}"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("reset rate limits failed: %s", string(body))
+	}
+	return nil
+}
+
+// isRateLimited checks if a task would exceed its hourly or daily rate limits
+func (d *Daemon) isRateLimited(todo project.Todo, now time.Time) bool {
+	if todo.RateLimit.MaxPerHour == 0 && todo.RateLimit.MaxPerDay == 0 {
+		return false
+	}
+
+	d.rateLimitCountersMu.Lock()
+	defer d.rateLimitCountersMu.Unlock()
+
+	counter, exists := d.rateLimitCounters[todo.ID]
+	if !exists {
+		return false
+	}
+
+	// Check hourly limit
+	if todo.RateLimit.MaxPerHour > 0 {
+		hourKey := now.Format("2006-01-02 15")
+		if counter.Hourly[hourKey] >= todo.RateLimit.MaxPerHour {
+			return true
+		}
+	}
+
+	// Check daily limit
+	if todo.RateLimit.MaxPerDay > 0 {
+		dayKey := now.Format("2006-01-02")
+		if counter.Daily[dayKey] >= todo.RateLimit.MaxPerDay {
+			return true
+		}
+	}
+
+	return false
+}
+
+// incrementRateCounters increments the hourly and daily counters for a task
+func (d *Daemon) incrementRateCounters(taskID string, now time.Time) {
+	d.rateLimitCountersMu.Lock()
+	defer d.rateLimitCountersMu.Unlock()
+
+	counter, exists := d.rateLimitCounters[taskID]
+	if !exists {
+		counter = &RateLimitCounter{
+			Hourly: make(map[string]int),
+			Daily:  make(map[string]int),
+		}
+		d.rateLimitCounters[taskID] = counter
+	}
+
+	// Increment hourly counter
+	hourKey := now.Format("2006-01-02 15")
+	counter.Hourly[hourKey]++
+
+	// Increment daily counter
+	dayKey := now.Format("2006-01-02")
+	counter.Daily[dayKey]++
 }

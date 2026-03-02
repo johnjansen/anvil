@@ -100,6 +100,13 @@ type CircuitBreakerConfig struct {
 	HalfOpenMax int           `yaml:"half_open_max"` // maximum test requests in half-open state
 }
 
+// RateLimitConfig defines per-task rate limiting configuration.
+// When MaxPerHour or MaxPerDay > 0, the daemon tracks executions and skips tasks that would exceed limits.
+type RateLimitConfig struct {
+	MaxPerHour int `yaml:"max_per_hour"` // max executions per hour (0 = unlimited)
+	MaxPerDay  int `yaml:"max_per_day"`  // max executions per day (0 = unlimited)
+}
+
 // AlertCondition defines when an alert should trigger.
 type AlertCondition struct {
 	Type      string `yaml:"type"`       // "cost", "duration", or "output"
@@ -201,6 +208,8 @@ type Todo struct {
 	HealthCheck          string        // shell command for health check (empty = no health check)
 	Subscription         *SubscriptionConfig // message subscription configuration (nil = no subscription)
 	Cache                *CacheConfig  // task output caching configuration (nil = no caching)
+	// Rate limiting configuration
+	RateLimit            RateLimitConfig // per-task rate limiting configuration
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
