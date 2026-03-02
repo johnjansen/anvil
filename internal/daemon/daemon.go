@@ -3962,7 +3962,7 @@ func (d *Daemon) checkForTimedOutProcesses(now time.Time) {
 	d.tasksMu.RLock()
 	defer d.tasksMu.RUnlock()
 
-	for instanceKey, task := range d.tasks {
+	for _, task := range d.tasks {
 		// Skip tasks without a valid PID or timeout
 		if task.PID <= 0 || task.Timeout <= 0 {
 			continue
