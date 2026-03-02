@@ -1918,6 +1918,8 @@ func taskCmd(args []string) {
 		taskSlaCmd(args[1:])
 	case "alerts":
 		taskAlertsCmd(args[1:])
+	case "rate-limits":
+		taskRateLimitsCmd(args[1:])
 	case "health":
 		taskHealthCmd(args[1:])
 	case "find":
@@ -3450,6 +3452,142 @@ func taskAlertsCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "unknown alerts subcommand: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Usage: anvil task alerts [list|history|ack <id>]\n")
 		os.Exit(1)
+	}
+}
+
+func taskRateLimitsCmd(args []string) {
+	reset := false
+	jsonOutput := false
+	for _, a := range args {
+		switch a {
+		case "--reset":
+			reset = true
+		case "--json":
+			jsonOutput = true
+		}
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Filter tasks with rate limits configured
+	type rateLimitEntry struct {
+		Name      string `json:"name"`
+		ThisHour  int    `json:"this_hour"`
+		MaxPerHour int   `json:"max_per_hour"`
+		HourPercent float64 `json:"hour_percent"`
+		ThisDay   int    `json:"this_day"`
+		MaxPerDay int    `json:"max_per_day"`
+		DayPercent float64 `json:"day_percent"`
+	}
+
+	var entries []rateLimitEntry
+	now := time.Now()
+
+	for _, t := range todos {
+		if t.RateLimit.MaxPerHour <= 0 && t.RateLimit.MaxPerDay <= 0 {
+			continue
+		}
+
+		counter, counterErr := project.ReadRateLimitCounter(abs, t.ID)
+		if counterErr != nil {
+			log.Printf("Warning: failed to read rate limit counter for %s: %v", t.Name, counterErr)
+			continue
+		}
+
+		// Reset counters if periods have passed
+		if counter.ThisHourStart.Add(time.Hour).Before(now) {
+			counter.ThisHourCount = 0
+			counter.ThisHourStart = now.Truncate(time.Hour)
+		}
+		if counter.ThisDayStart.Add(24 * time.Hour).Before(now) {
+			counter.ThisDayCount = 0
+			counter.ThisDayStart = now.Truncate(24 * time.Hour)
+		}
+
+		entry := rateLimitEntry{
+			Name: t.Name,
+		}
+
+		if t.RateLimit.MaxPerHour > 0 {
+			entry.ThisHour = counter.ThisHourCount
+			entry.MaxPerHour = t.RateLimit.MaxPerHour
+			entry.HourPercent = float64(counter.ThisHourCount) / float64(t.RateLimit.MaxPerHour) * 100
+		}
+
+		if t.RateLimit.MaxPerDay > 0 {
+			entry.ThisDay = counter.ThisDayCount
+			entry.MaxPerDay = t.RateLimit.MaxPerDay
+			entry.DayPercent = float64(counter.ThisDayCount) / float64(t.RateLimit.MaxPerDay) * 100
+		}
+
+		entries = append(entries, entry)
+	}
+
+	if reset {
+		resetCount := 0
+		for _, t := range todos {
+			if t.RateLimit.MaxPerHour > 0 || t.RateLimit.MaxPerDay > 0 {
+				if resetErr := project.ResetRateLimitCounter(abs, t.ID); resetErr == nil {
+					resetCount++
+				}
+			}
+		}
+		fmt.Printf("Reset %d rate limit counter(s)\n", resetCount)
+		return
+	}
+
+	if len(entries) == 0 {
+		if jsonOutput {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("No tasks have rate limits configured.")
+		}
+		return
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			log.Fatalf("failed to marshal JSON: %v", err)
+		}
+		fmt.Println(string(data))
+		return
+	}
+
+	// Human-readable output
+	fmt.Printf("%-30s  %-15s  %-15s\n", "TASK", "THIS_HOUR", "THIS_DAY")
+	fmt.Printf("%-30s  %-15s  %-15s\n", strings.Repeat("-", 30), strings.Repeat("-", 15), strings.Repeat("-", 15))
+	for _, e := range entries {
+		hourDisplay := "N/A"
+		if e.MaxPerHour > 0 {
+			hourDisplay = fmt.Sprintf("%d/%d", e.ThisHour, e.MaxPerHour)
+			if e.HourPercent >= 80 {
+				hourDisplay += fmt.Sprintf(" (%.0f%%)", e.HourPercent)
+			}
+		}
+
+		dayDisplay := "N/A"
+		if e.MaxPerDay > 0 {
+			dayDisplay = fmt.Sprintf("%d/%d", e.ThisDay, e.MaxPerDay)
+			if e.DayPercent >= 80 {
+				dayDisplay += fmt.Sprintf(" (%.0f%%)", e.DayPercent)
+			}
+		}
+
+		fmt.Printf("%-30s  %-15s  %-15s\n", e.Name, hourDisplay, dayDisplay)
 	}
 }
 
