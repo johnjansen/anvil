@@ -170,6 +170,38 @@ Run analysis jobs but cap at 2 parallel instances.
 
 Default is 1 (no parallel runs of the same task). Omit or set to 0 to use the default.
 
+### Concurrency Groups
+
+Coordinate execution across multiple related tasks using concurrency groups:
+
+```yaml
+---
+schedule: "*/30 * * * *"
+concurrency_group: etl
+---
+Process ETL data...
+```
+
+Define group settings in `~/.anvil/config.yaml`:
+
+```yaml
+concurrency_groups:
+  etl:
+    max_concurrent: 5        # max 5 tasks from this group at once
+    min_available: 1         # always keep 1 worker available for non-group tasks
+    rate_limit:
+      requests_per_minute: 10 # max 10 API calls per minute across group
+    priority_boost: true     # elevate priority within group
+
+  heavy_compute:
+    max_concurrent: 2
+    min_available: 2
+```
+
+Tasks in the same group coordinate to stay within limits. If a group is at capacity, new tasks wait even if individual `max_concurrent` would allow them.
+
+View group status with `anvil groups`.
+
 ### Gate execution with a pre-check
 
 Skip the LLM call entirely when there's nothing to do:
@@ -665,6 +697,16 @@ quiet_hours:
   start: "22:00"
   end: "07:00"
   exclude_priority: 0   # only p0 tasks bypass quiet hours
+concurrency_groups:
+  etl:
+    max_concurrent: 5
+    min_available: 1
+    rate_limit:
+      requests_per_minute: 10
+    priority_boost: true
+  heavy_compute:
+    max_concurrent: 2
+    min_available: 2
 retention:
   max_age: 7d      # delete logs older than 7 days
   max_runs: 50     # keep only last 50 runs per task
@@ -879,6 +921,7 @@ anvil cleanup -o=24h
 | `anvil task pipeline [--dot|--verbose] [--all]` | Visualize task dependency pipelines |
 | `anvil task reset-budget <name>` | Reset persistent task budget consumption |
 | `anvil task dry-run <name> [options]` | Validate and preview task config without executing |
+| `anvil groups [--json]` | Show concurrency group status |
 | `anvil task sla [--verbose] [--reset] [--json]` | Show SLA violations |
 | `anvil task state <name> [--export FILE \| --import FILE \| --clear]` | View, export, import, or clear task state |
 | `anvil task start <name>` | Start a stopped task (re-enable rescheduling) |
