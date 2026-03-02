@@ -2887,7 +2887,7 @@ func (d *Daemon) tick(now time.Time) {
 
 	// Sort globally by priority (p0 first), then by name (oldest timestamp first)
 	// With priority aging: boost priority based on wait time
-	now := time.Now()
+	currentTime := time.Now()
 	sort.SliceStable(dueTodos, func(i, j int) bool {
 		// Calculate effective priority with aging
 		getEffectivePriority := func(pt projectTodo) int {
@@ -2921,7 +2921,7 @@ func (d *Daemon) tick(now time.Time) {
 				d.priorityAgingQueueTimesMu.Unlock()
 
 				if exists {
-					waitTime := now.Sub(queueTime)
+					waitTime := currentTime.Sub(queueTime)
 					if waitTime > maxWait && maxWait > 0 {
 						// Calculate boost level based on how much we've exceeded maxWait
 						boostLevels := int(waitTime/maxWait)
