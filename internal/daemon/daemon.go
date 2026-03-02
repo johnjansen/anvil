@@ -1544,6 +1544,22 @@ skipExecution:
 		}
 	}
 
+	// Accumulate cost budget usage for tasks with cost budgets
+	if t.CostBudget > 0 {
+		d.costBudgetUsedMu.Lock()
+		d.costBudgetUsed[taskKey] += runRecord.EstimatedCostUSD
+		costUsed := d.costBudgetUsed[taskKey]
+		d.costBudgetUsedMu.Unlock()
+		// Emit warning when cost budget is approaching limit
+		if t.CostBudget > 0 {
+			remaining := t.CostBudget - costUsed
+			pctUsed := costUsed / t.CostBudget * 100
+			if pctUsed >= 80 && remaining > 0 {
+				dlog.Warn("##anvil:status Cost budget low for %s: $%.2f remaining (%.0f%% of $%.2f used)", t.Name, remaining, pctUsed, t.CostBudget)
+			}
+		}
+	}
+
 	// For persistent tasks, set cooldown after each cycle completes
 	if t.IsPersistent() && t.PersistentCooldown > 0 {
 		d.persistentCooldownsMu.Lock()
@@ -1973,13 +1989,26 @@ func (d *Daemon) handleBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create a combined result with both time and cost budgets
+	result := make(map[string]interface{})
+
+	// Add persistent time budget usage
 	d.persistentBudgetUsedMu.Lock()
-	// Return the raw budget usage map as task_key -> seconds
-	result := make(map[string]float64, len(d.persistentBudgetUsed))
+	timeBudgets := make(map[string]float64, len(d.persistentBudgetUsed))
 	for k, v := range d.persistentBudgetUsed {
-		result[k] = v.Seconds()
+		timeBudgets[k] = v.Seconds()
 	}
 	d.persistentBudgetUsedMu.Unlock()
+	result["time_budgets"] = timeBudgets
+
+	// Add cost budget usage
+	d.costBudgetUsedMu.Lock()
+	costBudgets := make(map[string]float64, len(d.costBudgetUsed))
+	for k, v := range d.costBudgetUsed {
+		costBudgets[k] = v
+	}
+	d.costBudgetUsedMu.Unlock()
+	result["cost_budgets"] = costBudgets
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -2000,6 +2029,7 @@ func (d *Daemon) handleResetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reset persistent time budget
 	d.persistentBudgetUsedMu.Lock()
 	if req.Budget != "" {
 		// Set used to a negative offset so effective remaining = parsed budget
@@ -2017,6 +2047,11 @@ func (d *Daemon) handleResetBudget(w http.ResponseWriter, r *http.Request) {
 		d.persistentBudgetUsed[req.TaskKey] = 0
 	}
 	d.persistentBudgetUsedMu.Unlock()
+
+	// Reset cost budget as well
+	d.costBudgetUsedMu.Lock()
+	d.costBudgetUsed[req.TaskKey] = 0
+	d.costBudgetUsedMu.Unlock()
 
 	// Also unstop the task if it was stopped due to budget exhaustion
 	d.stoppedMu.Lock()
@@ -3373,6 +3408,30 @@ func (d *Daemon) tick(now time.Time) {
 					delete(d.inFlight, taskKey)
 				}
 				d.inFlightMu.Unlock()
+				continue
+			}
+		}
+
+		// Skip dispatch if task has exhausted its cost budget
+		if pt.todo.CostBudget > 0 {
+			d.costBudgetUsedMu.Lock()
+			costUsed := d.costBudgetUsed[taskKey]
+			d.costBudgetUsedMu.Unlock()
+			if costUsed >= pt.todo.CostBudget {
+				dlog.Info("skip %s/%s — cost budget exhausted ($%.2f / $%.2f)", projName, pt.todo.Name, costUsed, pt.todo.CostBudget)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "cost budget exhausted"
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				// Also mark as stopped so it won't be re-dispatched until reset
+				d.stoppedMu.Lock()
+				d.stoppedTasks[pt.todo.ID] = true
+				d.stoppedMu.Unlock()
 				continue
 			}
 		}

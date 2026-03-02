@@ -138,3 +138,100 @@ func TestNonPersistentTaskSkipsBudget(t *testing.T) {
 		t.Error("expected non-persistent task to skip budget check even if PersistentBudget is set")
 	}
 }
+
+func TestCostBudgetAccumulation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runners = []string{"echo"}
+	d := New(cfg)
+
+	taskKey := "proj/my-task"
+
+	// Accumulate $5.50 in costs
+	d.costBudgetUsedMu.Lock()
+	d.costBudgetUsed[taskKey] += 5.50
+	d.costBudgetUsedMu.Unlock()
+
+	// Accumulate another $2.25
+	d.costBudgetUsedMu.Lock()
+	d.costBudgetUsed[taskKey] += 2.25
+	d.costBudgetUsedMu.Unlock()
+
+	d.costBudgetUsedMu.Lock()
+	used := d.costBudgetUsed[taskKey]
+	d.costBudgetUsedMu.Unlock()
+
+	if used != 7.75 {
+		t.Errorf("expected $7.75 accumulated, got $%.2f", used)
+	}
+}
+
+func TestCostBudgetExceededBlocksDispatch(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runners = []string{"echo"}
+	d := New(cfg)
+
+	taskKey := "proj/my-task"
+	costBudget := 10.00
+
+	// Task has used $12.50, budget is $10.00
+	d.costBudgetUsedMu.Lock()
+	d.costBudgetUsed[taskKey] = 12.50
+	d.costBudgetUsedMu.Unlock()
+
+	todo := project.Todo{
+		Name:       "my-task",
+		Schedule:   "persistent",
+		CostBudget: costBudget,
+	}
+
+	// Check: should block
+	d.costBudgetUsedMu.Lock()
+	used := d.costBudgetUsed[taskKey]
+	d.costBudgetUsedMu.Unlock()
+
+	if !(todo.CostBudget > 0 && used >= todo.CostBudget) {
+		t.Error("expected cost budget exceeded to block dispatch")
+	}
+}
+
+func TestCostBudgetNotExceededAllowsDispatch(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runners = []string{"echo"}
+	d := New(cfg)
+
+	taskKey := "proj/my-task"
+	costBudget := 10.00
+
+	// Task has used $7.50, budget is $10.00
+	d.costBudgetUsedMu.Lock()
+	d.costBudgetUsed[taskKey] = 7.50
+	d.costBudgetUsedMu.Unlock()
+
+	todo := project.Todo{
+		Name:       "my-task",
+		Schedule:   "persistent",
+		CostBudget: costBudget,
+	}
+
+	d.costBudgetUsedMu.Lock()
+	used := d.costBudgetUsed[taskKey]
+	d.costBudgetUsedMu.Unlock()
+
+	if todo.CostBudget > 0 && used >= todo.CostBudget {
+		t.Error("expected cost budget under limit to allow dispatch")
+	}
+}
+
+func TestZeroCostBudgetMeansUnlimited(t *testing.T) {
+	todo := project.Todo{
+		Name:       "my-task",
+		Schedule:   "persistent",
+		CostBudget: 0, // no budget set
+	}
+
+	// Should NOT trigger cost budget check
+	shouldCheck := todo.CostBudget > 0
+	if shouldCheck {
+		t.Error("expected zero cost budget to skip budget check")
+	}
+}

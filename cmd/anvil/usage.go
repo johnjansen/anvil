@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +25,7 @@ func usageCmd(args []string) {
 	var showMetrics bool
 	var topN int
 	var jsonOut bool
+	var showBudget bool
 
 	i := 0
 	for i < len(args) {
@@ -52,6 +57,9 @@ func usageCmd(args []string) {
 		case "--metrics":
 			showMetrics = true
 			i++
+		case "--budget":
+			showBudget = true
+			i++
 		case "--top":
 			if i+1 < len(args) {
 				n, err := strconv.Atoi(args[i+1])
@@ -82,6 +90,16 @@ Options:
   --top <N>         Show only top N tasks by runtime
   --json            Output as JSON
 `)
+			} else if showBudget {
+				fmt.Fprintf(os.Stderr, `Usage: anvil usage --budget [options]
+
+Show current budget usage for tasks and projects.
+
+Options:
+  --project <path>   Filter to a specific project (default: all watched projects)
+  --task <name>      Filter to a specific task name
+  --json             Output as JSON
+`)
 			} else {
 				fmt.Fprintf(os.Stderr, `Usage: anvil usage [options]
 
@@ -92,6 +110,7 @@ Options:
   --task <name>      Filter to a specific task name
   --since <date>     Show usage since date (YYYY-MM-DD, default: 7 days ago)
   --metrics          Show task runtime metrics (total runtime, success rate, etc.)
+  --budget           Show current budget usage (requires daemon running)
   --top <N>          Limit output to top N tasks (use with --metrics)
   --json             Output as JSON
 `)
@@ -101,6 +120,12 @@ Options:
 			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
 			os.Exit(1)
 		}
+	}
+
+	// Handle budget display separately
+	if showBudget {
+		budgetCmd(projectFilter, taskFilter, jsonOut)
+		return
 	}
 
 	// Default: last 7 days for usage, 30 days for metrics
@@ -523,6 +548,194 @@ func formatCost(c float64) string {
 		return fmt.Sprintf("$%.4f", c)
 	}
 	return fmt.Sprintf("$%.2f", c)
+}
+
+func budgetCmd(projectFilter, taskFilter string, jsonOut bool) {
+	// Check if daemon is running
+	sockPath := filepath.Join(config.Dir(), "daemon.sock")
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "daemon not running - budget information unavailable\n")
+		os.Exit(1)
+	}
+	conn.Close()
+
+	// Connect to daemon to get budget information
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", sockPath)
+			},
+		},
+	}
+
+	resp, err := client.Get("http://unix/budget")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to get budget info: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "daemon returned error: %s\n", body)
+		os.Exit(1)
+	}
+
+	var budgetData struct {
+		TimeBudgets  map[string]float64 `json:"time_budgets"`
+		CostBudgets  map[string]float64 `json:"cost_budgets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&budgetData); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to decode budget data: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load projects to get task configurations
+	var projectPaths []string
+	if projectFilter != "" {
+		abs, err := filepath.Abs(projectFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad project path: %v\n", err)
+			os.Exit(1)
+		}
+		projectPaths = []string{abs}
+	} else {
+		watched, err := loadAllWatched()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load watched projects: %v\n", err)
+			os.Exit(1)
+		}
+		for _, w := range watched {
+			projectPaths = append(projectPaths, w.Path)
+		}
+	}
+
+	// Collect task configurations with budgets
+	type budgetInfo struct {
+		Project     string
+		TaskName    string
+		CostBudget  float64
+		CostUsed    float64
+		TimeBudget  time.Duration
+		TimeUsed    time.Duration
+	}
+
+	var allBudgets []budgetInfo
+
+	for _, projPath := range projectPaths {
+		proj, err := project.Load(projPath)
+		if err != nil {
+			continue
+		}
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			continue
+		}
+		projName := filepath.Base(projPath)
+
+		for _, todo := range todos {
+			if taskFilter != "" && todo.Name != taskFilter {
+				continue
+			}
+
+			// Check if this task has any budgets configured
+			hasBudget := todo.CostBudget > 0 || todo.PersistentBudget > 0
+			if !hasBudget {
+				continue
+			}
+
+			taskKey := projPath + "/" + todo.Name
+			bi := budgetInfo{
+				Project:  projName,
+				TaskName: todo.Name,
+			}
+
+			// Get cost budget info
+			if todo.CostBudget > 0 {
+				bi.CostBudget = todo.CostBudget
+				if used, exists := budgetData.CostBudgets[taskKey]; exists {
+					bi.CostUsed = used
+				}
+			}
+
+			// Get time budget info
+			if todo.PersistentBudget > 0 {
+				bi.TimeBudget = todo.PersistentBudget
+				if used, exists := budgetData.TimeBudgets[taskKey]; exists {
+					bi.TimeUsed = time.Duration(used * float64(time.Second))
+				}
+			}
+
+			allBudgets = append(allBudgets, bi)
+		}
+	}
+
+	// Sort by project/name for consistent output
+	sort.Slice(allBudgets, func(i, j int) bool {
+		if allBudgets[i].Project != allBudgets[j].Project {
+			return allBudgets[i].Project < allBudgets[j].Project
+		}
+		return allBudgets[i].TaskName < allBudgets[j].TaskName
+	})
+
+	// Output JSON if requested
+	if jsonOut {
+		json.NewEncoder(os.Stdout).Encode(allBudgets)
+		return
+	}
+
+	// Print human-readable output
+	fmt.Printf("%-30s %-15s %-15s %-15s %-15s\n", "TASK", "COST_BUDGET", "COST_USED", "TIME_BUDGET", "TIME_USED")
+	fmt.Printf("%-30s %-15s %-15s %-15s %-15s\n", "----", "----------", "--------", "-----------", "---------")
+
+	for _, bi := range allBudgets {
+		name := bi.TaskName
+		if len(projectPaths) > 1 {
+			label := bi.Project + "/" + name
+			if len(label) > 30 {
+				label = label[:27] + "..."
+			}
+			name = label
+		}
+
+		costBudgetStr := "N/A"
+		if bi.CostBudget > 0 {
+			costBudgetStr = fmt.Sprintf("$%.2f", bi.CostBudget)
+		}
+
+		costUsedStr := "N/A"
+		if bi.CostBudget > 0 {
+			costUsedStr = fmt.Sprintf("$%.2f", bi.CostUsed)
+			// Add percentage
+			if bi.CostBudget > 0 {
+				pct := bi.CostUsed / bi.CostBudget * 100
+				costUsedStr += fmt.Sprintf(" (%.0f%%)", pct)
+			}
+		}
+
+		timeBudgetStr := "N/A"
+		if bi.TimeBudget > 0 {
+			timeBudgetStr = formatDuration(bi.TimeBudget)
+		}
+
+		timeUsedStr := "N/A"
+		if bi.TimeBudget > 0 {
+			timeUsedStr = formatDuration(bi.TimeUsed)
+			// Add percentage
+			if bi.TimeBudget > 0 {
+				pct := float64(bi.TimeUsed) / float64(bi.TimeBudget) * 100
+				timeUsedStr += fmt.Sprintf(" (%.0f%%)", pct)
+			}
+		}
+
+		fmt.Printf("%-30s %-15s %-15s %-15s %-15s\n",
+			name,
+			costBudgetStr,
+			costUsedStr,
+			timeBudgetStr,
+			timeUsedStr)
+	}
 }
 
 // --- helpers ---
