@@ -5,6 +5,7 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 ## Active Technologies
 - Go 1.24.6 + `internal/cron` (cron parsing with `Prev()`), `internal/project` (Todo/RunRecord), `internal/config`, `internal/daemon` (004-task-sla-tracking)
 - JSON files in `.anvil/runs/<task-id>/` (existing RunRecord system) (004-task-sla-tracking)
+- Go 1.24.6 + internal/cron, internal/project, internal/config, internal/daemon (340-task-wait-conditions)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -24,6 +25,7 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 340-task-wait-conditions: Added Go 1.24.6 + internal/cron, internal/project, internal/config, internal/daemon
 - 004-task-sla-tracking: Added Go 1.24.6 + `internal/cron` (cron parsing with `Prev()`), `internal/project` (Todo/RunRecord), `internal/config`, `internal/daemon`
 
 - 002-cli-ecosystem-blog-post: Added Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document)
