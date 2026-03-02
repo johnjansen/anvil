@@ -230,6 +230,7 @@ type TaskQueueInfo struct {
 	Schedule   string `json:"schedule"`
 	Status     string `json:"status"`       // "running", "pending", "skipped"
 	SkipReason string `json:"skip_reason,omitempty"` // why task was skipped in last tick
+	Boost      int    `json:"boost,omitempty"`       // priority boost from aging (0 = no boost)
 }
 
 // TaskBudgetInfo holds budget consumption info for a persistent task.
