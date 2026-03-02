@@ -34,6 +34,7 @@ type Config struct {
 	Cluster                  ClusterConfig       `yaml:"cluster"`                     // multi-daemon cluster coordination
 	Alerts                  AlertGlobalConfig  `yaml:"alerts"`                      // global alert settings
 	CircuitBreaker          CircuitBreakerGlobalConfig `yaml:"circuit_breaker"`         // global circuit breaker defaults
+	PriorityAging           PriorityAgingConfig `yaml:"priority_aging"`              // global priority aging settings
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
@@ -52,6 +53,13 @@ type CircuitBreakerGlobalConfig struct {
 	DefaultFailures    int           `yaml:"default_failures"`    // default failures threshold (0 = disabled)
 	DefaultTimeout     time.Duration `yaml:"default_timeout"`     // default timeout duration
 	DefaultHalfOpenMax int           `yaml:"default_half_open_max"` // default half-open test requests
+}
+
+// PriorityAgingConfig defines global priority aging settings to prevent low-priority task starvation.
+type PriorityAgingConfig struct {
+	Enabled        bool          `yaml:"enabled"`          // whether priority aging is globally enabled
+	DefaultMaxWait time.Duration `yaml:"default_max_wait"` // default wait time before boosting priority
+	DefaultMaxBoost int          `yaml:"default_max_boost"` // default maximum priority boost levels (e.g., 2 means p3 can become p1)
 }
 
 // HealthConfig defines health check configuration.
@@ -189,6 +197,11 @@ func Default() *Config {
 		Health: HealthConfig{
 			IncludeTasks:       false, // disabled by default
 			UnhealthyThreshold: 0,     // disabled by default
+		},
+		PriorityAging: PriorityAgingConfig{
+			Enabled:        false, // disabled by default
+			DefaultMaxWait: 30 * time.Minute,
+			DefaultMaxBoost: 2,
 		},
 	}
 }
