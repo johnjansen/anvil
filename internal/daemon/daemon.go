@@ -171,6 +171,9 @@ type Daemon struct {
 
 	// AMQPConsumer handles AMQP message queue subscriptions
 	amqpConsumer *AMQPConsumer
+
+	// FSWatcher handles filesystem path subscriptions
+	fsWatcher *FSWatcher
 }
 
 // RateLimitCounter tracks execution counts for rate limiting per task
@@ -267,6 +270,9 @@ func New(cfg *config.Config) *Daemon {
 
 	// Initialize AMQP consumer
 	d.amqpConsumer = NewAMQPConsumer(d)
+
+	// Initialize filesystem watcher
+	d.fsWatcher = NewFSWatcher(d)
 
 	return d
 }
@@ -449,7 +455,7 @@ func (d *Daemon) Run() {
 		}
 		projects = append(projects, proj)
 	}
-	d.startAMQPSubscriptions(projects)
+	d.startSubscriptions(projects)
 
 	// Start SIGHUP handler for config reload
 	sighupChan := make(chan os.Signal, 1)
@@ -478,6 +484,10 @@ func (d *Daemon) Run() {
 			// Stop all AMQP consumers
 			if d.amqpConsumer != nil {
 				d.amqpConsumer.StopAll()
+			}
+			// Stop all filesystem watchers
+			if d.fsWatcher != nil {
+				d.fsWatcher.StopAll()
 			}
 			if d.httpServer != nil {
 				d.httpServer.Shutdown(context.Background())
@@ -509,6 +519,10 @@ func (d *Daemon) Stop() {
 		if d.amqpConsumer != nil {
 			d.amqpConsumer.StopAll()
 		}
+		// Stop all filesystem watchers
+		if d.fsWatcher != nil {
+			d.fsWatcher.StopAll()
+		}
 		close(d.stop)
 	})
 	<-d.done
@@ -519,9 +533,9 @@ func (d *Daemon) Done() <-chan struct{} {
 	return d.done
 }
 
-// startAMQPSubscriptions starts AMQP subscriptions for all tasks with AMQP subscriptions
-func (d *Daemon) startAMQPSubscriptions(projects []*project.Project) {
-	dlog.Info("Starting AMQP subscriptions for %d projects", len(projects))
+// startSubscriptions starts all message subscriptions (AMQP and filesystem) for tasks
+func (d *Daemon) startSubscriptions(projects []*project.Project) {
+	dlog.Info("Starting message subscriptions for %d projects", len(projects))
 	for _, proj := range projects {
 		dlog.Info("Loading todos for project: %s", proj.Path)
 		todos, err := proj.LoadTodos()
@@ -532,10 +546,18 @@ func (d *Daemon) startAMQPSubscriptions(projects []*project.Project) {
 		dlog.Info("Loaded %d todos for project: %s", len(todos), proj.Path)
 
 		for _, todo := range todos {
-			if todo.Subscription != nil && todo.Subscription.Type == "amqp" {
-				dlog.Info("Starting AMQP subscription for task: %s", todo.Name)
-				if err := d.amqpConsumer.StartSubscription(proj, todo); err != nil {
-					dlog.Warn("Failed to start AMQP subscription for task %s: %v", todo.Name, err)
+			if todo.Subscription != nil {
+				switch todo.Subscription.Type {
+				case "amqp":
+					dlog.Info("Starting AMQP subscription for task: %s", todo.Name)
+					if err := d.amqpConsumer.StartSubscription(proj, todo); err != nil {
+						dlog.Warn("Failed to start AMQP subscription for task %s: %v", todo.Name, err)
+					}
+				case "fs":
+					dlog.Info("Starting filesystem subscription for task: %s", todo.Name)
+					if err := d.fsWatcher.StartSubscription(proj, todo); err != nil {
+						dlog.Warn("Failed to start filesystem subscription for task %s: %v", todo.Name, err)
+					}
 				}
 			}
 		}
@@ -597,6 +619,10 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	// Stop all AMQP consumers
 	if d.amqpConsumer != nil {
 		d.amqpConsumer.StopAll()
+	}
+	// Stop all filesystem watchers
+	if d.fsWatcher != nil {
+		d.fsWatcher.StopAll()
 	}
 
 	close(d.workQueue)
