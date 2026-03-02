@@ -9251,6 +9251,163 @@ func taskSubscriptionLsCmd(args []string) {
 }
 
 
+// taskSubscriptionPauseCmd handles the 'anvil task subscription pause' command
+func taskSubscriptionPauseCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task subscription pause <task-name>\n")
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+
+	taskName := args[0]
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Find the task by name
+	var targetTodo *project.Todo
+	for i := range todos {
+		if strings.TrimSuffix(todos[i].Name, ".md") == taskName {
+			targetTodo = &todos[i]
+			break
+		}
+	}
+
+	if targetTodo == nil {
+		fmt.Fprintf(os.Stderr, "task '%s' not found\n", taskName)
+		os.Exit(1)
+	}
+
+	// Check if task has a subscription
+	if targetTodo.Subscription == nil {
+		fmt.Fprintf(os.Stderr, "task '%s' does not have a subscription\n", taskName)
+		os.Exit(1)
+	}
+
+	// Pause the task by setting Disabled = true
+	if err := updateTaskDisabledStatus(proj.Path, targetTodo, true); err != nil {
+		log.Fatalf("failed to pause task: %v", err)
+	}
+
+	fmt.Printf("Paused subscription for task '%s'\n", taskName)
+}
+
+// taskSubscriptionResumeCmd handles the 'anvil task subscription resume' command
+func taskSubscriptionResumeCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task subscription resume <task-name>\n")
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+
+	taskName := args[0]
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Find the task by name
+	var targetTodo *project.Todo
+	for i := range todos {
+		if strings.TrimSuffix(todos[i].Name, ".md") == taskName {
+			targetTodo = &todos[i]
+			break
+		}
+	}
+
+	if targetTodo == nil {
+		fmt.Fprintf(os.Stderr, "task '%s' not found\n", taskName)
+		os.Exit(1)
+	}
+
+	// Check if task has a subscription
+	if targetTodo.Subscription == nil {
+		fmt.Fprintf(os.Stderr, "task '%s' does not have a subscription\n", taskName)
+		os.Exit(1)
+	}
+
+	// Resume the task by setting Disabled = false
+	if err := updateTaskDisabledStatus(proj.Path, targetTodo, false); err != nil {
+		log.Fatalf("failed to resume task: %v", err)
+	}
+
+	fmt.Printf("Resumed subscription for task '%s'\n", taskName)
+}
+
+// updateTaskDisabledStatus updates the disabled status of a task by rewriting its file
+func updateTaskDisabledStatus(projectPath string, todo *project.Todo, disabled bool) error {
+	// Read the current task file
+	taskPath := filepath.Join(projectPath, todo.Name)
+	content, err := os.ReadFile(taskPath)
+	if err != nil {
+		return fmt.Errorf("reading task file: %w", err)
+	}
+
+	// Parse the YAML frontmatter and content
+	parts := strings.SplitN(string(content), "---", 3)
+	if len(parts) < 3 {
+		return fmt.Errorf("invalid task file format")
+	}
+
+	frontmatter := parts[1]
+	taskContent := parts[2]
+
+	// Parse the frontmatter to modify the disabled field
+	lines := strings.Split(frontmatter, "\n")
+	var newLines []string
+	disabledLineFound := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "disabled:") {
+			// Replace the disabled line
+			newLines = append(newLines, fmt.Sprintf("disabled: %t", disabled))
+			disabledLineFound = true
+		} else {
+			newLines = append(newLines, line)
+		}
+	}
+
+	// If disabled line wasn't found, add it
+	if !disabledLineFound {
+		// Insert the disabled line before the closing --- if possible
+		if len(newLines) > 0 && newLines[len(newLines)-1] == "" {
+			// Remove the last empty line
+			newLines = newLines[:len(newLines)-1]
+		}
+		newLines = append(newLines, fmt.Sprintf("disabled: %t", disabled))
+	}
+
+	// Reconstruct the frontmatter
+	newFrontmatter := strings.Join(newLines, "\n")
+
+	// Reconstruct the full file content
+	newContent := fmt.Sprintf("---\n%s\n---%s", newFrontmatter, taskContent)
+
+	// Write the updated content back to the file
+	return os.WriteFile(taskPath, []byte(newContent), 0644)
+}
+
 // truncate shortens a string to the specified length, collapsing any
 // embedded newlines/whitespace runs into single spaces for table display.
 func truncate(s string, maxLen int) string {
