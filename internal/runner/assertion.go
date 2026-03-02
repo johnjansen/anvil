@@ -76,7 +76,7 @@ func evaluateStdoutAssertions(config *project.StdoutAssertion, stdout string) []
 			Passed: strings.Contains(stdout, config.Contains),
 		}
 		if !result.Passed {
-			result.Message = fmt.Sprintf("stdout does not contain '%s'", config.Contains)
+			result.Message = fmt.Sprintf("Assertion failed: stdout does not contain '%s'", config.Contains)
 		}
 		results = append(results, result)
 	}
@@ -88,7 +88,7 @@ func evaluateStdoutAssertions(config *project.StdoutAssertion, stdout string) []
 			results = append(results, AssertionResult{
 				Passed: false,
 				Error:  err,
-				Message: fmt.Sprintf("invalid regex pattern '%s' for stdout matches assertion: %v",
+				Message: fmt.Sprintf("Assertion failed: invalid regex pattern '%s' for stdout matches assertion: %v",
 					config.Matches, err),
 			})
 		} else {
@@ -96,7 +96,7 @@ func evaluateStdoutAssertions(config *project.StdoutAssertion, stdout string) []
 				Passed: re.MatchString(stdout),
 			}
 			if !result.Passed {
-				result.Message = fmt.Sprintf("stdout does not match pattern '%s'", config.Matches)
+				result.Message = fmt.Sprintf("Assertion failed: stdout does not match pattern '%s'", config.Matches)
 			}
 			results = append(results, result)
 		}
@@ -108,7 +108,7 @@ func evaluateStdoutAssertions(config *project.StdoutAssertion, stdout string) []
 			Passed: json.Valid([]byte(stdout)),
 		}
 		if !result.Passed {
-			result.Message = "stdout is not valid JSON"
+			result.Message = "Assertion failed: stdout is not valid JSON"
 		}
 		results = append(results, result)
 	}
@@ -126,7 +126,7 @@ func evaluateStderrAssertions(config *project.StderrAssertion, stderr string) []
 			Passed: len(stderr) == 0,
 		}
 		if !result.Passed {
-			result.Message = "stderr is not empty"
+			result.Message = "Assertion failed: stderr is not empty"
 		}
 		results = append(results, result)
 	}
@@ -155,9 +155,9 @@ func evaluateFileAssertions(files []project.FileAssertion, projectPath string) [
 			}
 			if !result.Passed {
 				if *file.Exists {
-					result.Message = fmt.Sprintf("file '%s' does not exist", file.Path)
+					result.Message = fmt.Sprintf("Assertion failed: file '%s' does not exist", file.Path)
 				} else {
-					result.Message = fmt.Sprintf("file '%s' exists but should not", file.Path)
+					result.Message = fmt.Sprintf("Assertion failed: file '%s' exists but should not", file.Path)
 				}
 			}
 			results = append(results, result)
@@ -174,7 +174,7 @@ func evaluateFileAssertions(files []project.FileAssertion, projectPath string) [
 			results = append(results, AssertionResult{
 				Passed:  false,
 				Error:   err,
-				Message: fmt.Sprintf("could not read file '%s': %v", file.Path, err),
+				Message: fmt.Sprintf("Assertion failed: could not read file '%s': %v", file.Path, err),
 			})
 			continue
 		}
@@ -185,7 +185,7 @@ func evaluateFileAssertions(files []project.FileAssertion, projectPath string) [
 				Passed: strings.Contains(string(content), file.Contains),
 			}
 			if !result.Passed {
-				result.Message = fmt.Sprintf("file '%s' does not contain '%s'", file.Path, file.Contains)
+				result.Message = fmt.Sprintf("Assertion failed: file '%s' does not contain '%s'", file.Path, file.Contains)
 			}
 			results = append(results, result)
 		}
@@ -196,7 +196,7 @@ func evaluateFileAssertions(files []project.FileAssertion, projectPath string) [
 			results = append(results, AssertionResult{
 				Passed:  false,
 				Error:   err,
-				Message: fmt.Sprintf("could not stat file '%s': %v", file.Path, err),
+				Message: fmt.Sprintf("Assertion failed: could not stat file '%s': %v", file.Path, err),
 			})
 			continue
 		}
@@ -206,7 +206,7 @@ func evaluateFileAssertions(files []project.FileAssertion, projectPath string) [
 				Passed: fileInfo.Size() >= file.SizeMin,
 			}
 			if !result.Passed {
-				result.Message = fmt.Sprintf("file '%s' size %d bytes is less than minimum %d bytes",
+				result.Message = fmt.Sprintf("Assertion failed: file '%s' size %d bytes is less than minimum %d bytes",
 					file.Path, fileInfo.Size(), file.SizeMin)
 			}
 			results = append(results, result)
@@ -217,7 +217,7 @@ func evaluateFileAssertions(files []project.FileAssertion, projectPath string) [
 				Passed: fileInfo.Size() <= file.SizeMax,
 			}
 			if !result.Passed {
-				result.Message = fmt.Sprintf("file '%s' size %d bytes is greater than maximum %d bytes",
+				result.Message = fmt.Sprintf("Assertion failed: file '%s' size %d bytes is greater than maximum %d bytes",
 					file.Path, fileInfo.Size(), file.SizeMax)
 			}
 			results = append(results, result)

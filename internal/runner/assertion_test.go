@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/johnjansen/anvil/internal/project"
@@ -14,6 +15,7 @@ func TestEvaluateStdoutContainsAssertion(t *testing.T) {
 		stderr      string
 		expectFail  bool
 		expectError bool
+		expectMessageContains string
 	}{
 		{
 			name: "stdout contains match",
@@ -36,6 +38,7 @@ func TestEvaluateStdoutContainsAssertion(t *testing.T) {
 			stdout:     "Operation failed.",
 			stderr:     "",
 			expectFail: true,
+			expectMessageContains: "Assertion failed: stdout does not contain 'Success:'",
 		},
 		{
 			name: "stdout contains multiple matches",
@@ -70,6 +73,23 @@ func TestEvaluateStdoutContainsAssertion(t *testing.T) {
 				t.Errorf("expected failed=%v, got failed=%v", tt.expectFail, results.Failed)
 				for _, result := range results.Results {
 					t.Logf("Result: passed=%v, message=%s, error=%v", result.Passed, result.Message, result.Error)
+				}
+			}
+
+			// Check error message format if specified
+			if tt.expectMessageContains != "" {
+				foundExpectedMessage := false
+				for _, result := range results.Results {
+					if !result.Passed && result.Message != "" && strings.Contains(result.Message, tt.expectMessageContains) {
+						foundExpectedMessage = true
+						break
+					}
+				}
+				if !foundExpectedMessage {
+					t.Errorf("expected message containing '%s', but didn't find it in results", tt.expectMessageContains)
+					for _, result := range results.Results {
+						t.Logf("Result: passed=%v, message=%s, error=%v", result.Passed, result.Message, result.Error)
+					}
 				}
 			}
 		})
