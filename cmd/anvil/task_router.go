@@ -80,6 +80,8 @@ func taskCmd(args []string) {
 			os.Exit(1)
 		}
 		taskLsCmd([]string{"--match", args[1]})
+	case "backfill":
+		taskBackfillCmd(args[1:])
 	case "diff":
 		taskDiffCmd(args[1:])
 	case "restore":
