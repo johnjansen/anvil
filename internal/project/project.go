@@ -212,6 +212,10 @@ type Todo struct {
 	Cache                *CacheConfig  // task output caching configuration (nil = no caching)
 	// Rate limiting configuration
 	RateLimit            RateLimitConfig // per-task rate limiting configuration
+	// Assertion configuration for validating task output
+	Assert               *AssertConfig   // output assertion configuration (nil = no assertions)
+	// Trigger configuration for multi-criteria triggering
+	Trigger              *TaskTrigger    // task trigger configuration (nil = no additional conditions)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -388,6 +392,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
+						Trigger              *TaskTrigger      `yaml:"trigger"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
