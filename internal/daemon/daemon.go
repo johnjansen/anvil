@@ -148,6 +148,10 @@ type Daemon struct {
 	// task during this daemon lifetime. Resets on daemon restart.
 	costBudgetUsed   map[string]float64
 	costBudgetUsedMu sync.Mutex
+	// priorityAgingQueueTimes tracks when tasks were first added to the queue for priority aging.
+	// Map value is the time when the task was first queued.
+	priorityAgingQueueTimes map[string]time.Time
+	priorityAgingQueueTimesMu sync.Mutex
 	webhooks    *webhook.Sender
 	taskHashes  map[string]string // taskName -> contentHash for change detection
 	clusterNode *cluster.Node // nil when cluster mode disabled
@@ -264,6 +268,8 @@ func New(cfg *config.Config) *Daemon {
 		stoppedTasks:         make(map[string]bool),
 		circuitBreakerStorage: NewCircuitBreakerStorage(filepath.Join(config.Dir(), "circuits")),
 		persistentBudgetUsed: make(map[string]time.Duration),
+		costBudgetUsed:       make(map[string]float64),
+		priorityAgingQueueTimes: make(map[string]time.Time),
 		webhooks:             webhook.New(cfg.Webhooks),
 		rateLimitCounters:    make(map[string]*RateLimitCounter),
 	}
@@ -2864,6 +2870,14 @@ func (d *Daemon) tick(now time.Time) {
 						continue
 					}
 				}
+				// Track queue time for priority aging
+				taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
+				d.priorityAgingQueueTimesMu.Lock()
+				if _, exists := d.priorityAgingQueueTimes[taskKey]; !exists {
+					d.priorityAgingQueueTimes[taskKey] = time.Now()
+				}
+				d.priorityAgingQueueTimesMu.Unlock()
+
 				dueTodos = append(dueTodos, projectTodo{proj, t})
 				totalMatched++
 			}
@@ -2871,9 +2885,65 @@ func (d *Daemon) tick(now time.Time) {
 	}
 
 	// Sort globally by priority (p0 first), then by name (oldest timestamp first)
+	// With priority aging: boost priority based on wait time
+	now := time.Now()
 	sort.SliceStable(dueTodos, func(i, j int) bool {
-		if dueTodos[i].todo.Priority != dueTodos[j].todo.Priority {
-			return dueTodos[i].todo.Priority < dueTodos[j].todo.Priority
+		// Calculate effective priority with aging
+		getEffectivePriority := func(pt projectTodo) int {
+			priority := pt.todo.Priority
+
+			// Check if priority aging is enabled for this task or globally
+			agingEnabled := false
+			var maxWait time.Duration
+			maxBoost := 0
+
+			// Check task-level configuration
+			if pt.todo.PriorityAging != nil && pt.todo.PriorityAging.Enabled != nil && *pt.todo.PriorityAging.Enabled {
+				agingEnabled = true
+				maxWait = pt.todo.PriorityAging.MaxWait
+				maxBoost = pt.todo.PriorityAging.MaxBoost
+			} else if pt.todo.PriorityAging != nil && pt.todo.PriorityAging.Enabled == nil {
+				// Check project-level defaults
+				// (Implementation would go here)
+			} else if d.config.PriorityAging.Enabled {
+				// Check global configuration
+				agingEnabled = true
+				maxWait = d.config.PriorityAging.DefaultMaxWait
+				maxBoost = d.config.PriorityAging.DefaultMaxBoost
+			}
+
+			if agingEnabled {
+				// Get queue time for this task
+				taskKey := fmt.Sprintf("%s/%s", pt.proj.Path, pt.todo.Name)
+				d.priorityAgingQueueTimesMu.Lock()
+				queueTime, exists := d.priorityAgingQueueTimes[taskKey]
+				d.priorityAgingQueueTimesMu.Unlock()
+
+				if exists {
+					waitTime := now.Sub(queueTime)
+					if waitTime > maxWait && maxWait > 0 {
+						// Calculate boost level based on how much we've exceeded maxWait
+						boostLevels := int(waitTime/maxWait)
+						if boostLevels > maxBoost {
+							boostLevels = maxBoost
+						}
+						// Apply boost (lower number means higher priority)
+						priority -= boostLevels
+						if priority < 0 {
+							priority = 0
+						}
+					}
+				}
+			}
+
+			return priority
+		}
+
+		effectivePriorityI := getEffectivePriority(dueTodos[i])
+		effectivePriorityJ := getEffectivePriority(dueTodos[j])
+
+		if effectivePriorityI != effectivePriorityJ {
+			return effectivePriorityI < effectivePriorityJ
 		}
 		return dueTodos[i].todo.Name < dueTodos[j].todo.Name
 	})
