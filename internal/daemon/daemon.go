@@ -2597,6 +2597,9 @@ func (d *Daemon) tick(now time.Time) {
 		d.lastTick = thisMinute
 	}
 
+	// Check for timed-out processes on every tick
+	d.checkForTimedOutProcesses(now)
+
 	paths := loadWatchedPaths()
 	if len(paths) == 0 {
 		if cronTick {
@@ -3916,4 +3919,105 @@ func (d *Daemon) incrementRateCounters(taskID string, now time.Time) {
 	// Increment daily counter
 	dayKey := now.Format("2006-01-02")
 	counter.Daily[dayKey]++
+}
+// checkForTimedOutProcesses checks all running tasks and kills any that have exceeded their timeout.
+// This prevents zombie worker processes from running indefinitely.
+func (d *Daemon) checkForTimedOutProcesses(now time.Time) {
+	d.tasksMu.RLock()
+	defer d.tasksMu.RUnlock()
+
+	for instanceKey, task := range d.tasks {
+		// Skip tasks without a valid PID or timeout
+		if task.PID <= 0 || task.Timeout <= 0 {
+			continue
+		}
+
+		// Calculate elapsed time
+		elapsed := now.Sub(task.Started)
+
+		// Check if task has exceeded its timeout
+		if elapsed > task.Timeout {
+			dlog.Warn("Task %s/%s (PID %d) exceeded timeout (%v > %v) - killing process",
+				filepath.Base(task.Project), task.Name, task.PID, elapsed, task.Timeout)
+
+			// Kill the process
+			if err := d.killProcess(task.PID); err != nil {
+				dlog.Warn("Failed to kill timed-out process %d for task %s/%s: %v",
+					task.PID, filepath.Base(task.Project), task.Name, err)
+				continue
+			}
+
+			// Log the kill with task information
+			dlog.Info("Killed timed-out task %s/%s (PID %d) after %v",
+				filepath.Base(task.Project), task.Name, task.PID, elapsed)
+
+			// Mark task as failed in run record
+			d.markTaskAsFailed(task, "timeout exceeded")
+
+			// Reset issue labels if needed (remove in-progress, re-add ready)
+			d.resetTaskLabels(task)
+		}
+	}
+}
+
+// killProcess attempts to kill a process gracefully with SIGTERM, then forcefully with SIGKILL
+func (d *Daemon) killProcess(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("failed to find process %d: %w", pid, err)
+	}
+
+	// First try graceful termination with SIGTERM
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		// If SIGTERM fails, try SIGKILL
+		if err := proc.Signal(syscall.SIGKILL); err != nil {
+			return fmt.Errorf("failed to kill process %d with SIGTERM and SIGKILL: %w", pid, err)
+		}
+		dlog.Info("Sent SIGKILL to process %d", pid)
+		return nil
+	}
+
+	dlog.Info("Sent SIGTERM to process %d", pid)
+
+	// Wait a bit for graceful shutdown
+	time.Sleep(5 * time.Second)
+
+	// Check if process is still running
+	if err := proc.Signal(syscall.Signal(0)); err == nil {
+		// Process is still running, send SIGKILL
+		if err := proc.Signal(syscall.SIGKILL); err != nil {
+			return fmt.Errorf("failed to kill process %d with SIGKILL after SIGTERM: %w", pid, err)
+		}
+		dlog.Info("Sent SIGKILL to process %d after SIGTERM timeout", pid)
+	}
+
+	return nil
+}
+
+// markTaskAsFailed creates a run record marking the task as failed due to timeout
+func (d *Daemon) markTaskAsFailed(task *RunningTask, reason string) {
+	runRecord := project.RunRecord{
+		RunID:     newRunID(),
+		TaskID:    task.TaskID,
+		PID:       task.PID,
+		Started:   task.Started,
+		Finished:  time.Now(),
+		Success:   false,
+		Error:     reason,
+		Attempt:   1,
+		MaxRetries: 0,
+	}
+
+	if err := project.WriteRunRecord(task.Project, runRecord); err != nil {
+		dlog.Warn("Failed to write run record for timed-out task %s/%s: %v",
+			filepath.Base(task.Project), task.Name, err)
+	}
+}
+
+// resetTaskLabels updates GitHub issue labels to reflect that the task has timed out
+func (d *Daemon) resetTaskLabels(task *RunningTask) {
+	// This would require GitHub API access and is task-specific
+	// For now, we'll just log that this should happen
+	dlog.Info("TODO: Reset labels for task %s/%s (remove in-progress, add ready)",
+		filepath.Base(task.Project), task.Name)
 }
