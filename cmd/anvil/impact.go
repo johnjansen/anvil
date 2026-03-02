@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/project"
 )
@@ -36,6 +37,13 @@ type ImpactReport struct {
 	PeakTime        time.Time        `json:"peak_time,omitempty"`
 	Suggestions     []Suggestion     `json:"suggestions,omitempty"`
 	NoSchedule      bool             `json:"no_schedule,omitempty"`
+	// Cost estimation fields
+	PromptChars     int     `json:"prompt_chars,omitempty"`
+	InputTokens     int     `json:"input_tokens,omitempty"`
+	OutputTokens    int     `json:"output_tokens,omitempty"`
+	EstimatedCost   float64 `json:"estimated_cost,omitempty"`
+	MonthlyRuns     int     `json:"monthly_runs,omitempty"`
+	MonthlyCost     float64 `json:"monthly_cost,omitempty"`
 }
 
 // computeConflicts checks a proposed schedule against all active tasks and returns conflicts.
@@ -212,7 +220,7 @@ func suggestAlternatives(schedule string, todos []project.Todo, currentConflicts
 }
 
 // analyzeImpact produces a full impact report for a proposed schedule against existing tasks.
-func analyzeImpact(schedule string, todos []project.Todo) ImpactReport {
+func analyzeImpact(schedule string, todos []project.Todo, taskContent string) ImpactReport {
 	report := ImpactReport{
 		Schedule:  schedule,
 		Conflicts: []ImpactConflict{}, // ensure non-nil for JSON
@@ -242,6 +250,42 @@ func analyzeImpact(schedule string, todos []project.Todo) ImpactReport {
 	report.PeakConcurrency, report.PeakTime = computePeakConcurrency(schedule, todos)
 
 	report.Suggestions = suggestAlternatives(schedule, todos, len(report.Conflicts))
+
+	// Add cost estimation
+	content := strings.TrimSpace(taskContent)
+	report.PromptChars = len(content)
+	// Rough estimate: ~4 characters per token
+	report.InputTokens = report.PromptChars / 4
+	// Estimate output tokens (typically 20-50% of input for prompts)
+	report.OutputTokens = report.InputTokens / 4
+
+	// Load config for token rates
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+
+	inputRate := cfg.InputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0 // default Sonnet rate
+	}
+	outputRate := cfg.OutputTokenRate
+	if outputRate <= 0 {
+		outputRate = 15.0 // default Sonnet rate
+	}
+
+	// Calculate costs
+	inputCost := float64(report.InputTokens) / 1_000_000 * inputRate
+	outputCost := float64(report.OutputTokens) / 1_000_000 * outputRate
+	report.EstimatedCost = inputCost + outputCost
+
+	// If there's a schedule, calculate frequency-based costs
+	if schedule != "" && schedule != "persistent" {
+		report.MonthlyRuns = estimateRunsPerMonth(schedule)
+		if report.MonthlyRuns > 0 {
+			report.MonthlyCost = report.EstimatedCost * float64(report.MonthlyRuns)
+		}
+	}
 
 	return report
 }
@@ -293,6 +337,20 @@ func printImpactReport(report ImpactReport) {
 			fmt.Println(")")
 		}
 	}
+
+	// Print cost estimation
+	fmt.Println()
+	fmt.Println("Cost Estimation:")
+	fmt.Println(strings.Repeat("\u2500", 20))
+	fmt.Printf("Prompt length: %d characters\n", report.PromptChars)
+	fmt.Printf("Estimated tokens: ~%d input, ~%d output\n", report.InputTokens, report.OutputTokens)
+	fmt.Printf("Estimated cost: $%.4f per run\n", report.EstimatedCost)
+
+	if report.MonthlyRuns > 0 {
+		fmt.Printf("Frequency: %d runs/month\n", report.MonthlyRuns)
+		fmt.Printf("Monthly estimate: $%.2f\n", report.MonthlyCost)
+	}
+
 	fmt.Println()
 }
 
@@ -303,4 +361,88 @@ func printImpactJSON(report ImpactReport) {
 		log.Fatalf("failed to marshal JSON: %v", err)
 	}
 	fmt.Println(string(data))
+}
+
+// printCostEstimate shows token and cost estimation for a task
+func printCostEstimate(taskText, schedule, projectPath string) {
+	// Load config for token rates
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+
+	inputRate := cfg.InputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0 // default Sonnet rate
+	}
+	outputRate := cfg.OutputTokenRate
+	if outputRate <= 0 {
+		outputRate = 15.0 // default Sonnet rate
+	}
+
+	// Estimate tokens using the same logic as prompt analyze
+	content := strings.TrimSpace(taskText)
+	charCount := len(content)
+	// Rough estimate: ~4 characters per token
+	inputTokens := charCount / 4
+	// Estimate output tokens (typically 20-50% of input for prompts)
+	outputTokens := inputTokens / 4
+
+	// Calculate costs
+	inputCost := float64(inputTokens) / 1_000_000 * inputRate
+	outputCost := float64(outputTokens) / 1_000_000 * outputRate
+	totalCost := inputCost + outputCost
+
+	fmt.Println("Cost Analysis")
+	fmt.Println(strings.Repeat("\u2500", 40))
+	fmt.Printf("Prompt length: %d characters\n", charCount)
+	fmt.Printf("Estimated tokens: ~%d input, ~%d output\n", inputTokens, outputTokens)
+	fmt.Printf("Estimated cost: $%.4f (input: $%.4f, output: $%.4f)\n",
+		totalCost, inputCost, outputCost)
+	fmt.Printf("Rate: $%.2f/1M input, $%.2f/1M output\n", inputRate, outputRate)
+
+	// If there's a schedule, calculate frequency-based costs
+	if schedule != "" && schedule != "persistent" {
+		runsPerMonth := estimateRunsPerMonth(schedule)
+		if runsPerMonth > 0 {
+			monthlyCost := totalCost * float64(runsPerMonth)
+			fmt.Println()
+			fmt.Printf("Schedule: %s (%d runs/month)\n", schedule, runsPerMonth)
+			fmt.Printf("Monthly estimate: $%.2f\n", monthlyCost)
+		}
+	} else if schedule == "persistent" {
+		fmt.Println()
+		fmt.Println("Note: Persistent tasks have variable run frequency.")
+		fmt.Println("Cost will depend on how often the task executes.")
+	}
+
+	fmt.Println()
+}
+
+// estimateRunsPerMonth estimates how many times a cron schedule runs per month
+func estimateRunsPerMonth(schedule string) int {
+	parser, err := cron.Parse(schedule)
+	if err != nil {
+		return 0
+	}
+
+	// Count runs over a typical month (30 days)
+	now := time.Now()
+	end := now.AddDate(0, 1, 0) // 1 month from now
+	count := 0
+	current := now
+
+	for current.Before(end) {
+		next, err := parser.Next(current)
+		if err != nil {
+			break
+		}
+		if next.After(end) {
+			break
+		}
+		count++
+		current = next
+	}
+
+	return count
 }

@@ -31,6 +31,7 @@ func taskCreateCmd(args []string) {
 	strict := false
 	noOverlapCheck := false
 	dryRunJSON := false
+	costOnly := false
 	templateName := ""
 	var dependsOn []string
 
@@ -78,6 +79,8 @@ func taskCreateCmd(args []string) {
 			onceFlag = true
 		case "-n", "--dry-run":
 			dryRun = true
+		case "--cost-only":
+			costOnly = true
 		case "--json":
 			dryRunJSON = true
 		case "--pre-check":
@@ -144,8 +147,8 @@ func taskCreateCmd(args []string) {
 		scheduleSet = true
 	}
 
-	// Handle --dry-run: show impact analysis without creating task.
-	if dryRun {
+	// Handle --dry-run or --cost-only: show impact analysis without creating task.
+	if dryRun || costOnly {
 		abs, err := filepath.Abs(".")
 		if err != nil {
 			log.Fatalf("bad path: %v", err)
@@ -156,7 +159,40 @@ func taskCreateCmd(args []string) {
 				todos, _ = proj.LoadTodos()
 			}
 		}
-		report := analyzeImpact(schedule, todos)
+
+		// Get task text (either from args or file/stdin)
+		var taskText string
+		switch {
+		case filePath != "":
+			// Read task content from file.
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				log.Fatalf("reading file %s: %v", filePath, err)
+			}
+			taskText = string(data)
+		case readStdin:
+			// Read task content from stdin.
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				log.Fatalf("reading stdin: %v", err)
+			}
+			taskText = string(data)
+		default:
+			if len(rest) == 0 && !dryRun && !costOnly {
+				log.Fatal("usage: anvil add [-p priority] [-s schedule | --once] [--pre-check cmd] [--allowed-tools tools] [--max-concurrent n] [--skip-permissions] [-f file | -] <task text>")
+			}
+			taskText = strings.Join(rest, " ")
+		}
+
+		// If --cost-only, show cost estimation
+		if costOnly {
+			// Estimate tokens and cost
+			printCostEstimate(taskText, schedule, abs)
+			return
+		}
+
+		// Regular dry-run behavior
+		report := analyzeImpact(schedule, todos, taskText)
 		if dryRunJSON {
 			printImpactJSON(report)
 		} else {
