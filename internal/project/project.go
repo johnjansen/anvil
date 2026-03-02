@@ -50,6 +50,7 @@ type TaskDefaults struct {
 	CostBudget          string   `yaml:"cost_budget"`
 	MaxLogSize           string   `yaml:"max_log_size"`
 	Runner               string   `yaml:"runner"`
+	PriorityAging        *PriorityAgingDefaults `yaml:"priority_aging"`
 }
 
 // RateLimitConfig defines per-task rate limiting configuration.
@@ -57,6 +58,20 @@ type TaskDefaults struct {
 type RateLimitConfig struct {
 	MaxPerHour int `yaml:"max_per_hour"` // maximum executions per hour (0 = unlimited)
 	MaxPerDay  int `yaml:"max_per_day"`  // maximum executions per day (0 = unlimited)
+}
+
+// PriorityAgingDefaults contains default priority aging configuration for the project.
+type PriorityAgingDefaults struct {
+	Enabled   *bool  `yaml:"enabled"`
+	MaxWait   string `yaml:"max_wait"`
+	MaxBoost  *int   `yaml:"max_boost"`
+}
+
+// PriorityAgingConfig contains priority aging configuration for a task.
+type PriorityAgingConfig struct {
+	Enabled   *bool         `yaml:"enabled"`
+	MaxWait   time.Duration `yaml:"max_wait"`
+	MaxBoost  int           `yaml:"max_boost"`
 }
 
 // ConfigPath returns the path to the project config file.
@@ -242,6 +257,7 @@ type Todo struct {
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 	SLA                  SLAConfig     // per-task SLA tracking configuration
+	PriorityAging        *PriorityAgingConfig // per-task priority aging configuration
 	OnSLAViolation       string        // shell command to run when SLA is violated
 	CircuitBreaker       CircuitBreakerConfig // per-task circuit breaker configuration
 	OnCircuitOpen        string        // shell command to run when circuit opens
@@ -388,6 +404,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			healthCheck := ""
 			var allowedWindow AllowedWindow
 			var slaConfig SLAConfig
+			var priorityAgingConfig *PriorityAgingConfig
 			onSLAViolation := ""
 			onRollback := ""
 			var precondition *PreconditionConfig
@@ -437,6 +454,11 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							MaxDelay string `yaml:"max_delay"`
 							Strict   bool   `yaml:"strict"`
 						} `yaml:"sla"`
+						PriorityAging        *struct {
+							Enabled   *bool         `yaml:"enabled"`
+							MaxWait   string        `yaml:"max_wait"`
+							MaxBoost  *int          `yaml:"max_boost"`
+						} `yaml:"priority_aging"`
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
@@ -502,6 +524,21 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 								slaConfig.Strict = fmData.SLA.Strict
 							}
 						}
+						// Process priority aging configuration
+						if fmData.PriorityAging != nil {
+							priorityAgingConfig = &PriorityAgingConfig{}
+							if fmData.PriorityAging.Enabled != nil {
+								priorityAgingConfig.Enabled = fmData.PriorityAging.Enabled
+							}
+							if fmData.PriorityAging.MaxWait != "" {
+								if d, err := time.ParseDuration(fmData.PriorityAging.MaxWait); err == nil {
+									priorityAgingConfig.MaxWait = d
+								}
+							}
+							if fmData.PriorityAging.MaxBoost != nil {
+								priorityAgingConfig.MaxBoost = *fmData.PriorityAging.MaxBoost
+							}
+						}
 						onSLAViolation = fmData.OnSLAViolation
 						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
@@ -553,6 +590,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				HealthCheck:          healthCheck,
 				Window:               allowedWindow,
 				SLA:                  slaConfig,
+				PriorityAging:        priorityAgingConfig,
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
 				OnRollback:           onRollback,
