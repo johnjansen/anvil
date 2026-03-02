@@ -268,6 +268,35 @@ Supported subscription fields:
 
 **Note:** Tasks with subscriptions will be triggered by messages regardless of their schedule. The schedule only determines when the task would run if triggered by cron.
 
+### HTTP Webhook Subscriptions
+
+Trigger tasks based on HTTP webhook requests from external systems:
+
+```yaml
+---
+schedule: "@every 1h"
+subscription:
+  type: webhook
+  webhook_path: /webhooks/my-task
+  webhook_method: POST
+  webhook_secret: env:WEBHOOK_SECRET
+---
+```
+
+When an HTTP request is sent to the webhook endpoint, the task will be triggered immediately. The request payload is available in the `ANVIL_WEBHOOK_PAYLOAD` environment variable.
+
+Supported subscription fields:
+- `type` - Subscription type ("webhook")
+- `webhook_path` - HTTP path for the webhook endpoint
+- `webhook_method` - HTTP method to accept (default: "POST")
+- `webhook_secret` - Secret for webhook authentication (can reference environment variables with `env:VAR_NAME`)
+
+Webhook authentication supports HMAC-SHA256 signatures via headers:
+- `X-Signature: sha256=<signature>`
+- `X-Hub-Signature-256: sha256=<signature>`
+
+**Note:** Tasks with webhook subscriptions will be triggered by HTTP requests regardless of their schedule. The schedule only determines when the task would run if triggered by cron.
+
 ### Task timeout
 
 Override the global timeout for a specific task:

@@ -174,6 +174,9 @@ type Daemon struct {
 
 	// FSWatcher handles filesystem path subscriptions
 	fsWatcher *FSWatcher
+
+	// WebhookServer handles HTTP webhook subscriptions
+	webhookServer *WebhookServer
 }
 
 // RateLimitCounter tracks execution counts for rate limiting per task
@@ -274,6 +277,9 @@ func New(cfg *config.Config) *Daemon {
 	// Initialize filesystem watcher
 	d.fsWatcher = NewFSWatcher(d)
 
+	// Initialize webhook server
+	d.webhookServer = NewWebhookServer(":8080", d)
+
 	return d
 }
 
@@ -344,6 +350,11 @@ func (d *Daemon) Run() {
 
 	// Start socket server
 	go d.startSocketServer()
+
+	// Start webhook server
+	if d.webhookServer != nil {
+		go d.webhookServer.Start()
+	}
 
 	// Start cluster node if enabled
 	if d.config.Cluster.Enabled {
@@ -558,9 +569,38 @@ func (d *Daemon) startSubscriptions(projects []*project.Project) {
 					if err := d.fsWatcher.StartSubscription(proj, todo); err != nil {
 						dlog.Warn("Failed to start filesystem subscription for task %s: %v", todo.Name, err)
 					}
+				case "webhook":
+					dlog.Info("Starting webhook subscription for task: %s", todo.Name)
+					if err := d.webhookServer.StartSubscription(proj, todo); err != nil {
+						dlog.Warn("Failed to start webhook subscription for task %s: %v", todo.Name, err)
+					}
 				}
 			}
 		}
+	}
+}
+
+// triggerWebhookTask triggers a task execution from a webhook request
+func (d *Daemon) triggerWebhookTask(proj *project.Project, task project.Todo, payload []byte) {
+	dlog.Info("Triggering task %s via webhook", task.Name)
+
+	// Add webhook payload to environment variables
+	if task.Env == nil {
+		task.Env = make(map[string]string)
+	}
+	task.Env["ANVIL_WEBHOOK_PAYLOAD"] = string(payload)
+
+	// Create work item and queue it
+	item := workItem{
+		project: proj,
+		todo:    task,
+	}
+
+	select {
+	case d.workQueue <- item:
+		dlog.Info("Queued task %s for execution via webhook", task.Name)
+	default:
+		dlog.Warn("Work queue full, could not queue task %s via webhook", task.Name)
 	}
 }
 

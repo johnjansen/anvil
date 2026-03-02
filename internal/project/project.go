@@ -147,12 +147,16 @@ type TaskStateConfig struct {
 
 // SubscriptionConfig defines per-task message subscription configuration.
 type SubscriptionConfig struct {
-	Type     string `yaml:"type"`     // subscription type: "amqp", "file", "fs"
+	Type     string `yaml:"type"`     // subscription type: "amqp", "file", "fs", "webhook"
 	URL      string `yaml:"url"`      // connection URL (e.g. AMQP broker URL)
 	Queue    string `yaml:"queue"`    // queue name (for amqp type)
 	Path     string `yaml:"path"`     // file path (for file type)
 	FsPath   string `yaml:"fs_path"`  // filesystem path (for fs type)
 	Prefetch int    `yaml:"prefetch"` // prefetch count (for amqp type)
+	// Webhook subscription fields
+	WebhookPath   string `yaml:"webhook_path"`   // HTTP path for webhook endpoint (for webhook type)
+	WebhookMethod string `yaml:"webhook_method"` // HTTP method for webhook endpoint (default: POST)
+	WebhookSecret string `yaml:"webhook_secret"` // secret for webhook authentication (can be env var reference)
 }
 
 // AssertConfig defines per-task output assertion configuration.

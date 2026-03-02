@@ -1,0 +1,8 @@
+---
+subscription:
+  type: webhook
+  webhook_path: /test-task
+  webhook_method: POST
+  webhook_secret: test-secret
+---
+echo "Webhook task executed successfully"
