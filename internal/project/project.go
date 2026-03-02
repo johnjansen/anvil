@@ -229,6 +229,7 @@ type Todo struct {
 	ID              string        // UUID for session tracking
 	Resume          *bool         // nil = default (true for recurring, false for one-shot), explicit overrides
 	MaxConcurrent   int           // max simultaneous instances (0 = default 1)
+	ConcurrencyGroup string       // concurrency group name (empty = default group)
 	SkipPermissions bool          // if true, append --dangerously-skip-permissions to runner command
 	AllowedTools    []string      // if non-empty, append --allowedTools <tools> to runner command
 	PreCheck        string        // optional shell command; task is skipped silently if it exits non-zero

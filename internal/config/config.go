@@ -35,6 +35,7 @@ type Config struct {
 	Alerts                  AlertGlobalConfig  `yaml:"alerts"`                      // global alert settings
 	CircuitBreaker          CircuitBreakerGlobalConfig `yaml:"circuit_breaker"`         // global circuit breaker defaults
 	PriorityAging           PriorityAgingConfig `yaml:"priority_aging"`              // global priority aging settings
+	ConcurrencyGroups       map[string]ConcurrencyGroupConfig `yaml:"concurrency_groups"`  // concurrency group configuration
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
@@ -85,6 +86,20 @@ type ClusterConfig struct {
 	Peers             []string      `yaml:"peers"`              // static peer list
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"` // leader heartbeat interval (default: 5s)
 	ElectionTimeout   time.Duration `yaml:"election_timeout"`   // follower election timeout (default: 30s)
+}
+
+// ConcurrencyGroupConfig defines settings for a concurrency group.
+type ConcurrencyGroupConfig struct {
+	MaxConcurrent int           `yaml:"max_concurrent"` // max concurrent tasks in this group (0 = no limit)
+	MinAvailable  int           `yaml:"min_available"`  // min workers to keep available for non-group tasks
+	RateLimit     RateLimitConfig `yaml:"rate_limit"`   // rate limiting for the group
+	PriorityBoost bool          `yaml:"priority_boost"` // elevate priority within group
+}
+
+// RateLimitConfig defines rate limiting configuration.
+type RateLimitConfig struct {
+	RequestsPerMinute int     `yaml:"requests_per_minute"` // max API requests per minute (0 = no limit)
+	TokenRateLimit    float64 `yaml:"token_rate_limit"`    // max tokens per minute (0 = no limit)
 }
 
 // QuietHoursConfig defines a global time window during which only high-priority tasks may run.
