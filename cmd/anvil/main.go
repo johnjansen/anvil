@@ -7059,6 +7059,9 @@ func templateCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  ls           List available templates\n")
 		fmt.Fprintf(os.Stderr, "  get <name>   Show template details\n")
+		fmt.Fprintf(os.Stderr, "  search <query> Search templates by name or description\n")
+		fmt.Fprintf(os.Stderr, "  import <source> Import template from URL, file, or gist\n")
+		fmt.Fprintf(os.Stderr, "  export <name>   Export template to shareable file\n")
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
 		os.Exit(1)
 	}
@@ -7068,11 +7071,20 @@ func templateCmd(args []string) {
 		templateListCmd(args[1:])
 	case "get":
 		templateGetCmd(args[1:])
+	case "search":
+		templateSearchCmd(args[1:])
+	case "import":
+		templateImportCmd(args[1:])
+	case "export":
+		templateExportCmd(args[1:])
 	case "-h", "--help":
 		fmt.Fprintf(os.Stderr, "usage: anvil template <subcommand> [options]\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  ls           List available templates\n")
 		fmt.Fprintf(os.Stderr, "  get <name>   Show template details\n")
+		fmt.Fprintf(os.Stderr, "  search <query> Search templates by name or description\n")
+		fmt.Fprintf(os.Stderr, "  import <source> Import template from URL, file, or gist\n")
+		fmt.Fprintf(os.Stderr, "  export <name>   Export template to shareable file\n")
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown template subcommand: %s\n", args[0])

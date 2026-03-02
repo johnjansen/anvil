@@ -1347,6 +1347,9 @@ func slugify(s string) string {
 // TemplateSpec represents a task template with all configurable fields.
 // These fields map to the same frontmatter fields available in task files.
 type TemplateSpec struct {
+	Name        string `yaml:"name,omitempty"`
+	Version     string `yaml:"version,omitempty"`
+	Description string `yaml:"description,omitempty"`
 	Schedule              string            `yaml:"schedule,omitempty"`
 	Priority              int               `yaml:"priority,omitempty"`
 	AllowedTools          []string          `yaml:"allowed_tools,omitempty"`
