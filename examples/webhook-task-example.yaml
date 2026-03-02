@@ -1,0 +1,10 @@
+---
+subscription:
+  type: webhook
+  webhook_path: /webhooks/my-task
+  webhook_method: POST
+  webhook_secret: env:WEBHOOK_SECRET
+---
+# This task will be triggered by HTTP webhook requests
+echo "Task triggered via webhook!"
+echo "Webhook payload: $ANVIL_WEBHOOK_PAYLOAD"
