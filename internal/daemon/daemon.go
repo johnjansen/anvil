@@ -829,9 +829,11 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	runID := newRunID()
 	startTime := time.Now()
 
-	// Track the running task
+	// Track the running task — use runID suffix so multiple instances of the
+	// same task each get their own entry in the map.
+	instanceKey := taskKey + "/" + runID
 	d.tasksMu.Lock()
-	d.tasks[taskKey] = &RunningTask{
+	d.tasks[instanceKey] = &RunningTask{
 		Project: proj.Path,
 		Name:    t.Name,
 		TaskID:  t.ID,
@@ -844,7 +846,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 
 	defer func() {
 		d.tasksMu.Lock()
-		delete(d.tasks, taskKey)
+		delete(d.tasks, instanceKey)
 		d.tasksMu.Unlock()
 	}()
 
@@ -1039,7 +1041,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, t.RunnerChain, t.RunnerOnTimeout, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
-			if task, ok := d.tasks[taskKey]; ok {
+			if task, ok := d.tasks[instanceKey]; ok {
 				task.PID = pid
 				task.LogPath = lp
 				task.SessionID = sid
@@ -1052,7 +1054,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			}
 		}, func(status string) {
 			d.tasksMu.Lock()
-			if task, ok := d.tasks[taskKey]; ok {
+			if task, ok := d.tasks[instanceKey]; ok {
 				task.Status = status
 			}
 			d.tasksMu.Unlock()
