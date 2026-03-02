@@ -1206,6 +1206,47 @@ skipExecution:
 			runRecord.RunnerCommand = commands[idx]
 		}
 	}
+
+	// Evaluate assertions if configured and task succeeded
+	if t.Assert != nil && err == nil {
+		// Read stdout from log file if available
+		var stdoutContent string
+		if logPath != "" {
+			if logData, readErr := os.ReadFile(logPath); readErr == nil {
+				stdoutContent = string(logData)
+			}
+		}
+
+		// Evaluate assertions
+		assertionResults, assertErr := runner.EvaluateAssertions(&t, stdoutContent, stderrOutput)
+		if assertErr != nil {
+			dlog.Warn("assertion evaluation failed for %s: %v", t.Name, assertErr)
+		} else if assertionResults.Failed {
+			// Assertion failed - mark task as failed
+			err = fmt.Errorf("assertion failed")
+			runRecord.Error = "assertion failed"
+			runRecord.Success = false
+
+			// Log specific assertion failures
+			for _, result := range assertionResults.Results {
+				if !result.Passed {
+					if result.Error != nil {
+						dlog.Warn("assertion error for %s: %v", t.Name, result.Error)
+					} else {
+						dlog.Warn("assertion failed for %s: %s", t.Name, result.Message)
+					}
+				}
+			}
+		} else if len(assertionResults.Results) > 0 {
+			// Log successful assertions or warnings for soft assertions
+			for _, result := range assertionResults.Results {
+				if !result.Passed && t.Assert.Soft {
+					dlog.Warn("soft assertion failed for %s: %s", t.Name, result.Message)
+				}
+			}
+		}
+	}
+
 	if err != nil {
 		runRecord.Error = err.Error()
 	}
