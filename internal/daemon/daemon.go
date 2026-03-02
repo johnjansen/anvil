@@ -909,6 +909,16 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
+	// Precondition check: if set, evaluate all conditions and skip if any fail.
+	// Both pre_check and precondition must pass for task to run.
+	if t.Precondition != nil {
+		if shouldProceed, skipReason := t.EvaluatePrecondition(proj.Path); !shouldProceed {
+			taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+			dlog.Info("precondition skipped %s: %s", taskLabel, skipReason)
+			return
+		}
+	}
+
 	// Pre-check: if set, run a shell guard and skip silently on non-zero exit.
 	// This lets recurring tasks avoid expensive agent invocations when there
 	// is nothing to do (e.g. no open issues), eliminating idle noise.

@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/johnjansen/anvil/internal/config"
@@ -35,6 +36,7 @@ type TaskDefaults struct {
 	SkipPermissions      bool     `yaml:"skip_permissions"`
 	AllowedTools         []string `yaml:"allowed_tools"`
 	PreCheck             string   `yaml:"pre_check"`
+	Precondition         *PreconditionConfig `yaml:"precondition"`
 	OnSuccess            string   `yaml:"on_success"`
 	OnFailure            string   `yaml:"on_failure"`
 	Timeout              string   `yaml:"timeout"`
@@ -160,6 +162,15 @@ type CacheConfig struct {
 	TTL     string `yaml:"ttl"`     // cache TTL duration string
 }
 
+// PreconditionConfig defines task precondition checks for conditional execution.
+// All conditions must pass for the task to run.
+type PreconditionConfig struct {
+	DayOfWeek   string `yaml:"day_of_week,omitempty"`   // allowed days: range "1-5", list "1,3,5", or combined "1-5,0" (0=Sunday)
+	TimeRange   string `yaml:"time_range,omitempty"`    // allowed time range in "HH:MM-HH:MM" format (24h)
+	EnvSet      string `yaml:"env_set,omitempty"`       // environment variable that must be set
+	Expr        string `yaml:"expr,omitempty"`          // expression to evaluate (Go template with conditionals)
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -173,6 +184,7 @@ type Todo struct {
 	SkipPermissions bool          // if true, append --dangerously-skip-permissions to runner command
 	AllowedTools    []string      // if non-empty, append --allowedTools <tools> to runner command
 	PreCheck        string        // optional shell command; task is skipped silently if it exits non-zero
+	Precondition    *PreconditionConfig // optional precondition logic; task is skipped if condition evaluates to false
 	OnSuccess       string        // optional shell command to run after successful completion
 	OnFailure       string        // optional shell command to run after failed completion
 	IsLocked        bool          // true if a stale lock file exists
@@ -212,10 +224,6 @@ type Todo struct {
 	Cache                *CacheConfig  // task output caching configuration (nil = no caching)
 	// Rate limiting configuration
 	RateLimit            RateLimitConfig // per-task rate limiting configuration
-	// Assertion configuration for validating task output
-	Assert               *AssertConfig   // output assertion configuration (nil = no assertions)
-	// Trigger configuration for multi-criteria triggering
-	Trigger              *TaskTrigger    // task trigger configuration (nil = no additional conditions)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -344,6 +352,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var slaConfig SLAConfig
 			onSLAViolation := ""
 			onRollback := ""
+			var precondition *PreconditionConfig
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -364,6 +373,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						SkipPermissions      bool     `yaml:"skip_permissions"`
 						AllowedTools         []string `yaml:"allowed_tools"`
 						PreCheck             string   `yaml:"pre_check"`
+						Precondition         *PreconditionConfig `yaml:"precondition"`
 						OnSuccess            string   `yaml:"on_success"`
 						OnFailure            string   `yaml:"on_failure"`
 						Disabled             bool     `yaml:"disabled"`
@@ -459,7 +469,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			}
 
 			// Apply project defaults for fields not explicitly set in frontmatter.
-			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck,
+			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck, &precondition,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
 				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride)
 
@@ -478,6 +488,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				SkipPermissions:      skipPermissions,
 				AllowedTools:         allowedTools,
 				PreCheck:             preCheck,
+				Precondition:         precondition,
 				OnSuccess:            onSuccess,
 				OnFailure:            onFailure,
 				IsLocked:             hasLock,
@@ -515,7 +526,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 // in the task's frontmatter. fmKeys is the set of keys present in the parsed YAML;
 // a nil map means no frontmatter was present (all defaults apply).
 func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
-	skipPermissions *bool, allowedTools *[]string, preCheck *string,
+	skipPermissions *bool, allowedTools *[]string, preCheck *string, precondition **PreconditionConfig,
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
 	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
@@ -537,6 +548,9 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	}
 	if !has("pre_check") && defaults.PreCheck != "" {
 		*preCheck = defaults.PreCheck
+	}
+	if !has("precondition") && defaults.Precondition != nil {
+		*precondition = defaults.Precondition
 	}
 	if !has("on_success") && defaults.OnSuccess != "" {
 		*onSuccess = defaults.OnSuccess
@@ -1296,6 +1310,7 @@ type TemplateSpec struct {
 	Priority              int               `yaml:"priority,omitempty"`
 	AllowedTools          []string          `yaml:"allowed_tools,omitempty"`
 	PreCheck              string            `yaml:"pre_check,omitempty"`
+	Precondition          *PreconditionConfig `yaml:"precondition,omitempty"`
 	OnSuccess             string            `yaml:"on_success,omitempty"`
 	OnFailure             string            `yaml:"on_failure,omitempty"`
 	SkipPermissions       bool              `yaml:"skip_permissions,omitempty"`
@@ -1449,4 +1464,184 @@ func ReadActivities(projectPath, taskID string) ([]ActivityEntry, error) {
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// EvaluatePrecondition checks if the task's precondition is satisfied.
+// Returns true and empty string if precondition passes, false and reason if it fails.
+func (t Todo) EvaluatePrecondition(projectPath string) (bool, string) {
+	// Use current time for evaluation
+	now := time.Now()
+
+	passed, err := EvaluatePrecondition(t.Precondition, now)
+	if err != nil {
+		return false, fmt.Sprintf("error evaluating precondition: %v", err)
+	}
+
+	if !passed {
+		// Provide specific reason based on which condition failed
+		if t.Precondition.DayOfWeek != "" {
+			return false, fmt.Sprintf("day of week condition '%s' not met", t.Precondition.DayOfWeek)
+		}
+		if t.Precondition.TimeRange != "" {
+			return false, fmt.Sprintf("time range condition '%s' not met", t.Precondition.TimeRange)
+		}
+		if t.Precondition.EnvSet != "" {
+			return false, fmt.Sprintf("environment variable '%s' not set", t.Precondition.EnvSet)
+		}
+		if t.Precondition.Expr != "" {
+			return false, fmt.Sprintf("expression condition '%s' not met", t.Precondition.Expr)
+		}
+		return false, "precondition not met"
+	}
+
+	return true, ""
+}
+
+// EvaluatePrecondition checks if a task's precondition is satisfied.
+// Returns true if the task should run, false if it should be skipped.
+// If precondition is nil or all conditions pass, returns true.
+func EvaluatePrecondition(precond *PreconditionConfig, now time.Time) (bool, error) {
+	if precond == nil {
+		return true, nil // No precondition, so condition passes
+	}
+
+	// Check day of week condition
+	if precond.DayOfWeek != "" {
+		if !matchesDayOfWeek(precond.DayOfWeek, now.Weekday()) {
+			return false, nil // Day of week condition failed
+		}
+	}
+
+	// Check time range condition
+	if precond.TimeRange != "" {
+		if !matchesTimeRange(precond.TimeRange, now) {
+			return false, nil // Time range condition failed
+		}
+	}
+
+	// Check environment variable condition
+	if precond.EnvSet != "" {
+		if os.Getenv(precond.EnvSet) == "" {
+			return false, nil // Environment variable not set
+		}
+	}
+
+	// Check expression condition
+	if precond.Expr != "" {
+		passed, err := evaluateExpression(precond.Expr, now)
+		if err != nil {
+			return false, fmt.Errorf("error evaluating precondition expression: %w", err)
+		}
+		if !passed {
+			return false, nil // Expression condition failed
+		}
+	}
+
+	return true, nil // All conditions passed
+}
+
+// matchesDayOfWeek checks if the current weekday matches the allowed days specification.
+// Format: "1-5" (Monday-Friday), "1,3,5" (Monday,Wednesday,Friday), "1-5,0" (Mon-Fri,Sun)
+func matchesDayOfWeek(spec string, weekday time.Weekday) bool {
+	// Convert Go's Sunday=0 to our format where Sunday=0
+	dayNum := int(weekday)
+
+	// Handle comma-separated values
+	parts := strings.Split(spec, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, "-") {
+			// Range format (e.g., "1-5")
+			rangeParts := strings.Split(part, "-")
+			if len(rangeParts) != 2 {
+				continue
+			}
+			start, err1 := strconv.Atoi(rangeParts[0])
+			end, err2 := strconv.Atoi(rangeParts[1])
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			if dayNum >= start && dayNum <= end {
+				return true
+			}
+		} else {
+			// Single day format (e.g., "1")
+			day, err := strconv.Atoi(part)
+			if err != nil {
+				continue
+			}
+			if day == dayNum {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matchesTimeRange checks if the current time falls within the specified time range.
+// Format: "09:00-17:00" (24-hour format)
+func matchesTimeRange(spec string, now time.Time) bool {
+	parts := strings.Split(spec, "-")
+	if len(parts) != 2 {
+		return false
+	}
+
+	startTime := strings.TrimSpace(parts[0])
+	endTime := strings.TrimSpace(parts[1])
+
+	start, err1 := time.Parse("15:04", startTime)
+	end, err2 := time.Parse("15:04", endTime)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+
+	// Get current time components
+	current := time.Date(0, 1, 1, now.Hour(), now.Minute(), 0, 0, time.UTC)
+	start = time.Date(0, 1, 1, start.Hour(), start.Minute(), 0, 0, time.UTC)
+	end = time.Date(0, 1, 1, end.Hour(), end.Minute(), 0, 0, time.UTC)
+
+	// Handle overnight ranges (e.g., 22:00-06:00)
+	if end.Before(start) {
+		return current.After(start) || current.Before(end)
+	}
+
+	return current.After(start) && current.Before(end)
+}
+
+// evaluateExpression evaluates a Go template expression with time context.
+// The expression should evaluate to a boolean value.
+func evaluateExpression(expr string, now time.Time) (bool, error) {
+	// Create template context with time variables
+	context := map[string]interface{}{
+		"Hour":       now.Hour(),
+		"Minute":     now.Minute(),
+		"DayOfWeek":  int(now.Weekday()),
+		"DayOfMonth": now.Day(),
+		"Month":      int(now.Month()),
+		"IsWeekend":  now.Weekday() == time.Saturday || now.Weekday() == time.Sunday,
+		// Helper functions for comparisons
+		"gt": func(a, b int) bool { return a > b },
+		"lt": func(a, b int) bool { return a < b },
+		"ge": func(a, b int) bool { return a >= b },
+		"le": func(a, b int) bool { return a <= b },
+		"eq": func(a, b int) bool { return a == b },
+		"ne": func(a, b int) bool { return a != b },
+		"and": func(a, b bool) bool { return a && b },
+		"or":  func(a, b bool) bool { return a || b },
+	}
+
+	// Parse and execute template
+	tmpl, err := template.New("expr").Parse(expr)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse expression: %w", err)
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, context); err != nil {
+		return false, fmt.Errorf("failed to execute expression: %w", err)
+	}
+
+	// Parse result as boolean
+	result := strings.TrimSpace(buf.String())
+	return result == "true" || result == "1", nil
 }
