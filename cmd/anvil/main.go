@@ -1489,8 +1489,10 @@ func psRenderDashboard(daemonPID, maxWorkers int) {
 		if t.Status != "" {
 			statusStr = "  " + t.Status
 		}
-		fmt.Fprintf(w, "  %-40s %8s%s\n",
+		// Include PID to distinguish multiple instances of the same task
+		fmt.Fprintf(w, "  %-40s %-8d %8s%s\n",
 			truncate(projectName+"/"+t.Name, 40),
+			t.PID,
 			t.Elapsed,
 			statusStr)
 	}
