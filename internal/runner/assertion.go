@@ -56,7 +56,7 @@ func EvaluateAssertions(todo *project.Todo, stdout, stderr string) (*AssertionRe
 	// Check if any hard assertions failed (when soft assertions are disabled)
 	if !todo.Assert.Soft {
 		for _, result := range results.Results {
-			if !result.Passed && result.Error != nil {
+			if !result.Passed {
 				results.Failed = true
 				break
 			}
