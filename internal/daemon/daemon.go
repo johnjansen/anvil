@@ -165,6 +165,9 @@ type Daemon struct {
 
 	// HealthManager handles task health checks
 	healthManager *health.Manager
+
+	// AMQPConsumer handles AMQP message queue subscriptions
+	amqpConsumer *AMQPConsumer
 }
 
 type RunningTask struct {
@@ -249,6 +252,9 @@ func New(cfg *config.Config) *Daemon {
 
 	// Initialize health manager
 	d.healthManager = health.NewManager()
+
+	// Initialize AMQP consumer
+	d.amqpConsumer = NewAMQPConsumer(d)
 
 	return d
 }
@@ -420,6 +426,19 @@ func (d *Daemon) Run() {
 		}
 	}
 
+	// Load watched paths and start AMQP subscriptions
+	paths := loadWatchedPaths()
+	var projects []*project.Project
+	for _, p := range paths {
+		proj, err := project.Load(p)
+		if err != nil {
+			dlog.Warn("skip %s: %v", p, err)
+			continue
+		}
+		projects = append(projects, proj)
+	}
+	d.startAMQPSubscriptions(projects)
+
 	// Start SIGHUP handler for config reload
 	sighupChan := make(chan os.Signal, 1)
 	signal.Notify(sighupChan, syscall.SIGHUP)
@@ -444,6 +463,10 @@ func (d *Daemon) Run() {
 		select {
 		case <-d.stop:
 			dlog.Stopping()
+			// Stop all AMQP consumers
+			if d.amqpConsumer != nil {
+				d.amqpConsumer.StopAll()
+			}
 			if d.httpServer != nil {
 				d.httpServer.Shutdown(context.Background())
 			}
@@ -470,6 +493,10 @@ func (d *Daemon) Run() {
 
 func (d *Daemon) Stop() {
 	d.stopOnce.Do(func() {
+		// Stop all AMQP consumers
+		if d.amqpConsumer != nil {
+			d.amqpConsumer.StopAll()
+		}
 		close(d.stop)
 	})
 	<-d.done
@@ -478,6 +505,29 @@ func (d *Daemon) Stop() {
 // Done returns a channel that is closed when the daemon has fully stopped.
 func (d *Daemon) Done() <-chan struct{} {
 	return d.done
+}
+
+// startAMQPSubscriptions starts AMQP subscriptions for all tasks with AMQP subscriptions
+func (d *Daemon) startAMQPSubscriptions(projects []*project.Project) {
+	dlog.Info("Starting AMQP subscriptions for %d projects", len(projects))
+	for _, proj := range projects {
+		dlog.Info("Loading todos for project: %s", proj.Path)
+		todos, err := proj.LoadTodos()
+		if err != nil {
+			dlog.Warn("Failed to load todos for project %s: %v", proj.Path, err)
+			continue
+		}
+		dlog.Info("Loaded %d todos for project: %s", len(todos), proj.Path)
+
+		for _, todo := range todos {
+			if todo.Subscription != nil && todo.Subscription.Type == "amqp" {
+				dlog.Info("Starting AMQP subscription for task: %s", todo.Name)
+				if err := d.amqpConsumer.StartSubscription(proj, todo); err != nil {
+					dlog.Warn("Failed to start AMQP subscription for task %s: %v", todo.Name, err)
+				}
+			}
+		}
+	}
 }
 
 // gracefulShutdown waits for running tasks to complete before stopping.
@@ -532,6 +582,11 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	if d.clusterNode != nil {
 		d.clusterNode.Stop()
 	}
+	// Stop all AMQP consumers
+	if d.amqpConsumer != nil {
+		d.amqpConsumer.StopAll()
+	}
+
 	close(d.workQueue)
 	workerWg.Wait()
 	d.stopOnce.Do(func() {
@@ -2598,20 +2653,24 @@ func (d *Daemon) tick(now time.Time) {
 		taskKey := fmt.Sprintf("%s/%s", pt.proj.Path, pt.todo.Name)
 		projName := filepath.Base(pt.proj.Path)
 
-		// Skip if already at max concurrent instances (queued or executing)
+		// Determine how many instances we can dispatch
 		maxConcurrent := pt.todo.MaxConcurrent
 		if maxConcurrent < 1 {
 			maxConcurrent = 1
 		}
 		d.inFlightMu.Lock()
-		if d.inFlight[taskKey] >= maxConcurrent {
-			d.inFlightMu.Unlock()
+		currentInFlight := d.inFlight[taskKey]
+		d.inFlightMu.Unlock()
+		if currentInFlight >= maxConcurrent {
 			dlog.Info("skip %s/%s — already in-flight", projName, pt.todo.Name)
 			d.pendingTasksMu.Lock()
 			d.pendingTasks[taskKey] = "max concurrent"
 			d.pendingTasksMu.Unlock()
 			continue
 		}
+		instancesToDispatch := maxConcurrent - currentInFlight
+		// Reserve one slot now so skip-check rollback stays simple
+		d.inFlightMu.Lock()
 		d.inFlight[taskKey]++
 		d.inFlightMu.Unlock()
 
@@ -2994,27 +3053,38 @@ func (d *Daemon) tick(now time.Time) {
 		}
 
 		// Local dispatch (original behavior)
-		// Non-blocking send; if queue is full, clear in-flight and warn
-		select {
-		case d.workQueue <- workItem{project: pt.proj, todo: pt.todo, sla: slaCheck}:
-			dispatched++
-			// Clear starvation tracker for persistent tasks when dispatched
-			if pt.todo.IsPersistent() {
-				d.starvationTrackersMu.Lock()
-				delete(d.starvationTrackers, taskKey)
-				d.starvationTrackersMu.Unlock()
+		// Dispatch up to instancesToDispatch instances of this task.
+		// The first slot was already reserved above; reserve additional slots as we go.
+		for inst := 0; inst < instancesToDispatch; inst++ {
+			if inst > 0 {
+				// Reserve additional in-flight slot for instances beyond the first
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]++
+				d.inFlightMu.Unlock()
 			}
-		default:
-			dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
-			d.pendingTasksMu.Lock()
-			d.pendingTasks[taskKey] = "work queue full"
-			d.pendingTasksMu.Unlock()
-			d.inFlightMu.Lock()
-			d.inFlight[taskKey]--
-			if d.inFlight[taskKey] <= 0 {
-				delete(d.inFlight, taskKey)
+			// Non-blocking send; if queue is full, clear in-flight and warn
+			select {
+			case d.workQueue <- workItem{project: pt.proj, todo: pt.todo, sla: slaCheck}:
+				dispatched++
+				// Clear starvation tracker for persistent tasks when dispatched
+				if pt.todo.IsPersistent() {
+					d.starvationTrackersMu.Lock()
+					delete(d.starvationTrackers, taskKey)
+					d.starvationTrackersMu.Unlock()
+				}
+			default:
+				dlog.Warn("work queue full, dropping %s/%s", projName, pt.todo.Name)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = "work queue full"
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				break // Stop trying to dispatch more instances
 			}
-			d.inFlightMu.Unlock()
 		}
 	}
 

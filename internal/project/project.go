@@ -134,11 +134,21 @@ type TaskStateConfig struct {
 	Key    string `yaml:"key"`    // state key (supports {{ .TaskID }} template)
 }
 
+// SubscriptionConfig defines per-task message subscription configuration.
+type SubscriptionConfig struct {
+	Type     string `yaml:"type"`     // subscription type: "amqp", "file", "fs"
+	URL      string `yaml:"url"`      // connection URL (e.g. AMQP broker URL)
+	Queue    string `yaml:"queue"`    // queue name (for amqp type)
+	Path     string `yaml:"path"`     // file path (for file type)
+	FsPath   string `yaml:"fs_path"`  // filesystem path (for fs type)
+	Prefetch int    `yaml:"prefetch"` // prefetch count (for amqp type)
+}
+
 // CacheConfig defines per-task output caching configuration.
 type CacheConfig struct {
-	Enabled bool   `yaml:"enabled"` // whether caching is enabled for this task
-	Key     string `yaml:"key"`     // cache key template (supports {{ .GitSHA }}, {{ .FileHash:pattern }}, {{ .Environment:name }})
-	TTL     string `yaml:"ttl"`     // cache time-to-live (e.g., "1h", "30m", "24h")
+	Enabled bool   `yaml:"enabled"` // whether caching is enabled
+	Key     string `yaml:"key"`     // cache key template
+	TTL     string `yaml:"ttl"`     // cache TTL duration string
 }
 
 // Todo is a single todo file from the project's .anvil/todos/ tree
@@ -188,8 +198,9 @@ type Todo struct {
 	NotifyOnSuccess      *bool         // per-task override for success notifications (nil = use global)
 	NodeAffinity         string        // cluster node ID for affinity-based execution (empty = any node)
 	OnRollback           string        // shell command to run before rollback (supports {{ .RunID }}, {{ .TaskName }} templates)
-	HealthCheck          string        // optional shell command; task is healthy if it exits with code 0
-	Cache                *CacheConfig  // optional cache configuration
+	HealthCheck          string        // shell command for health check (empty = no health check)
+	Subscription         *SubscriptionConfig // message subscription configuration (nil = no subscription)
+	Cache                *CacheConfig  // task output caching configuration (nil = no caching)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
@@ -318,7 +329,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var slaConfig SLAConfig
 			onSLAViolation := ""
 			onRollback := ""
-			var cacheConfig *CacheConfig
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -367,7 +377,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
-						Cache                *CacheConfig      `yaml:"cache"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
@@ -429,7 +438,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						onSLAViolation = fmData.OnSLAViolation
 						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
-						cacheConfig = fmData.Cache
 					}
 				}
 			}
@@ -480,7 +488,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
 				OnRollback:           onRollback,
-				Cache:                cacheConfig,
 			})
 		}
 	}

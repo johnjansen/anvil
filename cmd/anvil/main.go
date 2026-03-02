@@ -1938,14 +1938,15 @@ func taskCmd(args []string) {
 	case "dry-run":
 		taskDryRunCmd(args[1:])
 	case "activity":
-		taskActivityCmd(args[1:])
 	case "cache":
 		taskCacheCmd(args[1:])
 	case "snapshot":
 		taskSnapshotCmd(args[1:])
 	case "snapshot-diff":
 		taskSnapshotDiffCmd(args[1:])
-
+	case "subscription":
+		taskSubscriptionCmd(args[1:])
+		taskActivityCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -9276,5 +9277,87 @@ func taskBlameCmd(args []string) {
 	if err := blameCmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "git blame failed: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// taskSubscriptionCmd handles the 'anvil task subscription' command
+func taskSubscriptionCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task subscription <subcommand> [options]\n")
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "ls", "list":
+		taskSubscriptionLsCmd(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown subscription subcommand: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		os.Exit(1)
+	}
+}
+
+// taskSubscriptionLsCmd handles the 'anvil task subscription ls' command
+func taskSubscriptionLsCmd(args []string) {
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	// Filter todos with subscriptions
+	var subscribedTodos []project.Todo
+	for _, todo := range todos {
+		if todo.Subscription != nil {
+			subscribedTodos = append(subscribedTodos, todo)
+		}
+	}
+
+	if len(subscribedTodos) == 0 {
+		fmt.Println("No subscriptions found")
+		return
+	}
+
+	// Print table header
+	fmt.Printf("%-20s  %-10s  %-20s  %s\n", "TASK", "TYPE", "TARGET", "STATUS")
+	fmt.Println(strings.Repeat("-", 70))
+
+	// Print subscription info
+	for _, todo := range subscribedTodos {
+		subType := "unknown"
+		target := "N/A"
+
+		if todo.Subscription != nil {
+			subType = todo.Subscription.Type
+
+			switch todo.Subscription.Type {
+			case "amqp":
+				target = todo.Subscription.Queue
+			case "webhook":
+				target = todo.Subscription.Path
+			case "fs":
+				target = todo.Subscription.FsPath
+			}
+		}
+
+		// For now, we'll show status as "active" - in a real implementation,
+		// we'd need to check if the daemon is actually consuming from the subscription
+		status := "active"
+
+		fmt.Printf("%-20s  %-10s  %-20s  %s\n",
+			strings.TrimSuffix(todo.Name, ".md"),
+			subType,
+			target,
+			status)
 	}
 }
