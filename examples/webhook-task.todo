@@ -1,0 +1,14 @@
+---
+schedule: "@hourly"
+subscription:
+  webhook: /webhooks/process-data
+---
+Process incoming data from external systems via webhook.
+
+This task will be triggered whenever data is POSTed to /webhooks/process-data.
+The payload will be available in the ANVIL_WEBHOOK_PAYLOAD environment variable.
+
+Example usage:
+  curl -X POST http://localhost:8080/webhooks/process-data \
+    -H "Content-Type: application/json" \
+    -d '{"event": "data_received", "timestamp": "2026-03-03T10:00:00Z"}'
