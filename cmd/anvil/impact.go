@@ -27,15 +27,15 @@ type Suggestion struct {
 
 // ImpactReport is the result of analyzing a proposed schedule against existing tasks.
 type ImpactReport struct {
-	Schedule        string       `json:"schedule"`
-	IsValid         bool         `json:"valid"`
-	ParseError      string       `json:"parse_error,omitempty"`
-	NextRun         time.Time    `json:"next_run,omitempty"`
-	Conflicts       []ImpactConflict   `json:"conflicts"`
-	PeakConcurrency int          `json:"peak_concurrency"`
-	PeakTime        time.Time    `json:"peak_time,omitempty"`
-	Suggestions     []Suggestion `json:"suggestions,omitempty"`
-	NoSchedule      bool         `json:"no_schedule,omitempty"`
+	Schedule        string           `json:"schedule"`
+	IsValid         bool             `json:"valid"`
+	ParseError      string           `json:"parse_error,omitempty"`
+	NextRun         time.Time        `json:"next_run,omitempty"`
+	Conflicts       []ImpactConflict `json:"conflicts"`
+	PeakConcurrency int              `json:"peak_concurrency"`
+	PeakTime        time.Time        `json:"peak_time,omitempty"`
+	Suggestions     []Suggestion     `json:"suggestions,omitempty"`
+	NoSchedule      bool             `json:"no_schedule,omitempty"`
 }
 
 // computeConflicts checks a proposed schedule against all active tasks and returns conflicts.

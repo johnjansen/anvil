@@ -178,13 +178,13 @@ func promptTestCmd(args []string) {
 
 	if jsonOutput {
 		type testResult struct {
-			Task         string   `json:"task"`
-			Iterations   int      `json:"iterations"`
-			Successes    int      `json:"successes"`
-			Failures     int      `json:"failures"`
-			SuccessRate  float64  `json:"success_rate"`
-			Format       string   `json:"format"`
-			Errors       []string `json:"errors,omitempty"`
+			Task        string   `json:"task"`
+			Iterations  int      `json:"iterations"`
+			Successes   int      `json:"successes"`
+			Failures    int      `json:"failures"`
+			SuccessRate float64  `json:"success_rate"`
+			Format      string   `json:"format"`
+			Errors      []string `json:"errors,omitempty"`
 		}
 		result := testResult{
 			Task:        todo.Name,
@@ -297,16 +297,16 @@ func promptAnalyzeCmd(args []string) {
 
 	if jsonOutput {
 		type analyzeResult struct {
-			Task            string  `json:"task"`
-			CharCount       int     `json:"char_count"`
-			InputTokens     int     `json:"input_tokens"`
-			OutputTokens    int     `json:"output_tokens"`
-			InputCost       float64 `json:"input_cost"`
-			OutputCost      float64 `json:"output_cost"`
-			TotalCost       float64 `json:"total_cost"`
-			ContextLimit    int     `json:"context_limit"`
-			ContextPercent  float64 `json:"context_percent"`
-			Warning         string  `json:"warning,omitempty"`
+			Task           string  `json:"task"`
+			CharCount      int     `json:"char_count"`
+			InputTokens    int     `json:"input_tokens"`
+			OutputTokens   int     `json:"output_tokens"`
+			InputCost      float64 `json:"input_cost"`
+			OutputCost     float64 `json:"output_cost"`
+			TotalCost      float64 `json:"total_cost"`
+			ContextLimit   int     `json:"context_limit"`
+			ContextPercent float64 `json:"context_percent"`
+			Warning        string  `json:"warning,omitempty"`
 		}
 		result := analyzeResult{
 			Task:           todo.Name,
@@ -405,12 +405,12 @@ func promptPreviewCmd(args []string) {
 
 	if jsonOutput {
 		type previewResult struct {
-			Task          string            `json:"task"`
-			Content       string            `json:"content"`
-			Lines         int               `json:"lines"`
-			TemplateVars  []string          `json:"template_vars"`
-			EnvVars       map[string]string `json:"env_vars,omitempty"`
-			Runner        string            `json:"runner"`
+			Task         string            `json:"task"`
+			Content      string            `json:"content"`
+			Lines        int               `json:"lines"`
+			TemplateVars []string          `json:"template_vars"`
+			EnvVars      map[string]string `json:"env_vars,omitempty"`
+			Runner       string            `json:"runner"`
 		}
 		result := previewResult{
 			Task:         todo.Name,
