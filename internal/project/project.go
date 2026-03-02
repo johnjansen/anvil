@@ -281,6 +281,15 @@ type Todo struct {
 	RateLimit            RateLimitConfig // per-task rate limiting configuration
 	// Assertion configuration for validating task output
 	Assert               *AssertConfig   // output assertion configuration (nil = no assertions)
+	// Backfill configuration for missed cron windows
+	Backfill             *BackfillConfig // backfill configuration (nil = no backfill)
+}
+
+// BackfillConfig defines backfill configuration for missed cron windows.
+type BackfillConfig struct {
+	Enabled   bool          `yaml:"enabled"`    // whether backfill is enabled
+	MaxDelay  time.Duration `yaml:"max_delay"`  // maximum delay to allow backfill (0 = unlimited)
+	Mode      string        `yaml:"mode"`       // backfill mode: "exact" or "when_idle"
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.

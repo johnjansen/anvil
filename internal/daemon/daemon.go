@@ -2880,6 +2880,7 @@ func (d *Daemon) tick(now time.Time) {
 			// - one-shot (empty schedule)
 			// - cron schedule matches current minute
 			// - persistent task (run immediately on tick)
+			// - backfill is enabled and there are missed runs within max_delay
 			if t.Schedule == "" || t.IsPersistent() || cron.Matches(t.Schedule, thisMinute) {
 				// For one-shot todos, skip if a stale lock file exists from a
 				// previous daemon crash. The user must remove the lock file (or
@@ -2901,6 +2902,46 @@ func (d *Daemon) tick(now time.Time) {
 
 				dueTodos = append(dueTodos, projectTodo{proj, t})
 				totalMatched++
+			} else if t.Backfill != nil && t.Backfill.Enabled {
+				// Check for backfill opportunities
+				lastRunTime := time.Time{}
+				records, err := project.ReadAllRunRecords(proj.Path, t.ID)
+				if err == nil && len(records) > 0 {
+					lastRunTime = records[0].Started
+				}
+
+				// If no previous runs, check if we should backfill from task creation time
+				// For now, we'll only backfill if there were previous runs
+				if !lastRunTime.IsZero() {
+					// Parse the cron expression
+					parser, err := cron.Parse(t.Schedule)
+					if err == nil {
+						// Count missed runs between last run and now
+						missedCount, err := parser.CountMissed(lastRunTime, thisMinute)
+						if err == nil && missedCount > 0 {
+							// There are missed runs, check if within max_delay
+							// For simplicity, we'll check if the most recent missed run is within max_delay
+							// Find the previous scheduled time before now
+							prevScheduled, err := parser.Prev(thisMinute)
+							if err == nil && !prevScheduled.IsZero() {
+								delay := thisMinute.Sub(prevScheduled)
+								if t.Backfill.MaxDelay == 0 || delay <= t.Backfill.MaxDelay {
+									// Within backfill window, add to due todos
+									// Track queue time for priority aging
+									taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
+									d.priorityAgingQueueTimesMu.Lock()
+									if _, exists := d.priorityAgingQueueTimes[taskKey]; !exists {
+										d.priorityAgingQueueTimes[taskKey] = time.Now()
+									}
+									d.priorityAgingQueueTimesMu.Unlock()
+
+									dueTodos = append(dueTodos, projectTodo{proj, t})
+									totalMatched++
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}

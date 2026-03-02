@@ -160,6 +160,7 @@ Task subcommands:
   timeout [name]            Show task timeout progress (--all for all tasks)
   extend-timeout <name> <dur>  Extend a running task's timeout by the given duration
   next [name]              Show next scheduled run time (--all for all projects)
+  backfill [name] [--all] [--json]  Show pending backfill tasks that would run due to missed cron windows
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
   analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
   pipeline [--dot|--verbose] [--all]  Visualize task dependency pipelines
