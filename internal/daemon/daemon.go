@@ -2670,6 +2670,57 @@ func (d *Daemon) tick(now time.Time) {
 			d.pendingTasksMu.Unlock()
 			continue
 		}
+
+		// Check rate limits if configured
+		if pt.todo.RateLimit.MaxPerHour > 0 || pt.todo.RateLimit.MaxPerDay > 0 {
+			counter, err := project.ReadRateLimitCounter(pt.proj.Path, pt.todo.ID)
+			if err != nil {
+				dlog.Warn("failed to read rate limit counter for %s/%s: %v", projName, pt.todo.Name, err)
+				// Continue with task execution if we can't read the counter
+			} else {
+				now := time.Now()
+				skipReason := ""
+
+				// Check hourly limit
+				if pt.todo.RateLimit.MaxPerHour > 0 {
+					// Reset hourly counter if needed
+					if counter.ThisHourStart.Add(time.Hour).Before(now) {
+						counter.ThisHourCount = 0
+						counter.ThisHourStart = now.Truncate(time.Hour)
+					}
+
+					if counter.ThisHourCount >= pt.todo.RateLimit.MaxPerHour {
+						skipReason = fmt.Sprintf("hourly limit reached (%d/%d)", counter.ThisHourCount, pt.todo.RateLimit.MaxPerHour)
+					}
+				}
+
+				// Check daily limit
+				if pt.todo.RateLimit.MaxPerDay > 0 && skipReason == "" {
+					// Reset daily counter if needed
+					if counter.ThisDayStart.Add(24 * time.Hour).Before(now) {
+						counter.ThisDayCount = 0
+						counter.ThisDayStart = now.Truncate(24 * time.Hour)
+					}
+
+					if counter.ThisDayCount >= pt.todo.RateLimit.MaxPerDay {
+						skipReason = fmt.Sprintf("daily limit reached (%d/%d)", counter.ThisDayCount, pt.todo.RateLimit.MaxPerDay)
+					}
+				}
+
+				if skipReason != "" {
+					dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, skipReason)
+					d.pendingTasksMu.Lock()
+					d.pendingTasks[taskKey] = skipReason
+					d.pendingTasksMu.Unlock()
+					// Release the in-flight slot we reserved above
+					d.inFlightMu.Lock()
+					d.inFlight[taskKey]--
+					d.inFlightMu.Unlock()
+					continue
+				}
+			}
+		}
+
 		instancesToDispatch := maxConcurrent - currentInFlight
 		// Reserve one slot now so skip-check rollback stays simple
 		d.inFlightMu.Lock()
@@ -3067,6 +3118,42 @@ func (d *Daemon) tick(now time.Time) {
 			// Non-blocking send; if queue is full, clear in-flight and warn
 			select {
 			case d.workQueue <- workItem{project: pt.proj, todo: pt.todo, sla: slaCheck}:
+				// Increment rate limit counters when task is dispatched
+				if pt.todo.RateLimit.MaxPerHour > 0 || pt.todo.RateLimit.MaxPerDay > 0 {
+					go func() {
+						counter, err := project.ReadRateLimitCounter(pt.proj.Path, pt.todo.ID)
+						if err != nil {
+							dlog.Warn("failed to read rate limit counter for %s/%s: %v", projName, pt.todo.Name, err)
+							return
+						}
+
+						now := time.Now()
+						// Reset hourly counter if needed
+						if counter.ThisHourStart.Add(time.Hour).Before(now) {
+							counter.ThisHourCount = 0
+							counter.ThisHourStart = now.Truncate(time.Hour)
+						}
+						// Reset daily counter if needed
+						if counter.ThisDayStart.Add(24 * time.Hour).Before(now) {
+							counter.ThisDayCount = 0
+							counter.ThisDayStart = now.Truncate(24 * time.Hour)
+						}
+
+						// Increment counters
+						if pt.todo.RateLimit.MaxPerHour > 0 {
+							counter.ThisHourCount++
+						}
+						if pt.todo.RateLimit.MaxPerDay > 0 {
+							counter.ThisDayCount++
+						}
+
+						// Write updated counter back
+						if err := project.WriteRateLimitCounter(pt.proj.Path, pt.todo.ID, counter); err != nil {
+							dlog.Warn("failed to write rate limit counter for %s/%s: %v", projName, pt.todo.Name, err)
+						}
+					}()
+				}
+
 				dispatched++
 				// Clear starvation tracker for persistent tasks when dispatched
 				if pt.todo.IsPersistent() {

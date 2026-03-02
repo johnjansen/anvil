@@ -41,12 +41,20 @@ type TaskDefaults struct {
 	Retry                int      `yaml:"retry"`
 	RetryDelay           string   `yaml:"retry_delay"`
 	MaxConcurrent        int      `yaml:"max_concurrent"`
+	RateLimit            RateLimitConfig `yaml:"rate_limit"` // rate limiting configuration
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
 	PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 	PersistentBudget     string   `yaml:"persistent_budget"`
 	CostBudget          string   `yaml:"cost_budget"`
 	MaxLogSize           string   `yaml:"max_log_size"`
 	Runner               string   `yaml:"runner"`
+}
+
+// RateLimitConfig defines per-task rate limiting configuration.
+// When MaxPerHour or MaxPerDay > 0, the daemon tracks execution count and skips tasks that would exceed limits.
+type RateLimitConfig struct {
+	MaxPerHour int `yaml:"max_per_hour"` // maximum executions per hour (0 = unlimited)
+	MaxPerDay  int `yaml:"max_per_day"`  // maximum executions per day (0 = unlimited)
 }
 
 // ConfigPath returns the path to the project config file.
@@ -161,6 +169,7 @@ type Todo struct {
 	ID              string        // UUID for session tracking
 	Resume          *bool         // nil = default (true for recurring, false for one-shot), explicit overrides
 	MaxConcurrent   int           // max simultaneous instances (0 = default 1)
+	RateLimit       RateLimitConfig // rate limiting configuration (0 = unlimited)
 	SkipPermissions bool          // if true, append --dangerously-skip-permissions to runner command
 	AllowedTools    []string      // if non-empty, append --allowedTools <tools> to runner command
 	PreCheck        string        // optional shell command; task is skipped silently if it exits non-zero
@@ -881,6 +890,79 @@ func RunPath(projectPath, taskID, runID string) string {
 // CurrentRunPath returns the path to the "current" run ID file for a task.
 func CurrentRunPath(projectPath, taskID string) string {
 	return filepath.Join(runsDir(projectPath, taskID), "current")
+}
+
+// rateLimitsDir returns the path to the rate limits directory for a task.
+func rateLimitsDir(projectPath, taskID string) string {
+	return filepath.Join(projectPath, ".anvil", "rate-limits", taskID)
+}
+
+// RateLimitCounter represents the execution counters for rate limiting.
+type RateLimitCounter struct {
+	ThisHourCount int       `json:"this_hour_count"`
+	ThisHourStart time.Time `json:"this_hour_start"`
+	ThisDayCount  int       `json:"this_day_count"`
+	ThisDayStart  time.Time `json:"this_day_start"`
+}
+
+// ReadRateLimitCounter reads the current rate limit counter for a task.
+func ReadRateLimitCounter(projectPath, taskID string) (RateLimitCounter, error) {
+	dir := rateLimitsDir(projectPath, taskID)
+	path := filepath.Join(dir, "counter.json")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Return zero-value counter if file doesn't exist
+			return RateLimitCounter{}, nil
+		}
+		return RateLimitCounter{}, err
+	}
+
+	var counter RateLimitCounter
+	if err := json.Unmarshal(data, &counter); err != nil {
+		return RateLimitCounter{}, err
+	}
+
+	// Reset counters if periods have passed
+	now := time.Now()
+	resetHour := counter.ThisHourStart.Add(time.Hour).Before(now)
+	resetDay := counter.ThisDayStart.Add(24 * time.Hour).Before(now)
+
+	if resetHour {
+		counter.ThisHourCount = 0
+		counter.ThisHourStart = now.Truncate(time.Hour)
+	}
+
+	if resetDay {
+		counter.ThisDayCount = 0
+		counter.ThisDayStart = now.Truncate(24 * time.Hour)
+	}
+
+	return counter, nil
+}
+
+// WriteRateLimitCounter writes the rate limit counter for a task.
+func WriteRateLimitCounter(projectPath, taskID string, counter RateLimitCounter) error {
+	dir := rateLimitsDir(projectPath, taskID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	path := filepath.Join(dir, "counter.json")
+	data, err := json.Marshal(counter)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+// ResetRateLimitCounter resets the rate limit counter for a task.
+func ResetRateLimitCounter(projectPath, taskID string) error {
+	dir := rateLimitsDir(projectPath, taskID)
+	path := filepath.Join(dir, "counter.json")
+	return os.Remove(path)
 }
 
 
