@@ -223,6 +223,9 @@ type Todo struct {
 	Subscription         *SubscriptionConfig // message subscription configuration (nil = no subscription)
 	Cache                *CacheConfig  // task output caching configuration (nil = no caching)
 	// Rate limiting configuration
+	// Replay functionality
+	Replay               bool   // if true, save successful outputs for replay
+	PinnedRun            string // if set, always use output from this specific run ID
 	RateLimit            RateLimitConfig // per-task rate limiting configuration
 }
 
@@ -402,6 +405,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						OnSLAViolation       string            `yaml:"on_sla_violation"`
 						OnRollback           string            `yaml:"on_rollback"`
 						NodeAffinity         string            `yaml:"node"`
+						// Replay functionality
+						Replay               bool   `yaml:"replay"`
+						PinnedRun            string `yaml:"pinned_run"`
 						Trigger              *TaskTrigger      `yaml:"trigger"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {

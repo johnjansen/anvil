@@ -31,6 +31,7 @@ import (
 	"github.com/johnjansen/anvil/internal/daemon"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/internal/service"
+	"github.com/johnjansen/anvil/internal/tui"
 	"github.com/johnjansen/anvil/tools"
 
 	"gopkg.in/yaml.v3"
@@ -1355,277 +1356,20 @@ func psCmd(args []string) {
 	}
 }
 
-// psWatch runs a live-updating dashboard that refreshes every 3 seconds.
-// Press q or Ctrl+C to exit.
 func psWatch() {
 	if !daemon.IsDaemonRunning() {
 		fmt.Println("daemon not running")
 		return
 	}
 
-	// Read daemon PID
-	daemonPID := 0
-	if data, err := os.ReadFile(config.PidFile()); err == nil {
-		pidStr := strings.TrimSpace(string(data))
-		daemonPID, _ = strconv.Atoi(pidStr)
-	}
-
-	// Load config for max_workers
-	cfg, _ := config.Load()
-	maxWorkers := 4
-	if cfg != nil && cfg.MaxWorkers > 0 {
-		maxWorkers = cfg.MaxWorkers
-	}
-
-	// Set up terminal raw mode for key detection
-	fd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		// Fall back to non-interactive mode
-		psWatchLoop(daemonPID, maxWorkers, nil)
-		return
-	}
-	defer term.Restore(fd, oldState)
-
-	// Channel for quit signal
-	quit := make(chan struct{})
-
-	// Read keypresses in background
-	go func() {
-		buf := make([]byte, 1)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
-				close(quit)
-				return
-			}
-			if buf[0] == 'q' || buf[0] == 'Q' || buf[0] == 3 { // q, Q, or Ctrl+C
-				close(quit)
-				return
-			}
-		}
-	}()
-
-	psWatchLoop(daemonPID, maxWorkers, quit)
-}
-
-func psWatchLoop(daemonPID, maxWorkers int, quit <-chan struct{}) {
-	// Handle Ctrl+C via signal if no quit channel
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	defer signal.Stop(sigCh)
-
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-
-	// Render immediately, then on each tick
-	for {
-		psRenderDashboard(daemonPID, maxWorkers)
-
-		select {
-		case <-ticker.C:
-			continue
-		case <-sigCh:
-			fmt.Print("\033[?25h") // show cursor
-			return
-		case <-quit:
-			fmt.Print("\033[?25h") // show cursor
-			return
-		}
+	// Start the new TUI dashboard
+	if err := tui.StartDashboard(); err != nil {
+		fmt.Printf("Error starting dashboard: %v\n", err)
 	}
 }
 
-func psRenderDashboard(daemonPID, maxWorkers int) {
-	// Use a buffer so we can translate \n → \r\n for raw terminal mode.
-	var buf bytes.Buffer
-	w := &buf
-
-	// Clear screen and move to top
-	fmt.Fprint(w, "\033[2J\033[H")
-	fmt.Fprint(w, "\033[?25l") // hide cursor
-
-	// Check daemon is still running
-	if !daemon.IsDaemonRunning() {
-		fmt.Fprintln(w, "daemon not running")
-		writeRaw(buf.Bytes())
-		return
-	}
-
-	// Gather data
-	tasks, _ := daemon.SendPsRequest()
-	queue, _ := daemon.SendQueueRequest()
-	status, _ := daemon.SendStatusRequest()
-	watched, _ := loadAllWatched()
-
-	// Count total todos across projects
-	totalTasks := 0
-	for _, wp := range watched {
-		proj, err := project.Load(wp.Path)
-		if err != nil {
-			continue
-		}
-		todos, _ := proj.LoadTodos()
-		totalTasks += len(todos)
-	}
-
-	// Header line
-	drainNote := ""
-	if status != nil && status.Draining {
-		drainNote = " (draining)"
-	}
-	fmt.Fprintf(w, "anvil daemon (PID %d), %d projects, %d tasks — %d workers%s\n",
-		daemonPID, len(watched), totalTasks, maxWorkers, drainNote)
-	fmt.Fprintln(w)
-
-	// RUNNING section
-	runningTasks := tasks
-	fmt.Fprintf(w, "RUNNING (%d)\n", len(runningTasks))
-	if len(runningTasks) == 0 {
-		fmt.Fprintln(w, "  (none)")
-	}
-	for _, t := range runningTasks {
-		projectName := filepath.Base(t.Project)
-		statusStr := ""
-		if t.Status != "" {
-			statusStr = "  " + t.Status
-		}
-		// Include PID to distinguish multiple instances of the same task
-		fmt.Fprintf(w, "  %-40s %-8d %8s%s\n",
-			truncate(projectName+"/"+t.Name, 40),
-			t.PID,
-			t.Elapsed,
-			statusStr)
-	}
-	fmt.Fprintln(w)
-
-	// IDLE workers
-	idleCount := maxWorkers - len(runningTasks)
-	if idleCount < 0 {
-		idleCount = 0
-	}
-	fmt.Fprintf(w, "IDLE (%d)\n", idleCount)
-	fmt.Fprintln(w)
-
-	// PENDING / SKIPPED from queue
-	var pending []daemon.TaskQueueInfo
-	var skipped []daemon.TaskQueueInfo
-	for _, q := range queue {
-		switch q.Status {
-		case "pending":
-			pending = append(pending, q)
-		case "skipped":
-			skipped = append(skipped, q)
-		}
-	}
-
-	if len(pending) > 0 {
-		fmt.Fprintf(w, "PENDING (%d)\n", len(pending))
-		for _, q := range pending {
-			projectName := filepath.Base(q.Project)
-			fmt.Fprintf(w, "  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), q.Schedule)
-		}
-		fmt.Fprintln(w)
-	}
-
-	if len(skipped) > 0 {
-		fmt.Fprintf(w, "SKIPPED (%d)\n", len(skipped))
-		for _, q := range skipped {
-			projectName := filepath.Base(q.Project)
-			reason := q.SkipReason
-			if reason == "" {
-				reason = "unknown"
-			}
-			fmt.Fprintf(w, "  %-40s %s\n", truncate(projectName+"/"+q.Name, 40), reason)
-		}
-		fmt.Fprintln(w)
-	}
-
-	// NEXT SCHEDULED — compute from watched projects
-	type nextTask struct {
-		project  string
-		name     string
-		schedule string
-		nextRun  time.Time
-	}
-	var upcoming []nextTask
-	now := time.Now()
-	for _, wp := range watched {
-		proj, err := project.Load(wp.Path)
-		if err != nil {
-			continue
-		}
-		todos, _ := proj.LoadTodos()
-		for _, t := range todos {
-			if t.Schedule == "" || t.Schedule == "once" {
-				continue
-			}
-			p, err := cron.Parse(t.Schedule)
-			if err != nil {
-				continue
-			}
-			next, err := p.Next(now)
-			if err != nil {
-				continue
-			}
-			upcoming = append(upcoming, nextTask{
-				project:  filepath.Base(wp.Path),
-				name:     t.Name,
-				schedule: t.Schedule,
-				nextRun:  next,
-			})
-		}
-	}
-	// Sort by next run time
-	sort.Slice(upcoming, func(i, j int) bool {
-		return upcoming[i].nextRun.Before(upcoming[j].nextRun)
-	})
-	// Show up to 5
-	if len(upcoming) > 5 {
-		upcoming = upcoming[:5]
-	}
-	if len(upcoming) > 0 {
-		fmt.Fprintf(w, "NEXT SCHEDULED\n")
-		for _, u := range upcoming {
-			until := time.Until(u.nextRun)
-			var untilStr string
-			if until < time.Minute {
-				untilStr = fmt.Sprintf("in %ds", int(until.Seconds()))
-			} else if until < time.Hour {
-				untilStr = fmt.Sprintf("in %dm%ds", int(until.Minutes()), int(until.Seconds())%60)
-			} else {
-				untilStr = fmt.Sprintf("in %dh%dm", int(until.Hours()), int(until.Minutes())%60)
-			}
-			fmt.Fprintf(w, "  %-6s %-34s %s\n",
-				u.schedule,
-				truncate(u.project+"/"+u.name, 34),
-				untilStr)
-		}
-		fmt.Fprintln(w)
-	}
-
-	fmt.Fprintln(w, "Press q to quit")
-	writeRaw(buf.Bytes())
-}
-
-// writeRaw writes data to stdout, translating bare \n to \r\n for raw terminal mode.
-func writeRaw(data []byte) {
-	out := bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
-	os.Stdout.Write(out)
-}
 
 
-// truncate shortens a string to the specified length, collapsing any
-// embedded newlines/whitespace runs into single spaces for table display.
-func truncate(s string, maxLen int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen < 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
-}
 
 // rawLineWriter translates \n to \r\n for raw terminal mode where OPOST is disabled.
 type rawLineWriter struct {
@@ -9432,9 +9176,9 @@ func taskSubscriptionCmd(args []string) {
 	case "ls", "list":
 		taskSubscriptionLsCmd(args[1:])
 	case "pause":
-		fmt.Println("task subscription pause command not yet implemented")
+		taskSubscriptionPauseCmd(args[1:])
 	case "resume":
-		fmt.Println("task subscription resume command not yet implemented")
+		taskSubscriptionResumeCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subscription subcommand: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
@@ -9506,3 +9250,16 @@ func taskSubscriptionLsCmd(args []string) {
 	}
 }
 
+
+// truncate shortens a string to the specified length, collapsing any
+// embedded newlines/whitespace runs into single spaces for table display.
+func truncate(s string, maxLen int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen < 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
+}
