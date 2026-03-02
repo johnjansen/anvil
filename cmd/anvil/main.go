@@ -99,6 +99,8 @@ func main() {
 		stopOnIdleCmd()
 	case "task":
 		taskCmd(os.Args[2:])
+	case "group":
+		groupCmd(os.Args[2:])
 	case "prompt":
 		promptCmd(os.Args[2:])
 	case "project":
@@ -199,6 +201,13 @@ Task subcommands:
   sla [--verbose] [--reset] [--json]  Show SLA violations (--verbose for all, --reset to clear)
   export [names...] [-a] [-o file]  Export tasks to JSON for sharing or backup
   import <file> [options]   Import tasks from a JSON export file
+  group <subcommand>        Task group management commands
+
+Group subcommands:
+  ls [-a|--all] [--json] [--label L]  List groups (--all for all projects, --label to filter)
+  get <name> [--json]       Show group details including run status
+  run <name>                Run a task group immediately
+  history <name> [--json]    Show group execution history
 
 Project subcommands:
   create [path]            Initialize and watch a project in one step
@@ -1695,6 +1704,8 @@ func taskCmd(args []string) {
 	case "subscription":
 		taskSubscriptionCmd(args[1:])
 		taskActivityCmd(args[1:])
+	case "group":
+		groupCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
