@@ -1948,8 +1948,6 @@ func taskCmd(args []string) {
 		taskSnapshotDiffCmd(args[1:])
 	case "subscription":
 		taskSubscriptionCmd(args[1:])
-	case "rate-limits":
-		taskRateLimitsCmd(args[1:])
 		taskActivityCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task command: %s\n", args[0])
@@ -9502,56 +9500,3 @@ func taskSubscriptionLsCmd(args []string) {
 	}
 }
 
-func taskRateLimitsCmd(args []string) {
-	reset := false
-	for _, a := range args {
-		switch a {
-		case "--reset":
-			reset = true
-		case "-h", "--help":
-			fmt.Fprintf(os.Stderr, `usage: anvil task rate-limits [--reset]
-
-Show rate limit status for all tasks.
-
-Options:
-  --reset    Reset all rate limit counters
-`)
-			os.Exit(0)
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", a)
-			os.Exit(1)
-		}
-	}
-
-	if !daemon.IsDaemonRunning() {
-		fmt.Fprintf(os.Stderr, "daemon is not running\n")
-		os.Exit(1)
-	}
-
-	if reset {
-		if err := daemon.SendResetRateLimitsRequest(); err != nil {
-			log.Fatalf("failed to reset rate limits: %v", err)
-		}
-		fmt.Println("Rate limit counters reset")
-		return
-	}
-
-	// Get rate limit status from daemon
-	status, err := daemon.SendRateLimitsRequest()
-	if err != nil {
-		log.Fatalf("failed to get rate limits: %v", err)
-	}
-
-	// Display in table format
-	fmt.Printf("%-20s  %-12s  %-8s  %-10s  %-6s\n", "TASK", "THIS_HOUR", "LIMIT", "THIS_DAY", "LIMIT")
-	fmt.Println(strings.Repeat("-", 70))
-
-	for _, s := range status {
-		fmt.Printf("%-20s  %-12s  %-8s  %-10s  %-6s\n",
-			s.TaskName,
-			s.ThisHour,
-			s.HourLimit,
-			s.ThisDay,
-			s.DayLimit)
-	}
-}
