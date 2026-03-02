@@ -256,6 +256,8 @@ type Todo struct {
 	Replay               bool   // if true, save successful outputs for replay
 	PinnedRun            string // if set, always use output from this specific run ID
 	RateLimit            RateLimitConfig // per-task rate limiting configuration
+	// Assertion configuration for validating task output
+	Assert               *AssertConfig   // output assertion configuration (nil = no assertions)
 }
 
 // RunRecord persists metadata for a single task dispatch, written after completion.
