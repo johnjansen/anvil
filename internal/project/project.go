@@ -155,6 +155,35 @@ type SubscriptionConfig struct {
 	Prefetch int    `yaml:"prefetch"` // prefetch count (for amqp type)
 }
 
+// AssertConfig defines per-task output assertion configuration.
+type AssertConfig struct {
+	Stdout *StdoutAssertion `yaml:"stdout,omitempty"` // stdout assertion configuration
+	Stderr *StderrAssertion `yaml:"stderr,omitempty"` // stderr assertion configuration
+	Files  []FileAssertion  `yaml:"files,omitempty"`  // file assertion configuration
+	Soft   bool             `yaml:"soft,omitempty"`   // if true, failed assertions log warnings instead of failing task
+}
+
+// StdoutAssertion defines stdout content assertions.
+type StdoutAssertion struct {
+	Contains  string `yaml:"contains,omitempty"`   // must contain this string
+	Matches   string `yaml:"matches,omitempty"`    // must match this regex pattern
+	JSONValid bool   `yaml:"json_valid,omitempty"` // must be valid JSON
+}
+
+// StderrAssertion defines stderr content assertions.
+type StderrAssertion struct {
+	Empty bool `yaml:"empty,omitempty"` // must be empty
+}
+
+// FileAssertion defines file content assertions.
+type FileAssertion struct {
+	Path    string `yaml:"path"`              // path to file (relative to project root)
+	Exists  *bool  `yaml:"exists,omitempty"`  // file must exist (nil = don't check)
+	Contains string `yaml:"contains,omitempty"` // file must contain this string
+	SizeMin  int64 `yaml:"size_min,omitempty"`  // file size must be at least this many bytes
+	SizeMax  int64 `yaml:"size_max,omitempty"`  // file size must be at most this many bytes
+}
+
 // CacheConfig defines per-task output caching configuration.
 type CacheConfig struct {
 	Enabled bool   `yaml:"enabled"` // whether caching is enabled
