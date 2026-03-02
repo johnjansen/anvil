@@ -229,7 +229,6 @@ type Todo struct {
 	OnSLAViolation       string        // shell command to run when SLA is violated
 	CircuitBreaker       CircuitBreakerConfig // per-task circuit breaker configuration
 	OnCircuitOpen        string        // shell command to run when circuit opens
-	Assert               *AssertConfig // per-task output assertion configuration
 	OnCircuitClose       string        // shell command to run when circuit closes
 	Alerts               AlertConfig   // per-task alert configuration
 	State                *TaskStateConfig // optional task state management config
