@@ -9432,9 +9432,9 @@ func taskSubscriptionCmd(args []string) {
 	case "ls", "list":
 		taskSubscriptionLsCmd(args[1:])
 	case "pause":
-		taskSubscriptionPauseCmd(args[1:])
+		fmt.Println("task subscription pause command not yet implemented")
 	case "resume":
-		taskSubscriptionResumeCmd(args[1:])
+		fmt.Println("task subscription resume command not yet implemented")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subscription subcommand: %s\n", args[0])
 		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
