@@ -221,6 +221,11 @@ type PreconditionConfig struct {
 	Expr        string `yaml:"expr,omitempty"`          // expression to evaluate (Go template with conditionals)
 }
 
+// DependencyPolicyConfig defines how dependency failures should be handled.
+type DependencyPolicyConfig struct {
+	OnFailure string `yaml:"on_failure,omitempty"` // policy for handling dependency failures: "skip", "require_all", "require_any"
+}
+
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
 	Path            string        // absolute path to the file
@@ -255,8 +260,9 @@ type Todo struct {
 	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
 	Labels               []string      // user-defined labels for organizing and filtering tasks
 	Env                  map[string]string // environment variables injected into task execution
-	DependsOn            []string      // list of task names this task depends on (all must succeed before running)
-	Checkpoint           bool          // if true, capture ##anvil:checkpoint output and inject on resume
+	DependsOn            []string             // list of task names this task depends on (all must succeed before running)
+	DependencyPolicy     DependencyPolicyConfig // dependency failure handling policy
+	Checkpoint           bool                 // if true, capture ##anvil:checkpoint output and inject on resume
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 	SLA                  SLAConfig     // per-task SLA tracking configuration
@@ -459,6 +465,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Labels               []string          `yaml:"labels"`
 						Env                  map[string]string `yaml:"env"`
 						DependsOn            []string          `yaml:"depends_on"`
+						DependencyPolicy     struct {
+							OnFailure string `yaml:"on_failure"`
+						} `yaml:"dependency_policy"`
 						Checkpoint           bool              `yaml:"checkpoint"`
 						HealthCheck          string            `yaml:"health_check"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
