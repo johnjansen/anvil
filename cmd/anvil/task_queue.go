@@ -61,19 +61,26 @@ func taskQueueCmd(args []string) {
 		return
 	}
 
-	fmt.Printf("%-40s %-10s %-10s %s\n", "TASK", "PRIORITY", "STATUS", "SKIP REASON")
-	fmt.Printf("%s\n", strings.Repeat("-", 90))
+	fmt.Printf("%-40s %-10s %-10s %-30s %s\n", "TASK", "PRIORITY", "STATUS", "SKIP REASON", "CASCADE")
+	fmt.Printf("%s\n", strings.Repeat("-", 120))
 
 	for _, t := range tasks {
 		skipReason := t.SkipReason
 		if skipReason == "" {
 			skipReason = "-"
 		}
-		fmt.Printf("%-40s %-10d %-10s %s\n",
+
+		cascadeInfo := "-"
+		if t.CascadeCount > 0 {
+			cascadeInfo = fmt.Sprintf("%d from %s", t.CascadeCount, t.CascadeFrom)
+		}
+
+		fmt.Printf("%-40s %-10d %-10s %-30s %s\n",
 			truncate(t.Name, 40),
 			t.Priority,
 			t.Status,
-			skipReason)
+			truncate(skipReason, 30),
+			cascadeInfo)
 	}
 }
 

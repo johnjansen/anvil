@@ -189,6 +189,11 @@ type Daemon struct {
 
 	// WebhookServer handles HTTP webhook subscriptions
 	webhookServer *WebhookServer
+
+	// cascadeFailures tracks cascading dependency failures for reporting
+	// Map key is the failed dependency task name, value is list of affected tasks
+	cascadeFailures   map[string][]string // dependencyTask -> []affectedTasks
+	cascadeFailuresMu sync.Mutex
 }
 
 // RateLimitCounter tracks execution counts for rate limiting per task
@@ -232,13 +237,15 @@ type TaskInfo struct {
 
 // TaskQueueInfo holds information about a task in the queue or its last skip reason.
 type TaskQueueInfo struct {
-	Project    string `json:"project"`
-	Name       string `json:"name"`
-	Priority   int    `json:"priority"`
-	Schedule   string `json:"schedule"`
-	Status     string `json:"status"`       // "running", "pending", "skipped"
-	SkipReason string `json:"skip_reason,omitempty"` // why task was skipped in last tick
-	Boost      int    `json:"boost,omitempty"`       // priority boost from aging (0 = no boost)
+	Project      string `json:"project"`
+	Name         string `json:"name"`
+	Priority     int    `json:"priority"`
+	Schedule     string `json:"schedule"`
+	Status       string `json:"status"`       // "running", "pending", "skipped"
+	SkipReason   string `json:"skip_reason,omitempty"` // why task was skipped in last tick
+	Boost        int    `json:"boost,omitempty"`       // priority boost from aging (0 = no boost)
+	CascadeCount int    `json:"cascade_count,omitempty"` // number of tasks affected by cascading failure
+	CascadeFrom  string `json:"cascade_from,omitempty"`  // which task caused the cascading failure
 }
 
 // TaskBudgetInfo holds budget consumption info for a persistent task.
@@ -283,6 +290,7 @@ func New(cfg *config.Config) *Daemon {
 		webhooks:             webhook.New(cfg.Webhooks),
 		rateLimitCounters:    make(map[string]*RateLimitCounter),
 		groupRateLimits:      make(map[string]*RateLimitCounter),
+		cascadeFailures:      make(map[string][]string),
 	}
 
 	// Initialize health manager
@@ -825,41 +833,147 @@ type depFailInfo struct {
 	ExitCode  int       // 0 if success, 1 if failed (no explicit exit code in RunRecord)
 }
 
-// checkDependenciesMet verifies all dependencies have completed successfully in the current cycle.
+// checkDependenciesMet verifies dependencies have completed successfully in the current cycle,
+// according to the specified dependency policy.
 // Supports both local dependencies ("task.md") and cross-project dependencies ("project:task.md").
-// Returns (true, nil) if all dependencies are met, (false, info) if not.
-func checkDependenciesMet(projectPath string, dependsOn []string) (met bool, info *depFailInfo) {
-	for _, dep := range dependsOn {
-		runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
-		if err != nil {
-			// No run record found - dependency hasn't run yet or can't be resolved
-			return false, &depFailInfo{
-				Reason:  "dependency not run: " + dep,
-				DepName: dep,
-			}
-		}
-		if !runRecord.Success {
-			return false, &depFailInfo{
-				Reason:   "dependency failed: " + dep,
-				DepName:  dep,
-				DepError: runRecord.Error,
-				Finished: runRecord.Finished,
-				ExitCode: 1,
-			}
-		}
-		// Check if the run finished in this daemon cycle (within last ~1 minute)
-		// This ensures dependencies from previous cycles are re-run
-		elapsed := time.Since(runRecord.Finished)
-		if elapsed > 2*time.Minute {
-			// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
-			return false, &depFailInfo{
-				Reason:   "dependency stale: " + dep,
-				DepName:  dep,
-				Finished: runRecord.Finished,
-			}
-		}
+// Returns (true, nil) if dependencies are met according to policy, (false, info) if not.
+func checkDependenciesMet(projectPath string, dependsOn []string, policy project.DependencyPolicyConfig) (met bool, info *depFailInfo) {
+	// Default policy is "skip" - all dependencies must succeed
+	onFailure := "skip"
+	if policy.OnFailure != "" {
+		onFailure = policy.OnFailure
 	}
-	return true, nil
+
+	switch onFailure {
+	case "require_all":
+		// All dependencies must succeed (original behavior)
+		for _, dep := range dependsOn {
+			runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
+			if err != nil {
+				// No run record found - dependency hasn't run yet or can't be resolved
+				return false, &depFailInfo{
+					Reason:  "dependency not run: " + dep,
+					DepName: dep,
+				}
+			}
+			if !runRecord.Success {
+				return false, &depFailInfo{
+					Reason:   "dependency failed: " + dep,
+					DepName:  dep,
+					DepError: runRecord.Error,
+					Finished: runRecord.Finished,
+					ExitCode: 1,
+				}
+			}
+			// Check if the run finished in this daemon cycle (within last ~1 minute)
+			// This ensures dependencies from previous cycles are re-run
+			elapsed := time.Since(runRecord.Finished)
+			if elapsed > 2*time.Minute {
+				// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
+				return false, &depFailInfo{
+					Reason:   "dependency stale: " + dep,
+					DepName:  dep,
+					Finished: runRecord.Finished,
+				}
+			}
+		}
+		return true, nil
+
+	case "require_any":
+		// At least one dependency must succeed
+		successCount := 0
+		var firstFailure *depFailInfo
+		for _, dep := range dependsOn {
+			runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
+			if err != nil {
+				// No run record found - dependency hasn't run yet or can't be resolved
+				if firstFailure == nil {
+					firstFailure = &depFailInfo{
+						Reason:  "dependency not run: " + dep,
+						DepName: dep,
+					}
+				}
+				continue
+			}
+			if runRecord.Success {
+				// Check if the run finished in this daemon cycle (within last ~1 minute)
+				// This ensures dependencies from previous cycles are re-run
+				elapsed := time.Since(runRecord.Finished)
+				if elapsed <= 2*time.Minute {
+					successCount++
+				} else {
+					// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
+					if firstFailure == nil {
+						firstFailure = &depFailInfo{
+							Reason:   "dependency stale: " + dep,
+							DepName:  dep,
+							Finished: runRecord.Finished,
+						}
+					}
+				}
+			} else {
+				// Dependency failed
+				if firstFailure == nil {
+					firstFailure = &depFailInfo{
+						Reason:   "dependency failed: " + dep,
+						DepName:  dep,
+						DepError: runRecord.Error,
+						Finished: runRecord.Finished,
+						ExitCode: 1,
+					}
+				}
+			}
+		}
+
+		// If at least one dependency succeeded, we're good
+		if successCount > 0 {
+			return true, nil
+		}
+
+		// No dependencies succeeded, return the first failure
+		if firstFailure != nil {
+			return false, firstFailure
+		}
+
+		// All dependencies failed to resolve
+		return false, &depFailInfo{
+			Reason: "all dependencies failed to resolve",
+		}
+
+	default: // "skip" (default behavior)
+		// Original behavior - all dependencies must succeed
+		for _, dep := range dependsOn {
+			runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
+			if err != nil {
+				// No run record found - dependency hasn't run yet or can't be resolved
+				return false, &depFailInfo{
+					Reason:  "dependency not run: " + dep,
+					DepName: dep,
+				}
+			}
+			if !runRecord.Success {
+				return false, &depFailInfo{
+					Reason:   "dependency failed: " + dep,
+					DepName:  dep,
+					DepError: runRecord.Error,
+					Finished: runRecord.Finished,
+					ExitCode: 1,
+				}
+			}
+			// Check if the run finished in this daemon cycle (within last ~1 minute)
+			// This ensures dependencies from previous cycles are re-run
+			elapsed := time.Since(runRecord.Finished)
+			if elapsed > 2*time.Minute {
+				// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
+				return false, &depFailInfo{
+					Reason:   "dependency stale: " + dep,
+					DepName:  dep,
+					Finished: runRecord.Finished,
+				}
+			}
+		}
+		return true, nil
+	}
 }
 
 // runTask executes a single todo task and handles all bookkeeping.
@@ -1968,6 +2082,24 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 			Status:     status,
 			SkipReason: skipReason,
 		})
+
+		// Add cascade information if this task was skipped due to dependency failure
+		if strings.HasPrefix(skipReason, "dependency failed: ") {
+			// Extract the dependency name from the skip reason
+			depName := strings.TrimPrefix(skipReason, "dependency failed: ")
+			d.cascadeFailuresMu.Lock()
+			if affected, exists := d.cascadeFailures[depName]; exists && len(affected) > 0 {
+				// Count how many tasks are affected by this dependency failure
+				cascadeCount := len(affected)
+				if cascadeCount > 0 {
+					// Update the last added TaskQueueInfo with cascade info
+					lastIndex := len(result) - 1
+					result[lastIndex].CascadeCount = cascadeCount
+					result[lastIndex].CascadeFrom = depName
+				}
+			}
+			d.cascadeFailuresMu.Unlock()
+		}
 	}
 	d.pendingTasksMu.RUnlock()
 
@@ -3187,8 +3319,9 @@ func (d *Daemon) tick(now time.Time) {
 		d.inFlightMu.Unlock()
 
 		// Skip if task has dependencies that haven't completed successfully
-		if len(pt.todo.DependsOn) > 0 {
-			depMet, depInfo := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn)
+		// Unless the task is being force-run (ForceWindow is set)
+		if len(pt.todo.DependsOn) > 0 && !pt.todo.ForceWindow {
+			depMet, depInfo := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn, pt.todo.DependencyPolicy)
 			if !depMet {
 				reason := "dependency not met"
 				if depInfo != nil {
@@ -3209,6 +3342,11 @@ func (d *Daemon) tick(now time.Time) {
 					if pt.todo.Webhook != "" {
 						d.webhooks.FireURL(pt.todo.Webhook, webhook.EventSkipped, skipPayload)
 					}
+
+					// Record cascading failure for reporting
+					d.cascadeFailuresMu.Lock()
+					d.cascadeFailures[depInfo.DepName] = append(d.cascadeFailures[depInfo.DepName], pt.todo.Name)
+					d.cascadeFailuresMu.Unlock()
 				}
 
 				d.inFlightMu.Lock()
