@@ -57,6 +57,6 @@ fi
 echo "Installed anvil ${TAG} to ${INSTALL_DIR}/${BINARY}"
 echo ""
 echo "Get started:"
-echo "  anvil serve &     # start the daemon"
-echo "  anvil watch       # register current project"
+echo "  anvil watch       # start the daemon"
+echo "  cd my-project && anvil init   # initialize a project"
 echo "  anvil add -s '*/5 * * * *' 'Check for new issues'"
