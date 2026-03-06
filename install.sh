@@ -33,25 +33,26 @@ fi
 
 echo "Installing anvil ${TAG} (${OS}/${ARCH})..."
 
-# Download binary
-URL="https://github.com/${REPO}/releases/download/${TAG}/anvil-${OS}-${ARCH}"
-TMPFILE="$(mktemp)"
-trap 'rm -f "$TMPFILE"' EXIT
+# Download and extract tarball
+URL="https://github.com/${REPO}/releases/download/${TAG}/anvil-${OS}-${ARCH}.tar.gz"
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
 
-curl -fsSL -o "$TMPFILE" "$URL"
+curl -fsSL -o "$TMPDIR/anvil.tar.gz" "$URL"
 if [ $? -ne 0 ]; then
     echo "Error: download failed from ${URL}" >&2
     exit 1
 fi
 
-chmod +x "$TMPFILE"
+tar -xzf "$TMPDIR/anvil.tar.gz" -C "$TMPDIR"
+chmod +x "$TMPDIR/${BINARY}"
 
 # Install — try direct, fall back to sudo
 if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMPFILE" "${INSTALL_DIR}/${BINARY}"
+    mv "$TMPDIR/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 else
     echo "Need sudo to install to ${INSTALL_DIR}"
-    sudo mv "$TMPFILE" "${INSTALL_DIR}/${BINARY}"
+    sudo mv "$TMPDIR/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 fi
 
 echo "Installed anvil ${TAG} to ${INSTALL_DIR}/${BINARY}"
