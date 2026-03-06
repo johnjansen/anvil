@@ -45,6 +45,7 @@ if [ $? -ne 0 ]; then
 fi
 
 tar -xzf "$TMPDIR/anvil.tar.gz" -C "$TMPDIR"
+mv "$TMPDIR/anvil-${OS}-${ARCH}" "$TMPDIR/${BINARY}"
 chmod +x "$TMPDIR/${BINARY}"
 
 # Install — try direct, fall back to sudo
