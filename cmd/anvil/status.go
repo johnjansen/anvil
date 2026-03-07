@@ -39,6 +39,18 @@ func statusCmd(args []string) {
 		}
 	}
 
+	// Fetch throttle state if daemon is running
+	var throttlePaused bool
+	var throttleRate int
+	var pausedLabels []string
+	if daemonRunning {
+		if status, err := daemon.SendStatusRequest(); err == nil {
+			throttlePaused = status.Paused
+			throttleRate = status.ThrottleRate
+			pausedLabels = status.PausedLabels
+		}
+	}
+
 	if jsonOutput {
 		type projectStatusJSON struct {
 			Path  string `json:"path"`
@@ -48,11 +60,17 @@ func statusCmd(args []string) {
 		type statusJSON struct {
 			DaemonRunning bool                `json:"daemon_running"`
 			Draining      bool                `json:"draining"`
+			Paused        bool                `json:"paused"`
+			ThrottleRate  int                 `json:"throttle_rate,omitempty"`
+			PausedLabels  []string            `json:"paused_labels,omitempty"`
 			Projects      []projectStatusJSON `json:"projects"`
 		}
 		st := statusJSON{
 			DaemonRunning: daemonRunning,
 			Draining:      draining,
+			Paused:        throttlePaused,
+			ThrottleRate:  throttleRate,
+			PausedLabels:  pausedLabels,
 			Projects:      []projectStatusJSON{},
 		}
 		for _, w := range watched {
@@ -81,6 +99,17 @@ func statusCmd(args []string) {
 	// Show daemon drain state if running
 	if draining {
 		fmt.Println("daemon: draining (stop-on-idle active)")
+	}
+
+	// Show throttle state
+	if throttlePaused {
+		fmt.Println("daemon: PAUSED (all task dispatching suspended)")
+	}
+	if throttleRate > 0 {
+		fmt.Printf("daemon: throttle rate %d/m\n", throttleRate)
+	}
+	if len(pausedLabels) > 0 {
+		fmt.Printf("daemon: paused labels: %s\n", strings.Join(pausedLabels, ", "))
 	}
 
 	if len(watched) == 0 {
@@ -437,6 +466,15 @@ func psCmd(args []string) {
 				fmt.Println("(draining — no new tasks will be dispatched)")
 			}
 			// Show rate limit status if configured
+			if status.Paused {
+				fmt.Println("(PAUSED — no new tasks will be dispatched)")
+			}
+			if status.ThrottleRate > 0 {
+				fmt.Printf("Throttle: %d tasks/min\n", status.ThrottleRate)
+			}
+			if len(status.PausedLabels) > 0 {
+				fmt.Printf("Paused labels: %s\n", strings.Join(status.PausedLabels, ", "))
+			}
 			if status.RateLimited {
 				slots := status.RateLimitSlots
 				inUse := status.RateInUse

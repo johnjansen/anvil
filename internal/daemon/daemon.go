@@ -197,6 +197,9 @@ type Daemon struct {
 
 	// pollingManager handles polling-based trigger conditions
 	pollingManager *PollingManager
+
+	// throttle manages global pause, throttle rate, and label-based pause
+	throttle *throttleManager
 }
 
 // RateLimitCounter tracks execution counts for rate limiting per task
@@ -316,6 +319,9 @@ func New(cfg *config.Config) *Daemon {
 	// Initialize polling manager
 	d.pollingManager = NewPollingManager(d)
 
+	// Initialize throttle manager
+	d.throttle = newThrottleManager()
+
 	return d
 }
 
@@ -350,6 +356,11 @@ func (d *Daemon) Run() {
 			}
 		}
 	}()
+
+	// Load persistent throttle state
+	if err := d.throttle.load(); err != nil {
+		dlog.Warn("failed to load throttle state: %v", err)
+	}
 
 	poolSize := d.config.MaxWorkers
 	if poolSize < 1 {
@@ -2033,6 +2044,10 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/reset-rate-limits", d.handleResetRateLimits)
 	mux.HandleFunc("/cluster/status", d.handleClusterStatus)
 	mux.HandleFunc("/cluster/leave", d.handleClusterLeave)
+	mux.HandleFunc("/throttle/pause", d.handleThrottlePause)
+	mux.HandleFunc("/throttle/resume", d.handleThrottleResume)
+	mux.HandleFunc("/throttle/rate", d.handleThrottleRate)
+	mux.HandleFunc("/throttle/state", d.handleThrottleState)
 
 	d.httpServer = &http.Server{
 		Handler: mux,
@@ -2502,6 +2517,10 @@ type DaemonStatus struct {
 	RateLimited    bool `json:"rate_limited"`   // true if rate limiting is configured
 	RateLimitSlots int  `json:"rate_limit_slots"` // total slots configured (0 if not limited)
 	RateInUse      int  `json:"rate_in_use"`    // current slots in use
+	// Throttle state
+	Paused       bool            `json:"paused"`                  // global pause active
+	ThrottleRate int             `json:"throttle_rate,omitempty"`  // tasks per minute (0 = unlimited)
+	PausedLabels []string        `json:"paused_labels,omitempty"`  // labels currently paused
 }
 
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -2518,6 +2537,13 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status.RateLimitSlots = cap(d.rateLimitSemaphore)
 		// Count slots currently in use (len of channel)
 		status.RateInUse = len(d.rateLimitSemaphore)
+	}
+	// Populate throttle state
+	ts := d.throttle.GetState()
+	status.Paused = ts.Paused
+	status.ThrottleRate = ts.RatePerMin
+	for label := range ts.PausedLabels {
+		status.PausedLabels = append(status.PausedLabels, label)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
@@ -2780,6 +2806,101 @@ func (d *Daemon) handleDrain(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "draining"})
+}
+
+func (d *Daemon) handleThrottlePause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req ThrottlePauseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var err error
+	if req.Label != "" {
+		err = d.throttle.PauseLabel(req.Label)
+		if err == nil {
+			dlog.Info("throttle: paused tasks with label %q", req.Label)
+		}
+	} else {
+		err = d.throttle.SetPaused(true)
+		if err == nil {
+			dlog.Info("throttle: global pause activated")
+		}
+	}
+	if err != nil {
+		http.Error(w, "failed to save throttle state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (d *Daemon) handleThrottleResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req ThrottleResumeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var err error
+	if req.Label != "" {
+		err = d.throttle.ResumeLabel(req.Label)
+		if err == nil {
+			dlog.Info("throttle: resumed tasks with label %q", req.Label)
+		}
+	} else {
+		err = d.throttle.SetPaused(false)
+		if err == nil {
+			dlog.Info("throttle: global pause deactivated")
+		}
+	}
+	if err != nil {
+		http.Error(w, "failed to save throttle state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (d *Daemon) handleThrottleRate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req ThrottleRateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := d.throttle.SetRate(req.RatePerMin); err != nil {
+		http.Error(w, "failed to save throttle state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if req.RatePerMin > 0 {
+		dlog.Info("throttle: rate set to %d/m", req.RatePerMin)
+	} else {
+		dlog.Info("throttle: rate limit disabled")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (d *Daemon) handleThrottleState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(d.throttle.GetState())
 }
 
 // RunRequest is the JSON payload for /run (force-trigger a task).
@@ -3098,6 +3219,12 @@ func (d *Daemon) tick(now time.Time) {
 		return
 	}
 
+	// Skip scheduling if globally paused
+	if d.throttle.IsPaused() {
+		dlog.Info("skip scheduling — globally paused")
+		return
+	}
+
 	// Collect all due todos across all projects for global priority ordering
 	type projectTodo struct {
 		proj *project.Project
@@ -3173,6 +3300,10 @@ func (d *Daemon) tick(now time.Time) {
 		for _, t := range allTodos {
 			// Skip disabled tasks silently
 			if t.Disabled {
+				continue
+			}
+			// Skip tasks with a paused label
+			if len(t.Labels) > 0 && d.throttle.IsLabelPaused(t.Labels) {
 				continue
 			}
 			// Include task if:
@@ -3916,6 +4047,21 @@ func (d *Daemon) tick(now time.Time) {
 		}
 
 		// Local dispatch (original behavior)
+		// Check global throttle rate before dispatching
+		if !d.throttle.AllowDispatch(time.Now()) {
+			dlog.Info("skip %s/%s — throttle rate limit reached", projName, pt.todo.Name)
+			d.pendingTasksMu.Lock()
+			d.pendingTasks[taskKey] = "throttle rate limit"
+			d.pendingTasksMu.Unlock()
+			d.inFlightMu.Lock()
+			d.inFlight[taskKey]--
+			if d.inFlight[taskKey] <= 0 {
+				delete(d.inFlight, taskKey)
+			}
+			d.inFlightMu.Unlock()
+			continue
+		}
+
 		// Dispatch up to instancesToDispatch instances of this task.
 		// The first slot was already reserved above; reserve additional slots as we go.
 		for inst := 0; inst < instancesToDispatch; inst++ {
@@ -4742,4 +4888,75 @@ func (d *Daemon) resetTaskLabels(task *RunningTask) {
 	// For now, we'll just log that this should happen
 	dlog.Info("TODO: Reset labels for task %s/%s (remove in-progress, add ready)",
 		filepath.Base(task.Project), task.Name)
+}
+
+// SendThrottlePauseRequest tells the daemon to pause (globally or by label).
+func SendThrottlePauseRequest(label string) error {
+	data, err := json.Marshal(ThrottlePauseRequest{Label: label})
+	if err != nil {
+		return err
+	}
+	resp, err := socketClient().Post("http://daemon/throttle/pause", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("throttle pause failed: %s", string(body))
+	}
+	return nil
+}
+
+// SendThrottleResumeRequest tells the daemon to resume (globally or by label).
+func SendThrottleResumeRequest(label string) error {
+	data, err := json.Marshal(ThrottleResumeRequest{Label: label})
+	if err != nil {
+		return err
+	}
+	resp, err := socketClient().Post("http://daemon/throttle/resume", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("throttle resume failed: %s", string(body))
+	}
+	return nil
+}
+
+// SendThrottleRateRequest tells the daemon to set the throttle rate.
+func SendThrottleRateRequest(ratePerMin int) error {
+	data, err := json.Marshal(ThrottleRateRequest{RatePerMin: ratePerMin})
+	if err != nil {
+		return err
+	}
+	resp, err := socketClient().Post("http://daemon/throttle/rate", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("throttle rate failed: %s", string(body))
+	}
+	return nil
+}
+
+// SendThrottleStateRequest queries the daemon's throttle state.
+func SendThrottleStateRequest() (*ThrottleState, error) {
+	resp, err := socketClient().Get("http://daemon/throttle/state")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("throttle state request failed: %s", resp.Status)
+	}
+	var state ThrottleState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return nil, err
+	}
+	return &state, nil
 }

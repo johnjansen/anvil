@@ -64,6 +64,12 @@ func main() {
 		logsCmd(os.Args[2:])
 	case "daemon":
 		daemonCmd(os.Args[2:])
+	case "pause":
+		pauseCmd(os.Args[2:])
+	case "resume":
+		resumeCmd(os.Args[2:])
+	case "throttle":
+		throttleCmd(os.Args[2:])
 	case "stop-on-idle":
 		stopOnIdleCmd()
 	case "task":
@@ -120,6 +126,9 @@ Commands:
   daemon <subcommand>      Daemon management commands
   prompt <subcommand>    Prompt testing and validation tools
   update [--check]         Update anvil to the latest release
+  pause [--label L]        Pause task execution (global or by label)
+  resume [--label L]       Resume task execution (global or by label)
+  throttle --rate N/m      Set max task dispatch rate (--off to disable)
   reload [--graceful]       Reload daemon configuration (--graceful waits for tasks)
   version                  Show version
 
