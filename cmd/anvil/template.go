@@ -12,14 +12,7 @@ import (
 
 func templateCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil template <subcommand> [options]\n")
-		fmt.Fprintf(os.Stderr, "Subcommands:\n")
-		fmt.Fprintf(os.Stderr, "  ls           List available templates\n")
-		fmt.Fprintf(os.Stderr, "  get <name>   Show template details\n")
-		fmt.Fprintf(os.Stderr, "  search <query> Search templates by name or description\n")
-		fmt.Fprintf(os.Stderr, "  import <source> Import template from URL, file, or gist\n")
-		fmt.Fprintf(os.Stderr, "  export <name>   Export template to shareable file\n")
-		fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+		templateUsage()
 		os.Exit(1)
 	}
 
@@ -34,14 +27,12 @@ func templateCmd(args []string) {
 		templateImportCmd(args[1:])
 	case "export":
 		templateExportCmd(args[1:])
+	case "install":
+		templateInstallCmd(args[1:])
+	case "info":
+		templateInfoCmd(args[1:])
 	case "-h", "--help":
-		fmt.Fprintf(os.Stderr, "usage: anvil template <subcommand> [options]\n")
-		fmt.Fprintf(os.Stderr, "Subcommands:\n")
-		fmt.Fprintf(os.Stderr, "  ls           List available templates\n")
-		fmt.Fprintf(os.Stderr, "  get <name>   Show template details\n")
-		fmt.Fprintf(os.Stderr, "  search <query> Search templates by name or description\n")
-		fmt.Fprintf(os.Stderr, "  import <source> Import template from URL, file, or gist\n")
-		fmt.Fprintf(os.Stderr, "  export <name>   Export template to shareable file\n")
+		templateUsage()
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown template subcommand: %s\n", args[0])
@@ -49,7 +40,28 @@ func templateCmd(args []string) {
 	}
 }
 
-func templateListCmd(_ []string) {
+func templateUsage() {
+	fmt.Fprintf(os.Stderr, "usage: anvil template <subcommand> [options]\n")
+	fmt.Fprintf(os.Stderr, "Subcommands:\n")
+	fmt.Fprintf(os.Stderr, "  ls              List available templates\n")
+	fmt.Fprintf(os.Stderr, "  get <name>      Show template details\n")
+	fmt.Fprintf(os.Stderr, "  search <query>  Search registry templates by keyword\n")
+	fmt.Fprintf(os.Stderr, "  import <source> Import template from URL, file, or gist\n")
+	fmt.Fprintf(os.Stderr, "  export <name>   Export template to shareable file\n")
+	fmt.Fprintf(os.Stderr, "  install <owner/repo>  Install template from registry\n")
+	fmt.Fprintf(os.Stderr, "  info <owner/repo>     Show registry template details\n")
+	fmt.Fprintf(os.Stderr, "Run 'anvil help' for more information.\n")
+}
+
+func templateListCmd(args []string) {
+	// Check for --installed flag
+	for _, arg := range args {
+		if arg == "--installed" {
+			templateListInstalledCmd()
+			return
+		}
+	}
+
 	abs, err := filepath.Abs(".")
 	if err != nil {
 		log.Fatalf("bad path: %v", err)
