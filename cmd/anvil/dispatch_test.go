@@ -18,7 +18,7 @@ func TestAddTodoWithID(t *testing.T) {
 	proj := &project.Project{Path: dir}
 
 	// Test adding a todo with ID
-	relPath, taskID, err := proj.AddTodoWithID(1, "", "Test task", "", "", 1, false, "", nil)
+	relPath, taskID, err := proj.AddTodoWithID(1, "", "Test task", "", "", 1, false, "")
 	if err != nil {
 		t.Fatalf("AddTodoWithID error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestAddTodoWithID_OneShot(t *testing.T) {
 	proj := &project.Project{Path: dir}
 
 	// Test adding a one-shot task (empty schedule)
-	relPath, taskID, err := proj.AddTodoWithID(1, "", "One-shot task", "", "", 1, false, "", nil)
+	relPath, taskID, err := proj.AddTodoWithID(1, "", "One-shot task", "", "", 1, false, "")
 	if err != nil {
 		t.Fatalf("AddTodoWithID error: %v", err)
 	}

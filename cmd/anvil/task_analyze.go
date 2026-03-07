@@ -97,5 +97,3 @@ Examples:
 		log.Fatalf("Found %d scheduling conflict(s)", conflictCount)
 	}
 }
-
-// taskPipelineCmd visualizes task dependency pipelines as ASCII trees, DOT graphs, or verbose output.

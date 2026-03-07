@@ -113,8 +113,6 @@ func dryRunJSON(todos []project.Todo, projectPath string, cfg *config.Config, va
 		RetryStrategy   string            `json:"retry_strategy,omitempty"`
 		RetryJitter     float64           `json:"retry_jitter,omitempty"`
 		RetryMaxTime    string            `json:"retry_max_time,omitempty"`
-		DependsOn       []string          `json:"depends_on,omitempty"`
-		DepsStatus      string            `json:"deps_status,omitempty"`
 		Labels          []string          `json:"labels,omitempty"`
 		Env             map[string]string `json:"env,omitempty"`
 		Checkpoint      bool              `json:"checkpoint,omitempty"`
@@ -144,7 +142,6 @@ func dryRunJSON(todos []project.Todo, projectPath string, cfg *config.Config, va
 			SkipPermissions: todo.SkipPermissions,
 			MaxConcurrent:   todo.MaxConcurrent,
 			Retry:           todo.Retry,
-			DependsOn:       todo.DependsOn,
 			Labels:          todo.Labels,
 			Checkpoint:      todo.Checkpoint,
 			Webhook:         todo.Webhook,
@@ -214,20 +211,6 @@ func dryRunJSON(todos []project.Todo, projectPath string, cfg *config.Config, va
 			}
 		}
 
-		if len(todo.DependsOn) > 0 {
-			allMet := true
-			for _, dep := range todo.DependsOn {
-				rec, err := project.ReadCurrentRunRecord(projectPath, dep)
-				if err != nil || !rec.Success {
-					allMet = false
-				}
-			}
-			if allMet {
-				r.DepsStatus = "all_met"
-			} else {
-				r.DepsStatus = "not_met"
-			}
-		}
 
 		if todo.ID == "" {
 			r.Errors = append(r.Errors, validationError{Field: "id", Message: "missing task ID"})
@@ -336,7 +319,7 @@ func dryRunPrint(todo *project.Todo, projectPath string, cfg *config.Config, val
 	}
 	fmt.Printf("Concurrent: %d\n", max(todo.MaxConcurrent, 1))
 
-	if todo.PreCheck != "" || len(todo.DependsOn) > 0 {
+	if todo.PreCheck != "" {
 		fmt.Println()
 		fmt.Println("\u2500\u2500 Pre-execution Checks \u2500\u2500")
 	}
@@ -349,20 +332,6 @@ func dryRunPrint(todo *project.Todo, projectPath string, cfg *config.Config, val
 				fmt.Println("  Result:   FAILED \u2014 task would be SKIPPED")
 			} else {
 				fmt.Println("  Result:   passed \u2014 task would proceed")
-			}
-		}
-	}
-	if len(todo.DependsOn) > 0 {
-		fmt.Printf("Depends On: %s\n", strings.Join(todo.DependsOn, ", "))
-		for _, dep := range todo.DependsOn {
-			rec, err := project.ReadCurrentRunRecord(projectPath, dep)
-			if err != nil {
-				fmt.Printf("  %-28s not_run\n", dep)
-			} else if !rec.Success {
-				fmt.Printf("  %-28s failed\n", dep)
-			} else {
-				age := time.Since(rec.Finished).Round(time.Second)
-				fmt.Printf("  %-28s success (%s ago)\n", dep, age)
 			}
 		}
 	}

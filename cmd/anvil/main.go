@@ -146,7 +146,6 @@ Add options:
       --skip-permissions     Bypass all tool permission prompts
       --strict               Fail if schedule conflicts with existing tasks
       --no-overlap-check    Skip schedule overlap detection
-      --depends-on dep      Task dependency (repeatable; use project:task for cross-project)
 
 Task subcommands:
   create [options] <task>   Create a new task
@@ -172,7 +171,6 @@ Task subcommands:
   backfill [name] [--all] [--json]  Show pending backfill tasks that would run due to missed cron windows
   wait <name> [--timeout D]  Block until a running task completes (exit 0=ok, 1=fail, 2=timeout)
   analyze [-a|--all]         Detect scheduling conflicts and overlapping tasks
-  pipeline [--dot|--verbose] [--all]  Visualize task dependency pipelines
   reset-budget <name>        Reset persistent task budget consumption
   state <name>              View, export, import, or clear task state
   dry-run <name> [options]   Validate and preview task config without executing

@@ -397,7 +397,7 @@ func TestAddTodo_WithRunner(t *testing.T) {
 	os.MkdirAll(todosDir, 0755)
 
 	proj := &Project{Path: dir}
-	_, err := proj.AddTodo(1, "*/30 * * * *", "Triage issues", "", "", 0, false, "claude --model haiku", nil)
+	_, err := proj.AddTodo(1, "*/30 * * * *", "Triage issues", "", "", 0, false, "claude --model haiku")
 	if err != nil {
 		t.Fatalf("AddTodo error: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestAddTodo_WithoutRunner(t *testing.T) {
 	os.MkdirAll(todosDir, 0755)
 
 	proj := &Project{Path: dir}
-	_, err := proj.AddTodo(1, "*/30 * * * *", "Review PRs", "", "", 0, false, "", nil)
+	_, err := proj.AddTodo(1, "*/30 * * * *", "Review PRs", "", "", 0, false, "")
 	if err != nil {
 		t.Fatalf("AddTodo error: %v", err)
 	}

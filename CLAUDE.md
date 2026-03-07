@@ -6,10 +6,7 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Go 1.24.6 + `internal/cron` (cron parsing with `Prev()`), `internal/project` (Todo/RunRecord), `internal/config`, `internal/daemon` (004-task-sla-tracking)
 - JSON files in `.anvil/runs/<task-id>/` (existing RunRecord system) (004-task-sla-tracking)
 - Go 1.24.6 + internal/cron, internal/project, internal/config, internal/daemon (340-task-wait-conditions)
-- Go 1.24.6 + `internal/project` (Todo, RunRecord), `internal/daemon` (task execution, dependency checking), `internal/runner` (statusWriter, output scanning), `cmd/anvil` (CLI commands) (343-task-result-passing)
-- Go 1.24.6 + `internal/project` (Todo, Dependency, RunRecord, ParseDependency, ResolveDependencyRunRecord), `internal/daemon` (TaskQueueInfo, handleQueue), `cmd/anvil` (taskQueueCmd) (265-cross-project-queue)
-- JSON files in `.anvil/runs/<task-id>/` (existing RunRecord system), watched project paths via `~/.anvil/watched/` (265-cross-project-queue)
-- Go 1.24.6 + `internal/project` (ParseDependency, Dependency, Todo, RunRecord), `cmd/anvil` (task_pipeline.go) (263-cross-project-pipeline)
+- Go 1.24.6 + `internal/project` (Todo, RunRecord), `internal/daemon` (task execution), `internal/runner` (statusWriter, output scanning), `cmd/anvil` (CLI commands) (343-task-result-passing)
 - Go 1.24.6 + `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/daemon` (retry loop in `executeTask`), `cmd/anvil` (task history/list display) (284-retry-backoff-jitter)
 - JSON files in `.anvil/runs/<task-id>/` (RunRecord system) (284-retry-backoff-jitter)
 - Go 1.24.6 + `net/http` (GitHub API), `gopkg.in/yaml.v3` (template parsing), existing `internal/project` (Template, TemplateSpec, LoadTemplate, ListTemplates) (303-template-registry)
@@ -19,8 +16,6 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching) (365-git-event-trigger)
 - JSON files in `.anvil/runs/<task-id>/` (RunRecord system); git ref state persisted in `.anvil/git-state/` as JSON (365-git-event-trigger)
 - Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod) (366-webhook-trigger)
-- Go 1.24.6 + `gopkg.in/yaml.v3` (frontmatter parsing — remains, just fields removed from structs) (367-remove-dependency-pipeline)
-- JSON files in `.anvil/runs/<task-id>/` — no changes to run records (367-remove-dependency-pipeline)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -40,7 +35,6 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
-- 367-remove-dependency-pipeline: Added Go 1.24.6 + `gopkg.in/yaml.v3` (frontmatter parsing — remains, just fields removed from structs)
 - 366-webhook-trigger: Added Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod)
 - 365-git-event-trigger: Added Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching)
 

@@ -65,8 +65,6 @@ func taskCmd(args []string) {
 		taskResultsCmd(args[1:])
 	case "state":
 		taskStateCmd(args[1:])
-	case "pipeline":
-		taskPipelineCmd(args[1:])
 	case "sla":
 		taskSlaCmd(args[1:])
 	case "alerts":

@@ -35,7 +35,6 @@ func taskCreateCmd(args []string) {
 	dryRunJSON := false
 	costOnly := false
 	templateName := ""
-	var dependsOn []string
 
 	// Track which flags were explicitly set on the CLI so they take precedence over frontmatter/template.
 	prioritySet := false
@@ -121,12 +120,6 @@ func taskCreateCmd(args []string) {
 			}
 			i++
 			filePath = args[i]
-		case "--depends-on":
-			if i+1 >= len(args) {
-				log.Fatal("missing value for --depends-on")
-			}
-			i++
-			dependsOn = append(dependsOn, args[i])
 		case "--strict":
 			strict = true
 		case "--no-overlap-check":
@@ -333,17 +326,8 @@ func taskCreateCmd(args []string) {
 		}
 	}
 
-	// Validate dependencies before creating the task.
-	if len(dependsOn) > 0 {
-		for _, dep := range dependsOn {
-			parsed := project.ParseDependency(dep)
-			if err := project.ValidateDependency(parsed, abs); err != nil {
-				log.Fatalf("invalid dependency %q: %v", dep, err)
-			}
-		}
-	}
 
-	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "", dependsOn)
+	relPath, err := proj.AddTodo(priority, schedule, taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "")
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}
@@ -385,7 +369,6 @@ Options:
   --json                     Output full RunRecord JSON instead of just summary
   --quiet                    Suppress progress/status on stderr
   --no-wait                  Just add the task and print the UUID (for async use)
-  --depends-on dep           Task dependency (repeatable; use project:task for cross-project)
   -f, --file path            Read task content from a file
   -                          Read task content from stdin
 
@@ -413,7 +396,6 @@ Examples:
 	jsonOutput := false
 	quiet := false
 	noWait := false
-	var dependsOn []string
 
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -477,12 +459,6 @@ Examples:
 			quiet = true
 		case "--no-wait":
 			noWait = true
-		case "--depends-on":
-			if i+1 >= len(args) {
-				log.Fatal("missing value for --depends-on")
-			}
-			i++
-			dependsOn = append(dependsOn, args[i])
 		case "-f", "--file":
 			if i+1 >= len(args) {
 				log.Fatal("missing value for -f/--file")
@@ -546,7 +522,7 @@ Examples:
 	}
 
 	// Create the one-shot task using AddTodoWithID to get both path and ID
-	relPath, taskID, err := proj.AddTodoWithID(priority, "", taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "", dependsOn)
+	relPath, taskID, err := proj.AddTodoWithID(priority, "", taskText, preCheck, allowedTools, maxConcurrent, skipPermissions, "")
 	if err != nil {
 		log.Fatalf("failed to add todo: %v", err)
 	}

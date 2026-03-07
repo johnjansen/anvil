@@ -344,12 +344,6 @@ func taskGetCmd(args []string) {
 	}
 
 	if jsonOutput {
-		type depStatusJSON struct {
-			Name    string `json:"name"`
-			Status  string `json:"status"` // "success", "failed", "not_run", "stale"
-			Error   string `json:"error,omitempty"`
-			LastRun string `json:"last_run,omitempty"`
-		}
 		type taskDetailJSON struct {
 			File              string          `json:"file"`
 			ID                string          `json:"id"`
@@ -371,8 +365,6 @@ func taskGetCmd(args []string) {
 			RunnerChain       []string        `json:"runner_chain,omitempty"`
 			RunnerOnTimeout   string          `json:"runner_on_timeout,omitempty"`
 			LastRunnerUsed    string          `json:"last_runner_used,omitempty"`
-			DependsOn         []string        `json:"depends_on,omitempty"`
-			Dependencies      []depStatusJSON `json:"dependencies,omitempty"`
 			Retry             int             `json:"retry,omitempty"`
 			RetryDelay        string          `json:"retry_delay,omitempty"`
 			RetryStrategy     string          `json:"retry_strategy,omitempty"`
@@ -411,33 +403,10 @@ func taskGetCmd(args []string) {
 			Runner:          todo.Runner,
 			RunnerChain:     todo.RunnerChain,
 			RunnerOnTimeout: todo.RunnerOnTimeout,
-			DependsOn:       todo.DependsOn,
 		}
 		// Add last runner used from most recent run record
 		if lastRec, recErr := project.ReadCurrentRunRecord(abs, todo.ID); recErr == nil && lastRec.RunnerCommand != "" {
 			detail.LastRunnerUsed = lastRec.RunnerCommand
-		}
-		// Add dependency status info
-		if len(todo.DependsOn) > 0 {
-			for _, dep := range todo.DependsOn {
-				ds := depStatusJSON{Name: dep}
-				rec, err := project.ReadCurrentRunRecord(abs, dep)
-				if err != nil {
-					ds.Status = "not_run"
-				} else if !rec.Success {
-					ds.Status = "failed"
-					ds.Error = rec.Error
-					if !rec.Finished.IsZero() {
-						ds.LastRun = rec.Finished.Format(time.RFC3339)
-					}
-				} else {
-					ds.Status = "success"
-					if !rec.Finished.IsZero() {
-						ds.LastRun = rec.Finished.Format(time.RFC3339)
-					}
-				}
-				detail.Dependencies = append(detail.Dependencies, ds)
-			}
 		}
 		// Add retry configuration and last run attempt info
 		if todo.Retry > 0 {
@@ -532,32 +501,6 @@ func taskGetCmd(args []string) {
 		fmt.Printf("Status:   running (PID %d, elapsed %s)\n", runPID, runElapsed)
 	} else {
 		fmt.Printf("Status:   %s\n", runStatus)
-	}
-	// Show dependency status
-	if len(todo.DependsOn) > 0 {
-		fmt.Printf("Deps:     %s\n", strings.Join(todo.DependsOn, ", "))
-		for _, dep := range todo.DependsOn {
-			rec, err := project.ReadCurrentRunRecord(abs, dep)
-			if err != nil {
-				fmt.Printf("  %-30s not_run\n", dep)
-			} else if !rec.Success {
-				lastRun := ""
-				if !rec.Finished.IsZero() {
-					lastRun = fmt.Sprintf(" (last run: %s)", rec.Finished.Format("15:04"))
-				}
-				errMsg := ""
-				if rec.Error != "" {
-					errMsg = fmt.Sprintf(" — %s", rec.Error)
-				}
-				fmt.Printf("  %-30s failed%s%s\n", dep, lastRun, errMsg)
-			} else {
-				lastRun := ""
-				if !rec.Finished.IsZero() {
-					lastRun = fmt.Sprintf(" (last run: %s)", rec.Finished.Format("15:04"))
-				}
-				fmt.Printf("  %-30s success%s\n", dep, lastRun)
-			}
-		}
 	}
 	// Show runner chain configuration
 	if len(todo.RunnerChain) > 0 {

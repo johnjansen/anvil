@@ -22,7 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"text/template"
 	"time"
 
 	"github.com/johnjansen/anvil/internal/cache"
@@ -240,10 +239,6 @@ type Daemon struct {
 	// WebhookServer handles HTTP webhook subscriptions
 	webhookServer *WebhookServer
 
-	// cascadeFailures tracks cascading dependency failures for reporting
-	// Map key is the failed dependency task name, value is list of affected tasks
-	cascadeFailures   map[string][]string // dependencyTask -> []affectedTasks
-	cascadeFailuresMu sync.Mutex
 
 	// pollingManager handles polling-based trigger conditions
 	pollingManager *PollingManager
@@ -310,8 +305,6 @@ type TaskQueueInfo struct {
 	Status       string `json:"status"`       // "running", "pending", "skipped"
 	SkipReason   string `json:"skip_reason,omitempty"` // why task was skipped in last tick
 	Boost        int    `json:"boost,omitempty"`       // priority boost from aging (0 = no boost)
-	CascadeCount int    `json:"cascade_count,omitempty"` // number of tasks affected by cascading failure
-	CascadeFrom  string `json:"cascade_from,omitempty"`  // which task caused the cascading failure
 }
 
 // TaskBudgetInfo holds budget consumption info for a persistent task.
@@ -356,7 +349,6 @@ func New(cfg *config.Config) *Daemon {
 		webhooks:             webhook.New(cfg.Webhooks),
 		rateLimitCounters:    make(map[string]*RateLimitCounter),
 		groupRateLimits:      make(map[string]*RateLimitCounter),
-		cascadeFailures:      make(map[string][]string),
 	}
 
 	// Initialize health manager
@@ -944,158 +936,6 @@ func mergeEnv(global, task map[string]string) map[string]string {
 	return merged
 }
 
-// depFailInfo holds details about a dependency that prevented a task from running.
-type depFailInfo struct {
-	Reason    string    // human-readable reason (e.g., "dependency failed: fetch-data.md")
-	DepName   string    // name of the failed dependency
-	DepError  string    // error message from the failed dependency run
-	Finished  time.Time // when the dependency last ran
-	ExitCode  int       // 0 if success, 1 if failed (no explicit exit code in RunRecord)
-}
-
-// checkDependenciesMet verifies dependencies have completed successfully in the current cycle,
-// according to the specified dependency policy.
-// Supports both local dependencies ("task.md") and cross-project dependencies ("project:task.md").
-// Returns (true, nil) if dependencies are met according to policy, (false, info) if not.
-func checkDependenciesMet(projectPath string, dependsOn []string, policy project.DependencyPolicyConfig) (met bool, info *depFailInfo) {
-	// Default policy is "skip" - all dependencies must succeed
-	onFailure := "skip"
-	if policy.OnFailure != "" {
-		onFailure = policy.OnFailure
-	}
-
-	switch onFailure {
-	case "require_all":
-		// All dependencies must succeed (original behavior)
-		for _, dep := range dependsOn {
-			runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
-			if err != nil {
-				// No run record found - dependency hasn't run yet or can't be resolved
-				return false, &depFailInfo{
-					Reason:  "dependency not run: " + dep,
-					DepName: dep,
-				}
-			}
-			if !runRecord.Success {
-				return false, &depFailInfo{
-					Reason:   "dependency failed: " + dep,
-					DepName:  dep,
-					DepError: runRecord.Error,
-					Finished: runRecord.Finished,
-					ExitCode: 1,
-				}
-			}
-			// Check if the run finished in this daemon cycle (within last ~1 minute)
-			// This ensures dependencies from previous cycles are re-run
-			elapsed := time.Since(runRecord.Finished)
-			if elapsed > 2*time.Minute {
-				// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
-				return false, &depFailInfo{
-					Reason:   "dependency stale: " + dep,
-					DepName:  dep,
-					Finished: runRecord.Finished,
-				}
-			}
-		}
-		return true, nil
-
-	case "require_any":
-		// At least one dependency must succeed
-		successCount := 0
-		var firstFailure *depFailInfo
-		for _, dep := range dependsOn {
-			runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
-			if err != nil {
-				// No run record found - dependency hasn't run yet or can't be resolved
-				if firstFailure == nil {
-					firstFailure = &depFailInfo{
-						Reason:  "dependency not run: " + dep,
-						DepName: dep,
-					}
-				}
-				continue
-			}
-			if runRecord.Success {
-				// Check if the run finished in this daemon cycle (within last ~1 minute)
-				// This ensures dependencies from previous cycles are re-run
-				elapsed := time.Since(runRecord.Finished)
-				if elapsed <= 2*time.Minute {
-					successCount++
-				} else {
-					// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
-					if firstFailure == nil {
-						firstFailure = &depFailInfo{
-							Reason:   "dependency stale: " + dep,
-							DepName:  dep,
-							Finished: runRecord.Finished,
-						}
-					}
-				}
-			} else {
-				// Dependency failed
-				if firstFailure == nil {
-					firstFailure = &depFailInfo{
-						Reason:   "dependency failed: " + dep,
-						DepName:  dep,
-						DepError: runRecord.Error,
-						Finished: runRecord.Finished,
-						ExitCode: 1,
-					}
-				}
-			}
-		}
-
-		// If at least one dependency succeeded, we're good
-		if successCount > 0 {
-			return true, nil
-		}
-
-		// No dependencies succeeded, return the first failure
-		if firstFailure != nil {
-			return false, firstFailure
-		}
-
-		// All dependencies failed to resolve
-		return false, &depFailInfo{
-			Reason: "all dependencies failed to resolve",
-		}
-
-	default: // "skip" (default behavior)
-		// Original behavior - all dependencies must succeed
-		for _, dep := range dependsOn {
-			runRecord, err := project.ResolveDependencyRunRecord(projectPath, dep)
-			if err != nil {
-				// No run record found - dependency hasn't run yet or can't be resolved
-				return false, &depFailInfo{
-					Reason:  "dependency not run: " + dep,
-					DepName: dep,
-				}
-			}
-			if !runRecord.Success {
-				return false, &depFailInfo{
-					Reason:   "dependency failed: " + dep,
-					DepName:  dep,
-					DepError: runRecord.Error,
-					Finished: runRecord.Finished,
-					ExitCode: 1,
-				}
-			}
-			// Check if the run finished in this daemon cycle (within last ~1 minute)
-			// This ensures dependencies from previous cycles are re-run
-			elapsed := time.Since(runRecord.Finished)
-			if elapsed > 2*time.Minute {
-				// Dependency completed more than 2 minutes ago, re-run to ensure fresh data
-				return false, &depFailInfo{
-					Reason:   "dependency stale: " + dep,
-					DepName:  dep,
-					Finished: runRecord.Finished,
-				}
-			}
-		}
-		return true, nil
-	}
-}
-
 // runTask executes a single todo task and handles all bookkeeping.
 func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sla slaResult) {
 	taskKey := fmt.Sprintf("%s/%s", proj.Path, t.Name)
@@ -1413,21 +1253,6 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			}
 		}
 
-		// If task has dependencies, collect and inject dependency results
-		var collectedDepResults map[string]json.RawMessage
-		if len(t.DependsOn) > 0 {
-			depResults, depErr := project.CollectDependencyResults(proj.Path, t.DependsOn)
-			if depErr == nil && len(depResults) > 0 {
-				collectedDepResults = depResults
-				depJSON, jsonErr := json.Marshal(depResults)
-				if jsonErr == nil {
-					if mergedEnv == nil {
-						mergedEnv = make(map[string]string)
-					}
-					mergedEnv["ANVIL_DEPENDENCY_RESULTS"] = string(depJSON)
-				}
-			}
-		}
 
 		// If state is configured, inject ANVIL_STATE_FILE with current state
 		if t.State != nil {
@@ -1466,20 +1291,7 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			}
 		}
 
-		// Render task content through Go templates if dependency results are available
 		taskContent := t.Content
-		if collectedDepResults != nil && strings.Contains(taskContent, "{{") {
-			tmplData := map[string]interface{}{
-				"DependencyResults": collectedDepResults,
-			}
-			tmpl, tmplErr := template.New("task").Option("missingkey=zero").Parse(taskContent)
-			if tmplErr == nil {
-				var rendered strings.Builder
-				if execErr := tmpl.Execute(&rendered, tmplData); execErr == nil {
-					taskContent = rendered.String()
-				}
-			}
-		}
 
 		// Graceful stop watcher: monitors GracefulStop channel and sends SIGTERM to child
 		runnerDone := make(chan struct{})
@@ -2446,23 +2258,6 @@ func (d *Daemon) handleQueue(w http.ResponseWriter, r *http.Request) {
 			SkipReason: skipReason,
 		})
 
-		// Add cascade information if this task was skipped due to dependency failure
-		if strings.HasPrefix(skipReason, "dependency failed: ") {
-			// Extract the dependency name from the skip reason
-			depName := strings.TrimPrefix(skipReason, "dependency failed: ")
-			d.cascadeFailuresMu.Lock()
-			if affected, exists := d.cascadeFailures[depName]; exists && len(affected) > 0 {
-				// Count how many tasks are affected by this dependency failure
-				cascadeCount := len(affected)
-				if cascadeCount > 0 {
-					// Update the last added TaskQueueInfo with cascade info
-					lastIndex := len(result) - 1
-					result[lastIndex].CascadeCount = cascadeCount
-					result[lastIndex].CascadeFrom = depName
-				}
-			}
-			d.cascadeFailuresMu.Unlock()
-		}
 	}
 	d.pendingTasksMu.RUnlock()
 
@@ -3480,7 +3275,7 @@ func (d *Daemon) tick(now time.Time) {
 	totalTodos := 0
 	totalMatched := 0
 
-	// Load all todos for cross-project cycle detection and validation
+	// Load all todos for auto-versioning and tick evaluation
 	allProjectTodos := make(map[string][]project.Todo)
 	for _, proj := range projects {
 		projName := filepath.Base(proj.Path)
@@ -3517,23 +3312,8 @@ func (d *Daemon) tick(now time.Time) {
 			}
 		}
 
-		// Validate cross-project dependencies
-		for _, t := range allTodos {
-			for _, dep := range t.DependsOn {
-				parsed := project.ParseDependency(dep)
-				if !parsed.IsLocal {
-					if err := project.ValidateDependency(parsed, proj.Path); err != nil {
-						dlog.Warn("%s/%s: invalid cross-project dependency %q: %v", projName, t.Name, dep, err)
-					}
-				}
-			}
-		}
 	}
 
-	// Detect cross-project circular dependencies
-	if hasCycle, cyclePath := project.DetectCrossProjectCycles(allProjectTodos); hasCycle {
-		dlog.Warn("cross-project circular dependency detected: %s", strings.Join(cyclePath, " -> "))
-	}
 
 	for _, proj := range projects {
 		projName := filepath.Base(proj.Path)
@@ -3827,46 +3607,6 @@ func (d *Daemon) tick(now time.Time) {
 		d.inFlight[taskKey]++
 		d.inFlightMu.Unlock()
 
-		// Skip if task has dependencies that haven't completed successfully
-		// Unless the task is being force-run (ForceWindow is set)
-		if len(pt.todo.DependsOn) > 0 && !pt.todo.ForceWindow {
-			depMet, depInfo := checkDependenciesMet(pt.proj.Path, pt.todo.DependsOn, pt.todo.DependencyPolicy)
-			if !depMet {
-				reason := "dependency not met"
-				if depInfo != nil {
-					reason = depInfo.Reason
-				}
-				dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, reason)
-				d.pendingTasksMu.Lock()
-				d.pendingTasks[taskKey] = reason
-				d.pendingTasksMu.Unlock()
-
-				// Fire skipped webhook for dependency failures
-				if depInfo != nil && strings.HasPrefix(depInfo.Reason, "dependency failed") {
-					skipPayload := webhook.BuildSkippedPayload(
-						pt.todo.Name, pt.proj.Path, "dependency_failed",
-						depInfo.DepName, depInfo.ExitCode, depInfo.Finished,
-					)
-					d.webhooks.Fire(webhook.EventSkipped, skipPayload)
-					if pt.todo.Webhook != "" {
-						d.webhooks.FireURL(pt.todo.Webhook, webhook.EventSkipped, skipPayload)
-					}
-
-					// Record cascading failure for reporting
-					d.cascadeFailuresMu.Lock()
-					d.cascadeFailures[depInfo.DepName] = append(d.cascadeFailures[depInfo.DepName], pt.todo.Name)
-					d.cascadeFailuresMu.Unlock()
-				}
-
-				d.inFlightMu.Lock()
-				d.inFlight[taskKey]--
-				if d.inFlight[taskKey] <= 0 {
-					delete(d.inFlight, taskKey)
-				}
-				d.inFlightMu.Unlock()
-				continue
-			}
-		}
 
 		// Register polling tasks instead of dispatching them directly
 		if pt.todo.Trigger != nil && pt.todo.Trigger.PollingConfig != nil && pt.todo.Trigger.PollingConfig.Enabled {

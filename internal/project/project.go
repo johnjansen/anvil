@@ -233,10 +233,6 @@ type PreconditionConfig struct {
 	Expr        string `yaml:"expr,omitempty"`          // expression to evaluate (Go template with conditionals)
 }
 
-// DependencyPolicyConfig defines how dependency failures should be handled.
-type DependencyPolicyConfig struct {
-	OnFailure string `yaml:"on_failure,omitempty"` // policy for handling dependency failures: "skip", "require_all", "require_any"
-}
 
 // Todo is a single todo file from the project's .anvil/todos/ tree
 type Todo struct {
@@ -275,8 +271,6 @@ type Todo struct {
 	Webhook              string        // per-task webhook URL override (empty = use global webhooks only)
 	Labels               []string      // user-defined labels for organizing and filtering tasks
 	Env                  map[string]string // environment variables injected into task execution
-	DependsOn            []string             // list of task names this task depends on (all must succeed before running)
-	DependencyPolicy     DependencyPolicyConfig // dependency failure handling policy
 	CaptureOutput        bool                 // if true, capture ##anvil:result output and store in run record
 	Checkpoint           bool                 // if true, capture ##anvil:checkpoint output and inject on resume
 	CheckpointGracePeriod time.Duration       // max wait time after SIGTERM before SIGKILL (default 30s)
@@ -455,7 +449,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var labels []string
 			var nodeAffinity string
 			var envVars map[string]string
-			var dependsOn []string
 			captureOutput := false
 			checkpoint := false
 			var checkpointGracePeriod time.Duration
@@ -514,10 +507,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Webhook              string   `yaml:"webhook"`
 						Labels               []string          `yaml:"labels"`
 						Env                  map[string]string `yaml:"env"`
-						DependsOn            []string          `yaml:"depends_on"`
-						DependencyPolicy     struct {
-							OnFailure string `yaml:"on_failure"`
-						} `yaml:"dependency_policy"`
 						CaptureOutput        bool              `yaml:"capture_output"`
 						Checkpoint           bool              `yaml:"checkpoint"`
 						CheckpointGracePeriod string           `yaml:"checkpoint_grace_period"`
@@ -619,7 +608,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						webhookURL = fmData.Webhook
 						labels = fmData.Labels
 						envVars = fmData.Env
-						dependsOn = fmData.DependsOn
 						captureOutput = fmData.CaptureOutput
 						checkpoint = fmData.Checkpoint
 						if fmData.CheckpointGracePeriod != "" {
@@ -718,7 +706,6 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Webhook:              webhookURL,
 				Labels:               labels,
 				Env:                  resolvedEnv,
-				DependsOn:            dependsOn,
 				CaptureOutput:        captureOutput,
 				Checkpoint:           checkpoint,
 				CheckpointGracePeriod: checkpointGracePeriod,
@@ -926,7 +913,7 @@ func writeEmbeddedFS(destDir string, fsys fs.FS) error {
 
 // AddTodo writes a new todo file into the project's .anvil/todos/pN/ directory.
 // It returns the relative path like "p1/check-github-for-issues.md".
-func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string, dependsOn []string) (string, error) {
+func (p *Project) AddTodo(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string) (string, error) {
 	if priority < 0 || priority > 9 {
 		return "", fmt.Errorf("priority must be 0-9, got %d", priority)
 	}
@@ -986,12 +973,6 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 	if runnerCmd != "" {
 		sb.WriteString(fmt.Sprintf("runner: %q\n", runnerCmd))
 	}
-	if len(dependsOn) > 0 {
-		sb.WriteString("depends_on:\n")
-		for _, dep := range dependsOn {
-			sb.WriteString(fmt.Sprintf("  - %q\n", dep))
-		}
-	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)
 	if !strings.HasSuffix(content, "\n") {
@@ -1017,7 +998,7 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 
 // AddTodoWithID creates a new task and returns both the relative path and the task ID.
 // This is useful for commands that need to track the task after creation.
-func (p *Project) AddTodoWithID(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string, dependsOn []string) (string, string, error) {
+func (p *Project) AddTodoWithID(priority int, schedule string, content string, preCheck string, allowedTools string, maxConcurrent int, skipPermissions bool, runnerCmd string) (string, string, error) {
 	if priority < 0 || priority > 9 {
 		return "", "", fmt.Errorf("priority must be 0-9, got %d", priority)
 	}
@@ -1076,12 +1057,6 @@ func (p *Project) AddTodoWithID(priority int, schedule string, content string, p
 	}
 	if runnerCmd != "" {
 		sb.WriteString(fmt.Sprintf("runner: %q\n", runnerCmd))
-	}
-	if len(dependsOn) > 0 {
-		sb.WriteString("depends_on:\n")
-		for _, dep := range dependsOn {
-			sb.WriteString(fmt.Sprintf("  - %q\n", dep))
-		}
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(content)
@@ -1590,7 +1565,6 @@ type TemplateSpec struct {
 	Webhook              string            `yaml:"webhook,omitempty"`
 	Labels               []string          `yaml:"labels,omitempty"`
 	Env                  map[string]string `yaml:"env,omitempty"`
-	DependsOn            []string          `yaml:"depends_on,omitempty"`
 	CaptureOutput        bool              `yaml:"capture_output,omitempty"`
 	Checkpoint           bool              `yaml:"checkpoint,omitempty"`
 }
