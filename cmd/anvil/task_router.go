@@ -108,6 +108,8 @@ func taskCmd(args []string) {
 		taskActivityCmd(args[1:])
 	case "trigger-check":
 		taskTriggerCheckCmd(args[1:])
+	case "estimate":
+		taskEstimateCmd(args[1:])
 	case "forecast":
 		taskForecastCmd(args[1:])
 	case "group":
