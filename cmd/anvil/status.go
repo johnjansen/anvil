@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -270,9 +271,19 @@ func cleanupCmd(args []string) {
 	var maxAge time.Duration
 	if olderThan != "" {
 		var err error
-		maxAge, err = time.ParseDuration(olderThan)
+		// ParseDuration doesn't support "d" suffix, only "h", "m", "s"
+		// Convert "d" to "24h" for user convenience
+		durationStr := olderThan
+		if strings.HasSuffix(olderThan, "d") {
+			days := strings.TrimSuffix(olderThan, "d")
+			durationStr = days + "d" // This will fail, so we convert
+			if daysNum, err := strconv.Atoi(days); err == nil {
+				durationStr = fmt.Sprintf("%dh", daysNum*24)
+			}
+		}
+		maxAge, err = time.ParseDuration(durationStr)
 		if err != nil {
-			log.Fatalf("invalid duration: %s (use format like 7d, 24h)", olderThan)
+			log.Fatalf("invalid duration: %s (use format like 168h, 24h)", olderThan)
 		}
 	}
 
@@ -291,11 +302,11 @@ func cleanupCmd(args []string) {
 	if maxAge == 0 && cfg.Retention.MaxAge == 0 && cfg.Retention.MaxRuns == 0 {
 		fmt.Println("No retention policy configured. Set in ~/.anvil/config.yaml:")
 		fmt.Println("  retention:")
-		fmt.Println("    max_age: 7d")
+		fmt.Println("    max_age: 168h")
 		fmt.Println("    max_runs: 50")
 		fmt.Println("")
 		fmt.Println("Or use --older-than to prune manually:")
-		fmt.Println("  anvil cleanup --older-than=3d")
+		fmt.Println("  anvil cleanup --older-than=72h")
 		return
 	}
 
