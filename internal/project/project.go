@@ -291,6 +291,19 @@ type Todo struct {
 	Backfill             *BackfillConfig // backfill configuration (nil = no backfill)
 	// Trigger conditions for multi-criteria triggering
 	Trigger              *TaskTrigger // trigger configuration (nil = schedule-only)
+	// Timeout escalation configuration
+	TimeoutWarning       time.Duration          // duration before timeout to trigger warning (0 = no warning)
+	OnTimeoutWarning     string                 // shell command to run when timeout warning is triggered
+	OnTimeout            string                 // shell command to run when task times out
+	AdaptiveTimeout      *AdaptiveTimeoutConfig // adaptive timeout configuration (nil = no adaptive timeout)
+}
+
+// AdaptiveTimeoutConfig defines adaptive timeout behavior that extends deadlines based on task progress.
+type AdaptiveTimeoutConfig struct {
+	Enabled           bool          `yaml:"enabled"`            // whether adaptive timeout is enabled
+	ExtendIf          string        `yaml:"extend_if"`          // condition that triggers extension ("checkpoint_exists")
+	MaxExtensions     int           `yaml:"max_extensions"`     // maximum number of extensions allowed (0 = unlimited)
+	ExtensionDuration time.Duration `yaml:"extension_duration"` // duration to extend by (0 = use original timeout)
 }
 
 // BackfillConfig defines backfill configuration for missed cron windows.
@@ -431,6 +444,10 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			pinnedRun := ""
 			var precondition *PreconditionConfig
 			var trigger *TaskTrigger
+			var timeoutWarning time.Duration
+			onTimeoutWarning := ""
+			onTimeout := ""
+			var adaptiveTimeout *AdaptiveTimeoutConfig
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -492,6 +509,16 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Replay               bool   `yaml:"replay"`
 						PinnedRun            string `yaml:"pinned_run"`
 						Trigger              *TaskTrigger      `yaml:"trigger"`
+						// Timeout escalation
+						TimeoutWarning       string `yaml:"timeout_warning"`
+						OnTimeoutWarning     string `yaml:"on_timeout_warning"`
+						OnTimeout            string `yaml:"on_timeout"`
+						AdaptiveTimeout      *struct {
+							Enabled           bool   `yaml:"enabled"`
+							ExtendIf          string `yaml:"extend_if"`
+							MaxExtensions     int    `yaml:"max_extensions"`
+							ExtensionDuration string `yaml:"extension_duration"`
+						} `yaml:"adaptive_timeout"`
 					}
 					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
@@ -571,6 +598,22 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						trigger = fmData.Trigger
 						replay = fmData.Replay
 						pinnedRun = fmData.PinnedRun
+						// Timeout escalation fields
+						if fmData.TimeoutWarning != "" {
+							timeoutWarning, _ = time.ParseDuration(fmData.TimeoutWarning)
+						}
+						onTimeoutWarning = fmData.OnTimeoutWarning
+						onTimeout = fmData.OnTimeout
+						if fmData.AdaptiveTimeout != nil && fmData.AdaptiveTimeout.Enabled {
+							adaptiveTimeout = &AdaptiveTimeoutConfig{
+								Enabled:       true,
+								ExtendIf:      fmData.AdaptiveTimeout.ExtendIf,
+								MaxExtensions: fmData.AdaptiveTimeout.MaxExtensions,
+							}
+							if fmData.AdaptiveTimeout.ExtensionDuration != "" {
+								adaptiveTimeout.ExtensionDuration, _ = time.ParseDuration(fmData.AdaptiveTimeout.ExtensionDuration)
+							}
+						}
 					}
 				}
 			}
@@ -626,6 +669,10 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Trigger:              trigger,
 				Replay:               replay,
 				PinnedRun:            pinnedRun,
+				TimeoutWarning:       timeoutWarning,
+				OnTimeoutWarning:     onTimeoutWarning,
+				OnTimeout:            onTimeout,
+				AdaptiveTimeout:      adaptiveTimeout,
 			})
 		}
 	}

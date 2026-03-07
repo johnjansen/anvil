@@ -217,7 +217,10 @@ type RunningTask struct {
 	Cancel    context.CancelFunc
 	LogPath   string
 	SessionID string
-	Status    string // dynamic status reported by task via ##anvil:status
+	Status            string // dynamic status reported by task via ##anvil:status
+	WarningTriggered  bool          // whether the timeout warning has been triggered
+	TimeoutExtensions int           // number of timeout extensions used
+	OriginalTimeout   time.Duration // original timeout before extensions
 }
 
 type KillRequest struct {
@@ -225,17 +228,19 @@ type KillRequest struct {
 }
 
 type TaskInfo struct {
-	Project     string `json:"project"`
-	Name        string `json:"name"`
-	PID         int    `json:"pid"`
-	Started     string `json:"started"`
-	Elapsed     string `json:"elapsed"`
-	Timeout     string `json:"timeout,omitempty"`
-	TimeRemaining string `json:"time_remaining,omitempty"`
-	PercentUsed float64 `json:"percent_used,omitempty"`
-	LogPath     string `json:"log_path,omitempty"`
-	SessionID   string `json:"session_id,omitempty"`
-	Status      string `json:"status,omitempty"`
+	Project           string  `json:"project"`
+	Name              string  `json:"name"`
+	PID               int     `json:"pid"`
+	Started           string  `json:"started"`
+	Elapsed           string  `json:"elapsed"`
+	Timeout           string  `json:"timeout,omitempty"`
+	TimeRemaining     string  `json:"time_remaining,omitempty"`
+	PercentUsed       float64 `json:"percent_used,omitempty"`
+	LogPath           string  `json:"log_path,omitempty"`
+	SessionID         string  `json:"session_id,omitempty"`
+	Status            string  `json:"status,omitempty"`
+	TimeoutExtensions int     `json:"timeout_extensions,omitempty"`
+	WarningTriggered  bool    `json:"warning_triggered,omitempty"`
 }
 
 // TaskQueueInfo holds information about a task in the queue or its last skip reason.
@@ -1041,8 +1046,26 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	} else if t.Timeout > 0 {
 		timeout = t.Timeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+
+	// For adaptive timeouts, use context.WithCancel so we can extend the deadline.
+	// A deadlineTimer manages the actual timeout, allowing resets on checkpoint progress.
+	var ctx context.Context
+	var cancel context.CancelFunc
+	var deadlineTimer *time.Timer
+	var adaptiveTimedOut int32 // atomic flag: 1 = deadline timer fired (adaptive timeout)
+	if t.AdaptiveTimeout != nil && t.AdaptiveTimeout.Enabled {
+		ctx, cancel = context.WithCancel(context.Background())
+		deadlineTimer = time.AfterFunc(timeout, func() {
+			atomic.StoreInt32(&adaptiveTimedOut, 1)
+			cancel()
+		})
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
 	defer cancel()
+	if deadlineTimer != nil {
+		defer deadlineTimer.Stop()
+	}
 
 	// For persistent tasks, log a warning at 80% of max runtime to signal upcoming cycle
 	if t.IsPersistent() {
@@ -1063,15 +1086,34 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	instanceKey := taskKey + "/" + runID
 	d.tasksMu.Lock()
 	d.tasks[instanceKey] = &RunningTask{
-		Project: proj.Path,
-		Name:    t.Name,
-		TaskID:  t.ID,
-		PID:     os.Getpid(),
-		Started: startTime,
-		Timeout: timeout,
-		Cancel:  cancel,
+		Project:         proj.Path,
+		Name:            t.Name,
+		TaskID:          t.ID,
+		PID:             os.Getpid(),
+		Started:         startTime,
+		Timeout:         timeout,
+		OriginalTimeout: timeout,
+		Cancel:          cancel,
 	}
 	d.tasksMu.Unlock()
+
+	// Timeout warning timer: fires on_timeout_warning hook before actual timeout
+	if t.TimeoutWarning > 0 && t.TimeoutWarning < timeout {
+		warningAt := timeout - t.TimeoutWarning
+		taskLabel := filepath.Base(proj.Path) + "/" + t.Name
+		timeoutWarningTimer := time.AfterFunc(warningAt, func() {
+			dlog.Warn("task %s timeout warning — %v remaining", taskLabel, t.TimeoutWarning.Round(time.Second))
+			d.tasksMu.Lock()
+			if rt, ok := d.tasks[instanceKey]; ok {
+				rt.WarningTriggered = true
+			}
+			d.tasksMu.Unlock()
+			if t.OnTimeoutWarning != "" {
+				d.runTimeoutHook("on_timeout_warning", t.OnTimeoutWarning, proj.Path, t, timeout, t.TimeoutWarning)
+			}
+		})
+		defer timeoutWarningTimer.Stop()
+	}
 
 	defer func() {
 		d.tasksMu.Lock()
@@ -1318,6 +1360,27 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 				lastCheckpointData = data
 				checkpointMu.Unlock()
 			}
+			// Adaptive timeout: extend deadline when checkpoint data arrives
+			if deadlineTimer != nil && t.AdaptiveTimeout != nil && t.AdaptiveTimeout.Enabled && t.AdaptiveTimeout.ExtendIf == "checkpoint_exists" {
+				d.tasksMu.Lock()
+				rt := d.tasks[instanceKey]
+				canExtend := rt != nil && (t.AdaptiveTimeout.MaxExtensions == 0 || rt.TimeoutExtensions < t.AdaptiveTimeout.MaxExtensions)
+				if canExtend {
+					ext := t.AdaptiveTimeout.ExtensionDuration
+					if ext == 0 {
+						ext = rt.OriginalTimeout
+					}
+					rt.TimeoutExtensions++
+					rt.Timeout += ext
+					elapsed := time.Since(rt.Started)
+					remaining := rt.Timeout - elapsed
+					if remaining > 0 {
+						deadlineTimer.Reset(remaining)
+					}
+					dlog.Info("adaptive timeout extended for %s/%s (extension %d, +%v)", filepath.Base(proj.Path), t.Name, rt.TimeoutExtensions, ext.Round(time.Second))
+				}
+				d.tasksMu.Unlock()
+			}
 		})
 
 		// Success - exit retry loop
@@ -1542,8 +1605,10 @@ skipExecution:
 	}
 
 	elapsed := time.Since(startTime)
+	// Detect timeout: either native context.DeadlineExceeded or adaptive timeout timer fired
+	isTimedOut := ctx.Err() == context.DeadlineExceeded || atomic.LoadInt32(&adaptiveTimedOut) == 1
 	// Detect force-cycle: persistent task hit its max runtime (context deadline exceeded)
-	forceCycled := t.IsPersistent() && err != nil && ctx.Err() == context.DeadlineExceeded
+	forceCycled := t.IsPersistent() && err != nil && isTimedOut
 	whPayload := webhook.BuildPayload(t.Name, proj.Path, runID, startTime, runRecord.Finished, runRecord.EstimatedCostUSD, runRecord.Error)
 
 	// Record circuit breaker state for this task run
@@ -1611,13 +1676,17 @@ skipExecution:
 			d.runnerCooldownsMu.Unlock()
 			dlog.Info("runner[%d] failed — marking as cooldown for 5 minutes", usedRunnerIdx)
 		}
+		// Run on_timeout hook if defined and task timed out
+		if isTimedOut && t.OnTimeout != "" {
+			d.runTimeoutHook("on_timeout", t.OnTimeout, proj.Path, t, timeout, 0)
+		}
 		// Run on_failure hook if defined
 		if t.OnFailure != "" {
 			d.runHook("on_failure", t.OnFailure, proj.Path, t, logPath, usedSessionID, startTime, elapsed, finalAttempt+1, t.Retry, retryDelay)
 		}
 		// Fire failure webhook (use timeout event if deadline exceeded)
 		whEvent := webhook.EventFailure
-		if ctx.Err() == context.DeadlineExceeded {
+		if isTimedOut {
 			whEvent = webhook.EventTimeout
 		}
 		d.webhooks.Fire(whEvent, whPayload)
@@ -1820,6 +1889,29 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 	}
 }
 
+// runTimeoutHook executes a timeout-related hook (on_timeout_warning or on_timeout).
+// Hook errors are logged as warnings but do not affect the task outcome.
+func (d *Daemon) runTimeoutHook(hookName, command, projectPath string, t project.Todo, timeout, remaining time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	hookCmd := exec.CommandContext(ctx, "sh", "-c", command)
+	hookCmd.Dir = projectPath
+
+	hookCmd.Env = append(os.Environ(),
+		"ANVIL_TASK_NAME="+t.Name,
+		"ANVIL_PROJECT="+projectPath,
+		"ANVIL_TIMEOUT="+timeout.String(),
+		"ANVIL_TIMEOUT_REMAINING="+remaining.String(),
+	)
+
+	if hookErr := hookCmd.Run(); hookErr != nil {
+		dlog.Warn("%s hook failed for %s: %v", hookName, t.Name, hookErr)
+	} else {
+		dlog.Info("%s hook completed for %s", hookName, t.Name)
+	}
+}
+
 // runSLAViolationHook executes an on_sla_violation hook as a shell command.
 // Hook errors are logged as warnings but do not affect task dispatch.
 func (d *Daemon) runSLAViolationHook(t project.Todo, projectPath string, sla slaResult) {
@@ -2008,17 +2100,19 @@ func (d *Daemon) handlePs(w http.ResponseWriter, r *http.Request) {
 			timeout = d.config.Timeout
 		}
 		result = append(result, TaskInfo{
-			Project:       task.Project,
-			Name:          task.Name,
-			PID:           task.PID,
-			Started:       task.Started.Format(time.RFC3339),
-			Elapsed:       elapsed.Round(time.Second).String(),
-			Timeout:       timeout.String(),
-			TimeRemaining: (timeout - elapsed).String(),
-			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
-			LogPath:       task.LogPath,
-			SessionID:     task.SessionID,
-			Status:        task.Status,
+			Project:           task.Project,
+			Name:              task.Name,
+			PID:               task.PID,
+			Started:           task.Started.Format(time.RFC3339),
+			Elapsed:           elapsed.Round(time.Second).String(),
+			Timeout:           timeout.String(),
+			TimeRemaining:     (timeout - elapsed).String(),
+			PercentUsed:       elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
+			LogPath:           task.LogPath,
+			SessionID:         task.SessionID,
+			Status:            task.Status,
+			TimeoutExtensions: task.TimeoutExtensions,
+			WarningTriggered:  task.WarningTriggered,
 		})
 	}
 
@@ -2054,16 +2148,18 @@ func (d *Daemon) handleTimeout(w http.ResponseWriter, r *http.Request) {
 			timeout = d.config.Timeout
 		}
 		result = append(result, TaskInfo{
-			Project:       task.Project,
-			Name:          task.Name,
-			PID:           task.PID,
-			Started:       task.Started.Format(time.RFC3339),
-			Elapsed:       elapsed.Round(time.Second).String(),
-			Timeout:       timeout.String(),
-			TimeRemaining: (timeout - elapsed).String(),
-			PercentUsed:   elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
-			LogPath:       task.LogPath,
-			SessionID:     task.SessionID,
+			Project:           task.Project,
+			Name:              task.Name,
+			PID:               task.PID,
+			Started:           task.Started.Format(time.RFC3339),
+			Elapsed:           elapsed.Round(time.Second).String(),
+			Timeout:           timeout.String(),
+			TimeRemaining:     (timeout - elapsed).String(),
+			PercentUsed:       elapsed.Round(time.Second).Seconds() / timeout.Seconds() * 100,
+			LogPath:           task.LogPath,
+			SessionID:         task.SessionID,
+			TimeoutExtensions: task.TimeoutExtensions,
+			WarningTriggered:  task.WarningTriggered,
 		})
 	}
 
