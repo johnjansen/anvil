@@ -371,8 +371,12 @@ func New(cfg *config.Config) *Daemon {
 	// Initialize git watcher
 	d.gitWatcher = NewGitWatcher(d)
 
-	// Initialize webhook server
-	d.webhookServer = NewWebhookServer(":8080", d)
+	// Initialize webhook server with configurable port (default 9090)
+	webhookPort := cfg.WebhookPort
+	if webhookPort == 0 {
+		webhookPort = 9090
+	}
+	d.webhookServer = NewWebhookServer(fmt.Sprintf(":%d", webhookPort), d)
 
 	// Initialize polling manager
 	d.pollingManager = NewPollingManager(d)
@@ -456,10 +460,7 @@ func (d *Daemon) Run() {
 	// Start socket server
 	go d.startSocketServer()
 
-	// Start webhook server
-	if d.webhookServer != nil {
-		go d.webhookServer.Start()
-	}
+	// Webhook server starts on-demand when first webhook subscription is registered
 
 	// Start cluster node if enabled
 	if d.config.Cluster.Enabled {
@@ -697,14 +698,31 @@ func (d *Daemon) startSubscriptions(projects []*project.Project) {
 }
 
 // triggerWebhookTask triggers a task execution from a webhook request
-func (d *Daemon) triggerWebhookTask(proj *project.Project, task project.Todo, payload []byte) {
+func (d *Daemon) triggerWebhookTask(proj *project.Project, task project.Todo, payload []byte, headers map[string]string) {
 	dlog.Info("Triggering task %s via webhook", task.Name)
 
-	// Add webhook payload to environment variables
+	// Add webhook payload and metadata to environment variables
 	if task.Env == nil {
 		task.Env = make(map[string]string)
 	}
 	task.Env["ANVIL_WEBHOOK_PAYLOAD"] = string(payload)
+
+	if ct, ok := headers[http.CanonicalHeaderKey("Content-Type")]; ok {
+		task.Env["ANVIL_WEBHOOK_CONTENT_TYPE"] = ct
+	}
+	// Support GitHub and generic webhook event headers (use canonical form)
+	if ev := headers[http.CanonicalHeaderKey("X-GitHub-Event")]; ev != "" {
+		task.Env["ANVIL_WEBHOOK_EVENT"] = ev
+	} else if ev := headers[http.CanonicalHeaderKey("X-Webhook-Event")]; ev != "" {
+		task.Env["ANVIL_WEBHOOK_EVENT"] = ev
+	}
+	// Pass all headers as JSON
+	if len(headers) > 0 {
+		headerJSON, err := json.Marshal(headers)
+		if err == nil {
+			task.Env["ANVIL_WEBHOOK_HEADERS"] = string(headerJSON)
+		}
+	}
 
 	// Create work item and queue it
 	item := workItem{
@@ -782,6 +800,10 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	}
 	if d.gitWatcher != nil {
 		d.gitWatcher.StopAll()
+	}
+	// Stop webhook server
+	if d.webhookServer != nil {
+		d.webhookServer.Stop(context.Background())
 	}
 	// Stop all polling managers
 	if d.pollingManager != nil {

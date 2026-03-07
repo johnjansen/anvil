@@ -36,6 +36,7 @@ type Config struct {
 	CircuitBreaker          CircuitBreakerGlobalConfig `yaml:"circuit_breaker"`         // global circuit breaker defaults
 	PriorityAging           PriorityAgingConfig `yaml:"priority_aging"`              // global priority aging settings
 	ConcurrencyGroups       map[string]ConcurrencyGroupConfig `yaml:"concurrency_groups"`  // concurrency group configuration
+	WebhookPort             int                               `yaml:"webhook_port"`        // HTTP port for webhook trigger server (default: 9090)
 }
 
 // SLAGlobalConfig defines global SLA defaults for task delay tracking.
