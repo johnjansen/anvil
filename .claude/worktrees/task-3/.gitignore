@@ -1,0 +1,53 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Build output
+/bin/
+/dist/
+/anvil
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files with secrets
+anvil.yaml
+!anvil.example.yaml
+
+# Claude Code local settings (hooks for worktree isolation, not shared)
+.claude/settings.local.json
+
+# Logs
+*.log
+logs/
+
+# Anvil runtime state (todos, runs, kill signals)
+.anvil/
+
+# Example project
+/example_proj
+/.worktrees/
+/.worktrees/
+.worktrees/

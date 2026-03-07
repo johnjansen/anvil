@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="anvil-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4A90D9"/>
+      <stop offset="100%" stop-color="#2C5F8A"/>
+    </linearGradient>
+  </defs>
+  <!-- Anvil body -->
+  <g transform="translate(100,105)">
+    <!-- Horn (top left projection) -->
+    <path d="M-60,-45 Q-75,-48 -80,-40 Q-82,-35 -70,-32 L-45,-32 Z" fill="url(#anvil-grad)"/>
+    <!-- Face (top surface) -->
+    <rect x="-45" y="-50" width="90" height="18" rx="3" fill="url(#anvil-grad)"/>
+    <!-- Step -->
+    <rect x="-45" y="-32" width="50" height="14" rx="2" fill="url(#anvil-grad)"/>
+    <!-- Body / waist -->
+    <path d="M-30,-18 L-20,30 L60,30 L50,-18 Z" fill="url(#anvil-grad)"/>
+    <!-- Base -->
+    <rect x="-35" y="30" width="100" height="16" rx="4" fill="url(#anvil-grad)"/>
+    <!-- Highlight on face -->
+    <rect x="-42" y="-48" width="84" height="6" rx="2" fill="rgba(255,255,255,0.25)"/>
+    <!-- Subtle hammer spark -->
+    <circle cx="0" cy="-58" r="3" fill="#F5A623" opacity="0.9"/>
+    <line x1="-8" y1="-65" x2="-4" y2="-60" stroke="#F5A623" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+    <line x1="8" y1="-65" x2="4" y2="-60" stroke="#F5A623" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+    <line x1="0" y1="-70" x2="0" y2="-63" stroke="#F5A623" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+---
+subscription:
+  type: amqp
+  url: amqp://localhost:5672
+  queue: task-queue
+  prefetch: 1
+---
+#!/bin/bash
+echo "Task triggered by AMQP message!"
+echo "Message payload: ${ANVIL_AMQP_PAYLOAD:-No payload}"
+date
