@@ -18,6 +18,7 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Go 1.24.6 + `github.com/fsnotify/fsnotify v1.9.0` (already in go.mod), `gopkg.in/yaml.v3` (frontmatter parsing) (364-file-watch-trigger)
 - Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching) (365-git-event-trigger)
 - JSON files in `.anvil/runs/<task-id>/` (RunRecord system); git ref state persisted in `.anvil/git-state/` as JSON (365-git-event-trigger)
+- Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod) (366-webhook-trigger)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -37,9 +38,9 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 366-webhook-trigger: Added Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod)
 - 365-git-event-trigger: Added Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching)
 - 364-file-watch-trigger: Added Go 1.24.6 + `github.com/fsnotify/fsnotify v1.9.0` (already in go.mod), `gopkg.in/yaml.v3` (frontmatter parsing)
-- 291-kill-checkpoint: Added Go 1.24.6 + `internal/daemon` (task execution, kill handling), `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/runner` (checkpoint capture), `cmd/anvil` (CLI commands)
 
 
 <!-- MANUAL ADDITIONS START -->
