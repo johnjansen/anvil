@@ -14,6 +14,7 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - JSON files in `.anvil/runs/<task-id>/` (RunRecord system) (284-retry-backoff-jitter)
 - Go 1.24.6 + `net/http` (GitHub API), `gopkg.in/yaml.v3` (template parsing), existing `internal/project` (Template, TemplateSpec, LoadTemplate, ListTemplates) (303-template-registry)
 - Local YAML files in `.anvil/templates/` (project) and `~/.anvil/templates/` (global); registry metadata stored alongside installed templates (303-template-registry)
+- Go 1.24.6 + `internal/daemon` (task execution, kill handling), `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/runner` (checkpoint capture), `cmd/anvil` (CLI commands) (291-kill-checkpoint)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -33,9 +34,9 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 291-kill-checkpoint: Added Go 1.24.6 + `internal/daemon` (task execution, kill handling), `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/runner` (checkpoint capture), `cmd/anvil` (CLI commands)
 - 303-template-registry: Added Go 1.24.6 + `net/http` (GitHub API), `gopkg.in/yaml.v3` (template parsing), existing `internal/project` (Template, TemplateSpec, LoadTemplate, ListTemplates)
 - 284-retry-backoff-jitter: Added Go 1.24.6 + `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/daemon` (retry loop in `executeTask`), `cmd/anvil` (task history/list display)
-- 263-cross-project-pipeline: Added Go 1.24.6 + `internal/project` (ParseDependency, Dependency, Todo, RunRecord), `cmd/anvil` (task_pipeline.go)
 
 
 <!-- MANUAL ADDITIONS START -->
