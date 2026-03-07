@@ -16,6 +16,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Local YAML files in `.anvil/templates/` (project) and `~/.anvil/templates/` (global); registry metadata stored alongside installed templates (303-template-registry)
 - Go 1.24.6 + `internal/daemon` (task execution, kill handling), `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/runner` (checkpoint capture), `cmd/anvil` (CLI commands) (291-kill-checkpoint)
 - Go 1.24.6 + `github.com/fsnotify/fsnotify v1.9.0` (already in go.mod), `gopkg.in/yaml.v3` (frontmatter parsing) (364-file-watch-trigger)
+- Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching) (365-git-event-trigger)
+- JSON files in `.anvil/runs/<task-id>/` (RunRecord system); git ref state persisted in `.anvil/git-state/` as JSON (365-git-event-trigger)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -35,9 +37,9 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 365-git-event-trigger: Added Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching)
 - 364-file-watch-trigger: Added Go 1.24.6 + `github.com/fsnotify/fsnotify v1.9.0` (already in go.mod), `gopkg.in/yaml.v3` (frontmatter parsing)
 - 291-kill-checkpoint: Added Go 1.24.6 + `internal/daemon` (task execution, kill handling), `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/runner` (checkpoint capture), `cmd/anvil` (CLI commands)
-- 303-template-registry: Added Go 1.24.6 + `net/http` (GitHub API), `gopkg.in/yaml.v3` (template parsing), existing `internal/project` (Template, TemplateSpec, LoadTemplate, ListTemplates)
 
 
 <!-- MANUAL ADDITIONS START -->
