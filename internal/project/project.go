@@ -264,6 +264,7 @@ type Todo struct {
 	DependencyPolicy     DependencyPolicyConfig // dependency failure handling policy
 	CaptureOutput        bool                 // if true, capture ##anvil:result output and store in run record
 	Checkpoint           bool                 // if true, capture ##anvil:checkpoint output and inject on resume
+	CheckpointGracePeriod time.Duration       // max wait time after SIGTERM before SIGKILL (default 30s)
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
 	SLA                  SLAConfig     // per-task SLA tracking configuration
@@ -437,6 +438,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var dependsOn []string
 			captureOutput := false
 			checkpoint := false
+			var checkpointGracePeriod time.Duration
 			healthCheck := ""
 			var allowedWindow AllowedWindow
 			var slaConfig SLAConfig
@@ -495,6 +497,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						} `yaml:"dependency_policy"`
 						CaptureOutput        bool              `yaml:"capture_output"`
 						Checkpoint           bool              `yaml:"checkpoint"`
+						CheckpointGracePeriod string           `yaml:"checkpoint_grace_period"`
 						HealthCheck          string            `yaml:"health_check"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
 						SLA                  *struct {
@@ -573,6 +576,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						dependsOn = fmData.DependsOn
 						captureOutput = fmData.CaptureOutput
 						checkpoint = fmData.Checkpoint
+						if fmData.CheckpointGracePeriod != "" {
+							checkpointGracePeriod, _ = time.ParseDuration(fmData.CheckpointGracePeriod)
+						}
 						if fmData.AllowedWindow != nil {
 							allowedWindow = *fmData.AllowedWindow
 						}
@@ -665,6 +671,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				DependsOn:            dependsOn,
 				CaptureOutput:        captureOutput,
 				Checkpoint:           checkpoint,
+				CheckpointGracePeriod: checkpointGracePeriod,
 				HealthCheck:          healthCheck,
 				Window:               allowedWindow,
 				SLA:                  slaConfig,

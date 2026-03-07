@@ -74,7 +74,22 @@ func taskRunCmd(args []string) {
 
 func taskKillCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name>\n")
+		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name> [--checkpoint|-c]\n")
+		os.Exit(1)
+	}
+
+	// Parse --checkpoint / -c flag
+	checkpoint := false
+	var filtered []string
+	for _, a := range args {
+		if a == "--checkpoint" || a == "-c" {
+			checkpoint = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name> [--checkpoint|-c]\n")
 		os.Exit(1)
 	}
 
@@ -93,9 +108,9 @@ func taskKillCmd(args []string) {
 		log.Fatalf("failed to load todos: %v", err)
 	}
 
-	todo := findTodo(todos, args[0])
+	todo := findTodo(todos, filtered[0])
 	if todo == nil {
-		fmt.Fprintf(os.Stderr, "task not found: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", filtered[0])
 		os.Exit(1)
 	}
 
@@ -104,12 +119,24 @@ func taskKillCmd(args []string) {
 		return
 	}
 
-	if err := daemon.SendKillRequest(todo.ID); err != nil {
-		fmt.Printf("failed to kill task: %v\n", err)
+	if checkpoint {
+		gracePeriod := todo.CheckpointGracePeriod
+		if gracePeriod <= 0 {
+			gracePeriod = 30 * time.Second
+		}
+		fmt.Printf("Gracefully stopping task: %s (waiting up to %v for checkpoint save)...\n", filtered[0], gracePeriod.Round(time.Second))
+	}
+
+	if err := daemon.SendKillRequest(todo.ID, checkpoint); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("killed task: %s\n", args[0])
+	if checkpoint {
+		fmt.Printf("Task stopped with checkpoint: %s\n", filtered[0])
+	} else {
+		fmt.Printf("killed task: %s\n", filtered[0])
+	}
 }
 
 func taskStopCmd(args []string) {
@@ -391,7 +418,10 @@ func taskHistoryCmd(args []string) {
 		status := "ok"
 		if !rec.Success {
 			status = "failed"
-			if rec.Error != "" {
+			if rec.Error == "stopped-with-checkpoint" || rec.Error == "killed-after-grace-period" {
+				// Show checkpoint-related statuses without truncation
+				status = rec.Error
+			} else if rec.Error != "" {
 				// Truncate error for display, collapse newlines
 				errMsg := strings.Join(strings.Fields(rec.Error), " ")
 				if len(errMsg) > 20 {

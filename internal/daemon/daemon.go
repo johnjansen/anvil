@@ -225,10 +225,15 @@ type RunningTask struct {
 	WarningTriggered  bool          // whether the timeout warning has been triggered
 	TimeoutExtensions int           // number of timeout extensions used
 	OriginalTimeout   time.Duration // original timeout before extensions
+	GracefulStop           chan struct{} // closed to signal graceful shutdown request (checkpoint kill)
+	ShuttingDown           bool          // true if graceful shutdown is in progress
+	CheckpointEnabled      bool          // whether task has checkpoint: true
+	CheckpointGracePeriod  time.Duration // max wait after SIGTERM (default 30s)
 }
 
 type KillRequest struct {
-	ID string `json:"id"`
+	ID         string `json:"id"`
+	Checkpoint bool   `json:"checkpoint"`
 }
 
 type TaskInfo struct {
@@ -1105,7 +1110,10 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		Started:         startTime,
 		Timeout:         timeout,
 		OriginalTimeout: timeout,
-		Cancel:          cancel,
+		Cancel:                cancel,
+		GracefulStop:          make(chan struct{}),
+		CheckpointEnabled:     t.Checkpoint,
+		CheckpointGracePeriod: t.CheckpointGracePeriod,
 	}
 	d.tasksMu.Unlock()
 
@@ -1244,6 +1252,9 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	// Track result data emitted by the task via ##anvil:result (last one wins)
 	var resultMu sync.Mutex
 	var lastResultData string
+	// Track whether a graceful checkpoint stop was triggered
+	var gracefulStopTriggered bool
+	var graceExpired bool
 
 	// State file path and storage config (used for persisting task state)
 	var stateFilePath string
@@ -1380,6 +1391,44 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			}
 		}
 
+		// Graceful stop watcher: monitors GracefulStop channel and sends SIGTERM to child
+		runnerDone := make(chan struct{})
+		go func() {
+			d.tasksMu.Lock()
+			rt := d.tasks[instanceKey]
+			d.tasksMu.Unlock()
+			if rt == nil {
+				return
+			}
+			select {
+			case <-rt.GracefulStop:
+				gracefulStopTriggered = true
+				// Send SIGTERM to the child process
+				if childPID > 0 {
+					if proc, procErr := os.FindProcess(childPID); procErr == nil {
+						_ = proc.Signal(syscall.SIGTERM)
+						dlog.Info("sent SIGTERM to child process %d for checkpoint stop of %s", childPID, taskLabel)
+					}
+				}
+				// Wait for grace period, then escalate
+				gracePeriod := rt.CheckpointGracePeriod
+				if gracePeriod <= 0 {
+					gracePeriod = 30 * time.Second
+				}
+				select {
+				case <-runnerDone:
+					// Child exited within grace period
+				case <-time.After(gracePeriod):
+					// Grace period expired, force-kill
+					graceExpired = true
+					dlog.Warn("grace period expired for %s, force-killing", taskLabel)
+					cancel()
+				}
+			case <-runnerDone:
+				// Runner completed normally, no graceful stop needed
+			}
+		}()
+
 		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, taskContent, taskLabel, logDir, skipIndices, mergedEnv, t.RunnerChain, t.RunnerOnTimeout, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
@@ -1439,6 +1488,12 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 				resultMu.Unlock()
 			}
 		})
+		close(runnerDone)
+
+		// If graceful stop was triggered, exit retry loop immediately (don't retry)
+		if gracefulStopTriggered {
+			break
+		}
 
 		// Success - exit retry loop
 		if err == nil {
@@ -1614,7 +1669,15 @@ skipExecution:
 		}
 	}
 
-	if err != nil {
+	if gracefulStopTriggered {
+		if graceExpired {
+			runRecord.Error = "killed-after-grace-period"
+			runRecord.Success = false
+		} else {
+			runRecord.Error = "stopped-with-checkpoint"
+			runRecord.Success = false
+		}
+	} else if err != nil {
 		runRecord.Error = err.Error()
 	}
 
@@ -2543,6 +2606,36 @@ func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
 
 	if found == nil {
 		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+
+	if req.Checkpoint {
+		// Validate checkpoint preconditions
+		if !found.CheckpointEnabled {
+			http.Error(w, "task does not have checkpoint enabled", http.StatusBadRequest)
+			return
+		}
+		if found.ShuttingDown {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "already-shutting-down", "name": found.Name})
+			return
+		}
+
+		// Signal graceful shutdown
+		found.ShuttingDown = true
+		close(found.GracefulStop)
+
+		// Log checkpoint kill activity
+		project.WriteActivity(found.Project, project.ActivityEntry{
+			Timestamp: time.Now(),
+			Action:    "killed",
+			TaskID:    found.TaskID,
+			TaskName:  found.Name,
+			Details:   map[string]string{"method": "checkpoint"},
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "stopping", "name": found.Name, "checkpoint": "true"})
 		return
 	}
 
@@ -4618,8 +4711,8 @@ func SendStartRequest(projectPath, taskID, taskName string) error {
 }
 
 // SendKillRequest sends a kill request to the daemon
-func SendKillRequest(id string) error {
-	data, err := json.Marshal(KillRequest{ID: id})
+func SendKillRequest(id string, checkpoint bool) error {
+	data, err := json.Marshal(KillRequest{ID: id, Checkpoint: checkpoint})
 	if err != nil {
 		return err
 	}
@@ -4632,7 +4725,7 @@ func SendKillRequest(id string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("daemon kill failed: %s", string(body))
+		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
 	}
 
 	return nil
