@@ -166,8 +166,12 @@ type SubscriptionConfig struct {
 	URL      string `yaml:"url"`      // connection URL (e.g. AMQP broker URL)
 	Queue    string `yaml:"queue"`    // queue name (for amqp type)
 	Path     string `yaml:"path"`     // file path (for file type)
-	FsPath   string `yaml:"fs_path"`  // filesystem path (for fs type)
-	Prefetch int    `yaml:"prefetch"` // prefetch count (for amqp type)
+	FsPath      string   `yaml:"fs_path"`      // filesystem path (for fs type)
+	FsEvents    []string `yaml:"fs_events"`    // event types to watch: create, modify, delete, rename (for fs type)
+	FsDebounce  string   `yaml:"fs_debounce"`  // debounce duration (e.g. "5s", "500ms") for fs type
+	FsGlob      string   `yaml:"fs_glob"`      // glob pattern to filter file events (e.g. "*.json") for fs type
+	FsRecursive bool     `yaml:"fs_recursive"` // watch subdirectories recursively (for fs type)
+	Prefetch    int      `yaml:"prefetch"`     // prefetch count (for amqp type)
 	// Webhook subscription fields
 	WebhookPath   string `yaml:"webhook_path"`   // HTTP path for webhook endpoint (for webhook type)
 	WebhookMethod string `yaml:"webhook_method"` // HTTP method for webhook endpoint (default: POST)
