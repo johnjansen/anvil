@@ -484,6 +484,12 @@ func taskHistoryCmd(args []string) {
 			}
 			fmt.Printf("  checkpoint: %s\n", cpPreview)
 		}
+
+		// Print retry strategy details if retries occurred
+		if rec.Attempt > 1 && rec.RetryStrategy != "" {
+			delaysStr := strings.Join(rec.RetryDelaysUsed, ", ")
+			fmt.Printf("  retry: strategy=%s, delays=[%s]\n", rec.RetryStrategy, delaysStr)
+		}
 	}
 }
 

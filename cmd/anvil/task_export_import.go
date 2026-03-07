@@ -98,17 +98,20 @@ func taskExportCmd(args []string) {
 		Schedule     string `json:"schedule,omitempty"`
 		Priority     int    `json:"priority"`
 		Timeout      int    `json:"timeout,omitempty"`
-		Retry        int    `json:"retry,omitempty"`
-		RetryDelay   string `json:"retry_delay,omitempty"`
-		Runner       string `json:"runner,omitempty"`
-		Webhook      string `json:"webhook,omitempty"`
-		PreCheck     string `json:"pre_check,omitempty"`
-		OnSuccess    string `json:"on_success,omitempty"`
-		OnFailure    string `json:"on_failure,omitempty"`
-		Disabled     bool   `json:"disabled"`
-		MaxLogSize   int64  `json:"max_log_size,omitempty"`
-		SkipPerms    bool   `json:"skip_permissions"`
-		AllowedTools string `json:"allowed_tools,omitempty"`
+		Retry         int     `json:"retry,omitempty"`
+		RetryDelay    string  `json:"retry_delay,omitempty"`
+		RetryStrategy string  `json:"retry_strategy,omitempty"`
+		RetryJitter   float64 `json:"retry_jitter,omitempty"`
+		RetryMaxTime  string  `json:"retry_max_time,omitempty"`
+		Runner        string  `json:"runner,omitempty"`
+		Webhook       string  `json:"webhook,omitempty"`
+		PreCheck      string  `json:"pre_check,omitempty"`
+		OnSuccess     string  `json:"on_success,omitempty"`
+		OnFailure     string  `json:"on_failure,omitempty"`
+		Disabled      bool    `json:"disabled"`
+		MaxLogSize    int64   `json:"max_log_size,omitempty"`
+		SkipPerms     bool    `json:"skip_permissions"`
+		AllowedTools  string  `json:"allowed_tools,omitempty"`
 	}
 
 	exportTasks := make([]ExportTask, len(toExport))
@@ -124,9 +127,12 @@ func taskExportCmd(args []string) {
 			Schedule:     t.Schedule,
 			Priority:     t.Priority,
 			Timeout:      int(t.Timeout.Seconds()),
-			Retry:        t.Retry,
-			RetryDelay:   t.RetryDelay.String(),
-			Runner:       t.Runner,
+			Retry:         t.Retry,
+			RetryDelay:    t.RetryDelay.String(),
+			RetryStrategy: t.RetryStrategy,
+			RetryJitter:   t.RetryJitter,
+			RetryMaxTime:  t.RetryMaxTime.String(),
+			Runner:        t.Runner,
 			Webhook:      t.Webhook,
 			PreCheck:     t.PreCheck,
 			OnSuccess:    t.OnSuccess,
@@ -228,17 +234,20 @@ func taskImportCmd(args []string) {
 		Schedule     string `json:"schedule,omitempty"`
 		Priority     int    `json:"priority"`
 		Timeout      int    `json:"timeout,omitempty"`
-		Retry        int    `json:"retry,omitempty"`
-		RetryDelay   string `json:"retry_delay,omitempty"`
-		Runner       string `json:"runner,omitempty"`
-		Webhook      string `json:"webhook,omitempty"`
-		PreCheck     string `json:"pre_check,omitempty"`
-		OnSuccess    string `json:"on_success,omitempty"`
-		OnFailure    string `json:"on_failure,omitempty"`
-		Disabled     bool   `json:"disabled"`
-		MaxLogSize   int64  `json:"max_log_size,omitempty"`
-		SkipPerms    bool   `json:"skip_permissions"`
-		AllowedTools string `json:"allowed_tools,omitempty"`
+		Retry         int     `json:"retry,omitempty"`
+		RetryDelay    string  `json:"retry_delay,omitempty"`
+		RetryStrategy string  `json:"retry_strategy,omitempty"`
+		RetryJitter   float64 `json:"retry_jitter,omitempty"`
+		RetryMaxTime  string  `json:"retry_max_time,omitempty"`
+		Runner        string  `json:"runner,omitempty"`
+		Webhook       string  `json:"webhook,omitempty"`
+		PreCheck      string  `json:"pre_check,omitempty"`
+		OnSuccess     string  `json:"on_success,omitempty"`
+		OnFailure     string  `json:"on_failure,omitempty"`
+		Disabled      bool    `json:"disabled"`
+		MaxLogSize    int64   `json:"max_log_size,omitempty"`
+		SkipPerms     bool    `json:"skip_permissions"`
+		AllowedTools  string  `json:"allowed_tools,omitempty"`
 	}
 
 	type ExportData struct {
@@ -311,6 +320,15 @@ func taskImportCmd(args []string) {
 		}
 		if et.RetryDelay != "" {
 			frontmatter = append(frontmatter, fmt.Sprintf("retry_delay: %q", et.RetryDelay))
+		}
+		if et.RetryStrategy != "" {
+			frontmatter = append(frontmatter, fmt.Sprintf("retry_strategy: %q", et.RetryStrategy))
+		}
+		if et.RetryJitter != 0 {
+			frontmatter = append(frontmatter, fmt.Sprintf("retry_jitter: %g", et.RetryJitter))
+		}
+		if et.RetryMaxTime != "" && et.RetryMaxTime != "0s" {
+			frontmatter = append(frontmatter, fmt.Sprintf("retry_max_time: %q", et.RetryMaxTime))
 		}
 		if et.Runner != "" {
 			frontmatter = append(frontmatter, fmt.Sprintf("runner: %q", et.Runner))

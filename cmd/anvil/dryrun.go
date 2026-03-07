@@ -110,6 +110,9 @@ func dryRunJSON(todos []project.Todo, projectPath string, cfg *config.Config, va
 		MaxConcurrent   int               `json:"max_concurrent,omitempty"`
 		Retry           int               `json:"retry,omitempty"`
 		RetryDelay      string            `json:"retry_delay,omitempty"`
+		RetryStrategy   string            `json:"retry_strategy,omitempty"`
+		RetryJitter     float64           `json:"retry_jitter,omitempty"`
+		RetryMaxTime    string            `json:"retry_max_time,omitempty"`
 		DependsOn       []string          `json:"depends_on,omitempty"`
 		DepsStatus      string            `json:"deps_status,omitempty"`
 		Labels          []string          `json:"labels,omitempty"`
@@ -171,6 +174,17 @@ func dryRunJSON(todos []project.Todo, projectPath string, cfg *config.Config, va
 				r.RetryDelay = todo.RetryDelay.String()
 			} else {
 				r.RetryDelay = "1m0s (default)"
+			}
+			if todo.RetryStrategy != "" {
+				r.RetryStrategy = todo.RetryStrategy
+			} else {
+				r.RetryStrategy = "exponential (default)"
+			}
+			if todo.RetryJitter > 0 {
+				r.RetryJitter = todo.RetryJitter
+			}
+			if todo.RetryMaxTime > 0 {
+				r.RetryMaxTime = todo.RetryMaxTime.String()
 			}
 		}
 
@@ -360,7 +374,17 @@ func dryRunPrint(todo *project.Todo, projectPath string, cfg *config.Config, val
 		if todo.RetryDelay <= 0 {
 			delayStr = "1m0s (default)"
 		}
-		fmt.Printf("Retries:    %d, delay %s\n", todo.Retry, delayStr)
+		strategyStr := todo.RetryStrategy
+		if strategyStr == "" {
+			strategyStr = "exponential (default)"
+		}
+		fmt.Printf("Retries:    %d, delay %s, strategy %s\n", todo.Retry, delayStr, strategyStr)
+		if todo.RetryJitter > 0 {
+			fmt.Printf("Jitter:     %.0f%%\n", todo.RetryJitter*100)
+		}
+		if todo.RetryMaxTime > 0 {
+			fmt.Printf("Max Time:   %s\n", todo.RetryMaxTime)
+		}
 	}
 
 	if todo.OnSuccess != "" || todo.OnFailure != "" || todo.Webhook != "" {

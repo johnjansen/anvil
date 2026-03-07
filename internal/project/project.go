@@ -42,6 +42,9 @@ type TaskDefaults struct {
 	Timeout              string   `yaml:"timeout"`
 	Retry                int      `yaml:"retry"`
 	RetryDelay           string   `yaml:"retry_delay"`
+	RetryStrategy        string   `yaml:"retry_strategy"`
+	RetryJitter          float64  `yaml:"retry_jitter"`
+	RetryMaxTime         string   `yaml:"retry_max_time"`
 	MaxConcurrent        int      `yaml:"max_concurrent"`
 	RateLimit            RateLimitConfig `yaml:"rate_limit"` // rate limiting configuration
 	PersistentCooldown   string   `yaml:"persistent_cooldown"`
@@ -257,6 +260,9 @@ type Todo struct {
 	Timeout         time.Duration // task-specific timeout (0 = use global default)
 	Retry           int           // number of retries on failure (0 = no retry)
 	RetryDelay      time.Duration // delay between retries (default 1m, used with Retry)
+	RetryStrategy   string        // backoff strategy: "exponential", "linear", "constant" (default "exponential")
+	RetryJitter     float64       // jitter percentage 0.0-1.0 to randomize retry delays
+	RetryMaxTime    time.Duration // max total wall-clock time for retries (0 = unlimited)
 	// Persistent task configuration
 	PersistentCooldown   time.Duration // cooldown between restart cycles (default 0 = immediate)
 	PersistentMaxRuntime time.Duration // max runtime before forced restart (0 = no limit)
@@ -343,6 +349,8 @@ type RunRecord struct {
 	Attempt          int       `json:"attempt,omitempty"`           // final attempt number (1-based), 0 if no retries configured
 	MaxRetries       int       `json:"max_retries,omitempty"`       // configured max retries for this task
 	RetryDelay       string    `json:"retry_delay,omitempty"`       // configured base delay between retries
+	RetryStrategy    string    `json:"retry_strategy,omitempty"`    // backoff strategy used: "exponential", "linear", "constant"
+	RetryDelaysUsed  []string  `json:"retry_delays_used,omitempty"` // actual delays between each retry attempt
 	ScheduledTime    time.Time     `json:"scheduled_time,omitempty"`    // when the task was supposed to run (cron prev match)
 	DispatchDelay    time.Duration `json:"dispatch_delay,omitempty"`    // actual delay from scheduled time
 	SLAViolation     bool          `json:"sla_violation,omitempty"`     // whether this run violated SLA
@@ -432,6 +440,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var timeout time.Duration
 			retry := 0
 			var retryDelay time.Duration
+			retryStrategy := ""
+			retryJitter := 0.0
+			var retryMaxTime time.Duration
 			var persistentCooldown time.Duration
 			var persistentMaxRuntime time.Duration
 			var persistentBudget time.Duration
@@ -489,6 +500,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						Timeout              string   `yaml:"timeout"`
 						Retry                int      `yaml:"retry"`
 						RetryDelay           string   `yaml:"retry_delay"`
+						RetryStrategy        string   `yaml:"retry_strategy"`
+						RetryJitter          float64  `yaml:"retry_jitter"`
+						RetryMaxTime         string   `yaml:"retry_max_time"`
 						PersistentCooldown   string   `yaml:"persistent_cooldown"`
 						PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 						PersistentBudget     string   `yaml:"persistent_budget"`
@@ -560,6 +574,29 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						retry = fmData.Retry
 						if fmData.RetryDelay != "" {
 							retryDelay, _ = time.ParseDuration(fmData.RetryDelay)
+						}
+						// T002/T006/T007: Parse retry strategy fields with validation
+						if fmData.RetryStrategy != "" {
+							switch strings.ToLower(fmData.RetryStrategy) {
+							case "exponential", "linear", "constant":
+								retryStrategy = strings.ToLower(fmData.RetryStrategy)
+							default:
+								log.Printf("WARN: invalid retry_strategy %q for %s, defaulting to exponential", fmData.RetryStrategy, e.Name())
+								retryStrategy = "exponential"
+							}
+						}
+						if fmData.RetryJitter != 0 {
+							retryJitter = fmData.RetryJitter
+							if retryJitter < 0 {
+								log.Printf("WARN: retry_jitter %.2f for %s clamped to 0.0", retryJitter, e.Name())
+								retryJitter = 0
+							} else if retryJitter > 1.0 {
+								log.Printf("WARN: retry_jitter %.2f for %s clamped to 1.0", retryJitter, e.Name())
+								retryJitter = 1.0
+							}
+						}
+						if fmData.RetryMaxTime != "" {
+							retryMaxTime, _ = time.ParseDuration(fmData.RetryMaxTime)
 						}
 						if fmData.PersistentCooldown != "" {
 							persistentCooldown, _ = time.ParseDuration(fmData.PersistentCooldown)
@@ -641,7 +678,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Apply project defaults for fields not explicitly set in frontmatter.
 			applyDefaults(defaults, fmKeys, &skipPermissions, &allowedTools, &preCheck, &precondition,
 				&onSuccess, &onFailure, &timeout, &retry, &retryDelay,
-				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride)
+				&maxConcurrent, &persistentCooldown, &persistentMaxRuntime, &persistentBudget, &maxLogSize, &runnerOverride,
+				&retryStrategy, &retryJitter, &retryMaxTime)
 
 			// Resolve env: prefixed values from the current environment
 			resolvedEnv := resolveEnvVars(envVars)
@@ -666,6 +704,9 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Timeout:              timeout,
 				Retry:                retry,
 				RetryDelay:           retryDelay,
+				RetryStrategy:        retryStrategy,
+				RetryJitter:          retryJitter,
+				RetryMaxTime:         retryMaxTime,
 				PersistentCooldown:   persistentCooldown,
 				PersistentMaxRuntime: persistentMaxRuntime,
 				PersistentBudget:     persistentBudget,
@@ -710,7 +751,8 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	onSuccess *string, onFailure *string, timeout *time.Duration,
 	retry *int, retryDelay *time.Duration, maxConcurrent *int,
 	persistentCooldown *time.Duration, persistentMaxRuntime *time.Duration,
-	persistentBudget *time.Duration, maxLogSize *int64, runnerOverride *string) {
+	persistentBudget *time.Duration, maxLogSize *int64, runnerOverride *string,
+	retryStrategy *string, retryJitter *float64, retryMaxTime *time.Duration) {
 
 	has := func(key string) bool {
 		if fmKeys == nil {
@@ -776,6 +818,17 @@ func applyDefaults(defaults TaskDefaults, fmKeys map[string]interface{},
 	}
 	if !has("runner") && defaults.Runner != "" {
 		*runnerOverride = defaults.Runner
+	}
+	if !has("retry_strategy") && defaults.RetryStrategy != "" {
+		*retryStrategy = defaults.RetryStrategy
+	}
+	if !has("retry_jitter") && defaults.RetryJitter != 0 {
+		*retryJitter = defaults.RetryJitter
+	}
+	if !has("retry_max_time") && defaults.RetryMaxTime != "" {
+		if d, err := time.ParseDuration(defaults.RetryMaxTime); err == nil {
+			*retryMaxTime = d
+		}
 	}
 }
 
@@ -1525,6 +1578,9 @@ type TemplateSpec struct {
 	Timeout               string            `yaml:"timeout,omitempty"`
 	Retry                int               `yaml:"retry,omitempty"`
 	RetryDelay           string            `yaml:"retry_delay,omitempty"`
+	RetryStrategy        string            `yaml:"retry_strategy,omitempty"`
+	RetryJitter          float64           `yaml:"retry_jitter,omitempty"`
+	RetryMaxTime         string            `yaml:"retry_max_time,omitempty"`
 	MaxConcurrent        int               `yaml:"max_concurrent,omitempty"`
 	PersistentCooldown    string            `yaml:"persistent_cooldown,omitempty"`
 	PersistentMaxRuntime string            `yaml:"persistent_max_runtime,omitempty"`

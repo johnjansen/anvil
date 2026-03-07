@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -43,6 +44,51 @@ func version() string {
 		return info.Main.Version
 	}
 	return "dev"
+}
+
+// calculateBackoff computes the retry delay for the given attempt using the specified strategy.
+// It applies a 1-hour maximum cap, then applies jitter if jitter > 0, with a floor of 1 second.
+// The attempt parameter is 0-based (0 = first retry delay).
+func calculateBackoff(strategy string, baseDelay time.Duration, attempt int, jitter float64) time.Duration {
+	if baseDelay <= 0 {
+		baseDelay = time.Minute
+	}
+	if strategy == "" {
+		strategy = "exponential"
+	}
+
+	var delay time.Duration
+	switch strategy {
+	case "linear":
+		delay = baseDelay * time.Duration(attempt+1)
+	case "constant":
+		delay = baseDelay
+	default: // exponential
+		delay = baseDelay
+		for i := 0; i < attempt; i++ {
+			delay *= 2
+		}
+	}
+
+	// Cap at 1 hour
+	const maxDelay = time.Hour
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+
+	// Apply jitter: delay * (1 + jitter * (2*rand - 1))
+	if jitter > 0 {
+		r := mathrand.Float64() // [0, 1)
+		factor := 1.0 + jitter*(2*r-1)
+		delay = time.Duration(float64(delay) * factor)
+	}
+
+	// Floor at 1 second
+	if delay < time.Second {
+		delay = time.Second
+	}
+
+	return delay
 }
 
 // ErrDaemonAlreadyRunning is returned when a daemon is already running
@@ -1258,13 +1304,15 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 		}
 	}
 
-	// Retry loop with exponential backoff
+	// Retry loop with configurable backoff strategy
 	var usedSessionID string
 	var logPath string
 	var usedRunnerIdx int
 	var stderrOutput string
 	var err error
 	var finalAttempt int // tracks which attempt we ended on (0-based)
+	var retryDelaysUsed []string // actual delays used between attempts
+	retryStartTime := time.Now() // for max_total_time tracking
 
 	// Track checkpoint data emitted by the task (last one wins)
 	var checkpointMu sync.Mutex
@@ -1527,13 +1575,25 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			break
 		}
 
-		// Calculate exponential backoff: base * 2^attempt
-		backoffDuration := retryDelay
-		for i := 0; i < attempt; i++ {
-			backoffDuration *= 2
+		// Check max_total_time before retrying
+		if t.RetryMaxTime > 0 && time.Since(retryStartTime) >= t.RetryMaxTime {
+			dlog.Info("retry time budget exhausted for %s after %v (max %v)", taskLabel, time.Since(retryStartTime).Round(time.Second), t.RetryMaxTime)
+			break
 		}
 
-		dlog.Info("retry %d/%d for %s after %v (backoff %v)", attempt+1, t.Retry, taskLabel, err, backoffDuration)
+		// Calculate backoff using configured strategy
+		strategy := t.RetryStrategy
+		if strategy == "" {
+			strategy = "exponential"
+		}
+		backoffDuration := calculateBackoff(strategy, retryDelay, attempt, t.RetryJitter)
+		retryDelaysUsed = append(retryDelaysUsed, backoffDuration.Round(time.Millisecond).String())
+
+		jitterTag := ""
+		if t.RetryJitter > 0 {
+			jitterTag = " +jitter"
+		}
+		dlog.Info("retry %d/%d for %s after %v (%s backoff %v%s)", attempt+1, t.Retry, taskLabel, err, strategy, backoffDuration.Round(time.Millisecond), jitterTag)
 
 		// Wait for backoff duration, but respect context cancellation
 		select {
@@ -1623,6 +1683,8 @@ skipExecution:
 		Attempt:          finalAttempt + 1, // convert 0-based to 1-based
 		MaxRetries:       t.Retry,
 		RetryDelay:       retryDelay.String(),
+		RetryStrategy:    t.RetryStrategy,
+		RetryDelaysUsed:  retryDelaysUsed,
 		ScheduledTime:    sla.ScheduledTime,
 		DispatchDelay:    sla.Delay,
 		SLAViolation:     sla.Violation,
@@ -1848,19 +1910,16 @@ skipExecution:
 			d.persistentFailures[taskKey]++
 			failCount := d.persistentFailures[taskKey]
 			d.persistentFailuresMu.Unlock()
-			// Calculate exponential backoff: base * 2^(failCount-1), default base is 1 minute
-			baseBackoff := t.RetryDelay
-			if baseBackoff <= 0 {
-				baseBackoff = 1 * time.Minute
+			// Calculate backoff using configured strategy (default exponential)
+			strategy := t.RetryStrategy
+			if strategy == "" {
+				strategy = "exponential"
 			}
-			backoffDuration := baseBackoff
-			for i := 1; i < failCount; i++ {
-				backoffDuration *= 2
-			}
+			backoffDuration := calculateBackoff(strategy, t.RetryDelay, failCount-1, t.RetryJitter)
 			d.persistentCooldownsMu.Lock()
 			d.persistentCooldowns[taskKey] = time.Now().Add(backoffDuration)
 			d.persistentCooldownsMu.Unlock()
-			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v", t.Name, failCount, backoffDuration)
+			dlog.Info("persistent task %s failed (attempt %d) — backing off for %v (%s)", t.Name, failCount, backoffDuration.Round(time.Millisecond), strategy)
 		}
 	} else {
 		atomic.AddInt64(&d.metricsSuccessCount, 1)
@@ -2024,6 +2083,7 @@ func (d *Daemon) runHook(hookName, command, projectPath string, t project.Todo, 
 		fmt.Sprintf("ANVIL_RETRY_ATTEMPT=%d", attempt),
 		fmt.Sprintf("ANVIL_RETRY_MAX=%d", maxRetries),
 		"ANVIL_RETRY_DELAY="+retryDelay.String(),
+		"ANVIL_RETRY_STRATEGY="+t.RetryStrategy,
 		"ANVIL_WILL_RETRY="+willRetry,
 	)
 

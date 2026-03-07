@@ -375,6 +375,9 @@ func taskGetCmd(args []string) {
 			Dependencies      []depStatusJSON `json:"dependencies,omitempty"`
 			Retry             int             `json:"retry,omitempty"`
 			RetryDelay        string          `json:"retry_delay,omitempty"`
+			RetryStrategy     string          `json:"retry_strategy,omitempty"`
+			RetryJitter       float64         `json:"retry_jitter,omitempty"`
+			RetryMaxTime      string          `json:"retry_max_time,omitempty"`
 			LastAttempt       int             `json:"last_attempt,omitempty"`
 			LastMaxRetries    int             `json:"last_max_retries,omitempty"`
 			LastAttemptStatus string          `json:"last_attempt_status,omitempty"`
@@ -444,6 +447,15 @@ func taskGetCmd(args []string) {
 				delayStr = "1m0s"
 			}
 			detail.RetryDelay = delayStr
+			if todo.RetryStrategy != "" {
+				detail.RetryStrategy = todo.RetryStrategy
+			}
+			if todo.RetryJitter > 0 {
+				detail.RetryJitter = todo.RetryJitter
+			}
+			if todo.RetryMaxTime > 0 {
+				detail.RetryMaxTime = todo.RetryMaxTime.String()
+			}
 			rec, recErr := project.ReadCurrentRunRecord(abs, todo.ID)
 			if recErr == nil && rec.MaxRetries > 0 {
 				detail.LastAttempt = rec.Attempt

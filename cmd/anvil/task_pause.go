@@ -89,6 +89,9 @@ func taskPauseCmd(args []string) {
 				Timeout              string   `yaml:"timeout"`
 				Retry                int      `yaml:"retry"`
 				RetryDelay           string   `yaml:"retry_delay"`
+				RetryStrategy        string   `yaml:"retry_strategy,omitempty"`
+				RetryJitter          float64  `yaml:"retry_jitter,omitempty"`
+				RetryMaxTime         string   `yaml:"retry_max_time,omitempty"`
 				PersistentCooldown   string   `yaml:"persistent_cooldown"`
 				PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 			}
@@ -202,6 +205,9 @@ func taskResumeCmd(args []string) {
 				Timeout              string   `yaml:"timeout"`
 				Retry                int      `yaml:"retry"`
 				RetryDelay           string   `yaml:"retry_delay"`
+				RetryStrategy        string   `yaml:"retry_strategy,omitempty"`
+				RetryJitter          float64  `yaml:"retry_jitter,omitempty"`
+				RetryMaxTime         string   `yaml:"retry_max_time,omitempty"`
 				PersistentCooldown   string   `yaml:"persistent_cooldown"`
 				PersistentMaxRuntime string   `yaml:"persistent_max_runtime"`
 			}
