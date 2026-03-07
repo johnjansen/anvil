@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/johnjansen/anvil/internal/config"
 	"github.com/johnjansen/anvil/internal/cron"
 	"github.com/johnjansen/anvil/internal/daemon"
+	"github.com/johnjansen/anvil/internal/forecast"
 	"github.com/johnjansen/anvil/internal/project"
 	"github.com/johnjansen/anvil/tools"
 	"gopkg.in/yaml.v3"
@@ -197,6 +199,11 @@ func taskCreateCmd(args []string) {
 			printImpactJSON(report)
 		} else {
 			printImpactReport(report)
+		}
+
+		// Add forecast impact analysis
+		if schedule != "" && len(todos) > 0 {
+			printForecastImpact(abs, schedule, taskText, todos, dryRunJSON)
 		}
 		return
 	}
@@ -702,4 +709,70 @@ func parseFrontmatterAndMerge(
 	}
 
 	return body, priority, schedule, preCheck, allowedTools, maxConcurrent, skipPermissions
+}
+
+func printForecastImpact(projectPath, schedule, taskName string, existingTodos []project.Todo, jsonOutput bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+
+	now := time.Now()
+	end := now.Add(7 * 24 * time.Hour)
+
+	stats := forecast.ComputeAllStats(projectPath, existingTodos, 10)
+
+	// Forecast without the new task
+	before := forecast.ProjectRuns(existingTodos, stats, cfg, now, end)
+
+	// Create hypothetical todo
+	hypo := project.Todo{
+		ID:       "hypothetical",
+		Name:     taskName,
+		Schedule: schedule,
+	}
+
+	withHypo := make([]project.Todo, len(existingTodos)+1)
+	copy(withHypo, existingTodos)
+	withHypo[len(existingTodos)] = hypo
+	after := forecast.ProjectRuns(withHypo, stats, cfg, now, end)
+
+	// Mark hypothetical runs
+	for i := range after.Runs {
+		if after.Runs[i].TaskID == "hypothetical" {
+			after.Runs[i].IsHypothetical = true
+		}
+	}
+
+	contentionBefore := forecast.DetectContention(before, cfg.MaxWorkers)
+	contentionAfter := forecast.DetectContention(after, cfg.MaxWorkers)
+
+	if jsonOutput {
+		type impactJSON struct {
+			BeforeRuns      int `json:"before_runs"`
+			AfterRuns       int `json:"after_runs"`
+			NewContentions  int `json:"new_contention_windows"`
+		}
+		data, _ := json.MarshalIndent(impactJSON{
+			BeforeRuns:     before.TotalRuns,
+			AfterRuns:      after.TotalRuns,
+			NewContentions: len(contentionAfter) - len(contentionBefore),
+		}, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	fmt.Printf("\nIMPACT: %d → %d runs (+%d) | %s → %s runtime\n",
+		before.TotalRuns, after.TotalRuns, after.TotalRuns-before.TotalRuns,
+		before.TotalDuration.Round(time.Second), after.TotalDuration.Round(time.Second))
+
+	newContentions := len(contentionAfter) - len(contentionBefore)
+	if newContentions > 0 {
+		fmt.Printf("CONTENTION: %d new contention window(s) introduced\n", newContentions)
+		for _, w := range contentionAfter[len(contentionBefore):] {
+			fmt.Printf("  %s (%d concurrent, %d workers)\n",
+				w.Start.Format("Mon 01/02 15:04"),
+				w.PeakConcurrent, w.WorkerCount)
+		}
+	}
 }
