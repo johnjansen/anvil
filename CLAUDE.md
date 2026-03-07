@@ -10,6 +10,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Go 1.24.6 + `internal/project` (Todo, Dependency, RunRecord, ParseDependency, ResolveDependencyRunRecord), `internal/daemon` (TaskQueueInfo, handleQueue), `cmd/anvil` (taskQueueCmd) (265-cross-project-queue)
 - JSON files in `.anvil/runs/<task-id>/` (existing RunRecord system), watched project paths via `~/.anvil/watched/` (265-cross-project-queue)
 - Go 1.24.6 + `internal/project` (ParseDependency, Dependency, Todo, RunRecord), `cmd/anvil` (task_pipeline.go) (263-cross-project-pipeline)
+- Go 1.24.6 + `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/daemon` (retry loop in `executeTask`), `cmd/anvil` (task history/list display) (284-retry-backoff-jitter)
+- JSON files in `.anvil/runs/<task-id>/` (RunRecord system) (284-retry-backoff-jitter)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -29,9 +31,9 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 284-retry-backoff-jitter: Added Go 1.24.6 + `internal/project` (Todo, RunRecord, frontmatter parsing), `internal/daemon` (retry loop in `executeTask`), `cmd/anvil` (task history/list display)
 - 263-cross-project-pipeline: Added Go 1.24.6 + `internal/project` (ParseDependency, Dependency, Todo, RunRecord), `cmd/anvil` (task_pipeline.go)
 - 265-cross-project-queue: Added Go 1.24.6 + `internal/project` (Todo, Dependency, RunRecord, ParseDependency, ResolveDependencyRunRecord), `internal/daemon` (TaskQueueInfo, handleQueue), `cmd/anvil` (taskQueueCmd)
-- 343-task-result-passing: Added Go 1.24.6 + `internal/project` (Todo, RunRecord), `internal/daemon` (task execution, dependency checking), `internal/runner` (statusWriter, output scanning), `cmd/anvil` (CLI commands)
 
 
 <!-- MANUAL ADDITIONS START -->
