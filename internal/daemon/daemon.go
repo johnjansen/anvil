@@ -1193,6 +1193,21 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	var stateBucket string
 	var stateKey string
 
+	// Pinned run: if task has a pinned_run, use the historical output instead of executing
+	if t.PinnedRun != "" {
+		pinnedRecord, pinnedErr := project.ReadRunRecord(proj.Path, t.ID, t.PinnedRun)
+		if pinnedErr == nil && pinnedRecord != nil {
+			dlog.Info("pinned run %s for %s — using historical output", t.PinnedRun[:min(8, len(t.PinnedRun))], taskLabel)
+			stderrOutput = pinnedRecord.OutputSummary
+			usedSessionID = "pinned-" + t.PinnedRun[:min(8, len(t.PinnedRun))]
+			logPath = ""
+			usedRunnerIdx = -1
+			err = nil
+			goto skipExecution
+		}
+		dlog.Warn("pinned run %s not found for %s, executing normally", t.PinnedRun, t.Name)
+	}
+
 	// Check cache before running task
 	if cache.IsCacheEnabled(t) {
 		cacheKey, err := cache.CalculateCacheKey(t, proj.Path)
@@ -1486,10 +1501,21 @@ skipExecution:
 	}
 
 
-	// Write run record after creating snapshot
+	// Write run record
 	if writeErr := project.WriteRunRecord(proj.Path, runRecord); writeErr != nil {
 		dlog.Warn("failed to write run record for %s: %v", t.Name, writeErr)
 	}
+
+	// Save snapshot for replay-enabled tasks on success
+	if t.Replay && err == nil {
+		mergedEnv := mergeEnv(d.config.Env, t.Env)
+		if snapErr := project.WriteSnapshot(proj.Path, t.ID, runID, t, mergedEnv, t.Content, proj.Path, runRecord); snapErr != nil {
+			dlog.Warn("failed to write replay snapshot for %s: %v", t.Name, snapErr)
+		} else {
+			dlog.Info("saved replay snapshot for %s (run %s)", t.Name, runID[:min(8, len(runID))])
+		}
+	}
+
 	alertCheck := checkAlerts(t, runRecord, d.config.Alerts)
 	if len(alertCheck.AlertsFired) > 0 {
 		dlog.Info("alerts triggered for task %s: %d alert(s)", t.Name, len(alertCheck.AlertsFired))

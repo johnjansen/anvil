@@ -97,6 +97,8 @@ func taskCmd(args []string) {
 		taskCacheCmd(args[1:])
 	case "snapshot":
 		taskSnapshotCmd(args[1:])
+	case "replay":
+		taskReplayCmd(args[1:])
 	case "snapshot-diff":
 		taskSnapshotDiffCmd(args[1:])
 	case "subscription":

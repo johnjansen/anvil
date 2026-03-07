@@ -427,6 +427,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var priorityAgingConfig *PriorityAgingConfig
 			onSLAViolation := ""
 			onRollback := ""
+			replay := false
+			pinnedRun := ""
 			var precondition *PreconditionConfig
 			var trigger *TaskTrigger
 			body := contentStr
@@ -567,6 +569,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
 						trigger = fmData.Trigger
+						replay = fmData.Replay
+						pinnedRun = fmData.PinnedRun
 					}
 				}
 			}
@@ -620,6 +624,8 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				NodeAffinity:         nodeAffinity,
 				OnRollback:           onRollback,
 				Trigger:              trigger,
+				Replay:               replay,
+				PinnedRun:            pinnedRun,
 			})
 		}
 	}
@@ -1171,6 +1177,21 @@ func ReadCurrentRunRecord(projectPath, taskID string) (RunRecord, error) {
 		return RunRecord{}, fmt.Errorf("parsing run record: %w", err)
 	}
 	return rec, nil
+}
+
+// ReadRunRecord reads a specific run record by task ID and run ID.
+func ReadRunRecord(projectPath, taskID, runID string) (*RunRecord, error) {
+	recPath := RunPath(projectPath, taskID, runID)
+	data, err := os.ReadFile(recPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading run record: %w", err)
+	}
+
+	var rec RunRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, fmt.Errorf("parsing run record: %w", err)
+	}
+	return &rec, nil
 }
 
 // ReadAllRunRecords reads all run records for a task, sorted by start time (newest first).
