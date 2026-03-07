@@ -61,6 +61,8 @@ func taskCmd(args []string) {
 		taskAnalyzeCmd(args[1:])
 	case "reset-budget":
 		taskResetBudgetCmd(args[1:])
+	case "results":
+		taskResultsCmd(args[1:])
 	case "state":
 		taskStateCmd(args[1:])
 	case "pipeline":

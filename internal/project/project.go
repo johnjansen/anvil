@@ -262,6 +262,7 @@ type Todo struct {
 	Env                  map[string]string // environment variables injected into task execution
 	DependsOn            []string             // list of task names this task depends on (all must succeed before running)
 	DependencyPolicy     DependencyPolicyConfig // dependency failure handling policy
+	CaptureOutput        bool                 // if true, capture ##anvil:result output and store in run record
 	Checkpoint           bool                 // if true, capture ##anvil:checkpoint output and inject on resume
 	Window               AllowedWindow // per-task execution time window (empty = no restriction)
 	ForceWindow          bool          // if true, bypass time window and quiet hours checks (set by force-run)
@@ -340,6 +341,7 @@ type RunRecord struct {
 	RunnerIndex      int           `json:"runner_index,omitempty"`      // which runner in the chain was used (0-based; 100+ means timeout fallback)
 	RunnerCommand    string        `json:"runner_command,omitempty"`    // the actual runner command that was used
 	NodeID           string        `json:"node_id,omitempty"`            // cluster node that executed this run
+	ResultData       string        `json:"result_data,omitempty"`        // captured result from ##anvil:result output
 }
 // TaskVersion is a snapshot of a task file at a specific point in time.
 type TaskVersion struct {
@@ -433,6 +435,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			var nodeAffinity string
 			var envVars map[string]string
 			var dependsOn []string
+			captureOutput := false
 			checkpoint := false
 			healthCheck := ""
 			var allowedWindow AllowedWindow
@@ -490,6 +493,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						DependencyPolicy     struct {
 							OnFailure string `yaml:"on_failure"`
 						} `yaml:"dependency_policy"`
+						CaptureOutput        bool              `yaml:"capture_output"`
 						Checkpoint           bool              `yaml:"checkpoint"`
 						HealthCheck          string            `yaml:"health_check"`
 						AllowedWindow        *AllowedWindow    `yaml:"allowed_window"`
@@ -567,6 +571,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						labels = fmData.Labels
 						envVars = fmData.Env
 						dependsOn = fmData.DependsOn
+						captureOutput = fmData.CaptureOutput
 						checkpoint = fmData.Checkpoint
 						if fmData.AllowedWindow != nil {
 							allowedWindow = *fmData.AllowedWindow
@@ -658,6 +663,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				Labels:               labels,
 				Env:                  resolvedEnv,
 				DependsOn:            dependsOn,
+				CaptureOutput:        captureOutput,
 				Checkpoint:           checkpoint,
 				HealthCheck:          healthCheck,
 				Window:               allowedWindow,
@@ -1388,6 +1394,16 @@ func LatestSessionID(projectPath, taskID string) (string, error) {
 	return "", fmt.Errorf("no run record found for task %s", taskID)
 }
 
+// LatestResultData returns the most recent result data for a task.
+// Returns empty string if no result data exists.
+func LatestResultData(projectPath, taskID string) string {
+	rec, err := ReadCurrentRunRecord(projectPath, taskID)
+	if err != nil {
+		return ""
+	}
+	return rec.ResultData
+}
+
 // LatestCheckpointData returns the most recent checkpoint data for a task.
 // Returns empty string if no checkpoint data exists.
 func LatestCheckpointData(projectPath, taskID string) string {
@@ -1503,6 +1519,7 @@ type TemplateSpec struct {
 	Labels               []string          `yaml:"labels,omitempty"`
 	Env                  map[string]string `yaml:"env,omitempty"`
 	DependsOn            []string          `yaml:"depends_on,omitempty"`
+	CaptureOutput        bool              `yaml:"capture_output,omitempty"`
 	Checkpoint           bool              `yaml:"checkpoint,omitempty"`
 }
 

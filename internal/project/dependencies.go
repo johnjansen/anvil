@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -225,6 +226,45 @@ func ResolveDependencyRunRecord(currentProjectPath string, dep string) (RunRecor
 	}
 
 	return ReadCurrentRunRecord(projectPath, taskID)
+}
+
+// CollectDependencyResults reads the latest ResultData from each dependency's
+// most recent successful RunRecord and returns a map of dependency name to
+// raw JSON result data. Dependencies without captured results produce a JSON
+// null value. The returned map can be serialized to JSON for the
+// ANVIL_DEPENDENCY_RESULTS environment variable.
+func CollectDependencyResults(currentProjectPath string, dependsOn []string) (map[string]json.RawMessage, error) {
+	results := make(map[string]json.RawMessage, len(dependsOn))
+
+	for _, dep := range dependsOn {
+		// Extract the task name key (without project prefix and .md extension)
+		parsed := ParseDependency(dep)
+		taskName := parsed.Task
+		taskName = strings.TrimSuffix(taskName, ".md")
+
+		runRecord, err := ResolveDependencyRunRecord(currentProjectPath, dep)
+		if err != nil {
+			// Dependency hasn't run or can't be resolved — null result
+			results[taskName] = json.RawMessage("null")
+			continue
+		}
+
+		if runRecord.ResultData == "" {
+			results[taskName] = json.RawMessage("null")
+			continue
+		}
+
+		// Check if the result data is valid JSON; if so, use it raw
+		if json.Valid([]byte(runRecord.ResultData)) {
+			results[taskName] = json.RawMessage(runRecord.ResultData)
+		} else {
+			// Store invalid JSON as a JSON string
+			quoted, _ := json.Marshal(runRecord.ResultData)
+			results[taskName] = json.RawMessage(quoted)
+		}
+	}
+
+	return results, nil
 }
 
 // DependencyGraph represents a graph of task dependencies for cycle detection.

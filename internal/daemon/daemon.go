@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"text/template"
 	"time"
 
 	"github.com/johnjansen/anvil/internal/cache"
@@ -1240,6 +1241,9 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 	// Track checkpoint data emitted by the task (last one wins)
 	var checkpointMu sync.Mutex
 	var lastCheckpointData string
+	// Track result data emitted by the task via ##anvil:result (last one wins)
+	var resultMu sync.Mutex
+	var lastResultData string
 
 	// State file path and storage config (used for persisting task state)
 	var stateFilePath string
@@ -1308,6 +1312,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			}
 		}
 
+		// If task has dependencies, collect and inject dependency results
+		var collectedDepResults map[string]json.RawMessage
+		if len(t.DependsOn) > 0 {
+			depResults, depErr := project.CollectDependencyResults(proj.Path, t.DependsOn)
+			if depErr == nil && len(depResults) > 0 {
+				collectedDepResults = depResults
+				depJSON, jsonErr := json.Marshal(depResults)
+				if jsonErr == nil {
+					if mergedEnv == nil {
+						mergedEnv = make(map[string]string)
+					}
+					mergedEnv["ANVIL_DEPENDENCY_RESULTS"] = string(depJSON)
+				}
+			}
+		}
+
 		// If state is configured, inject ANVIL_STATE_FILE with current state
 		if t.State != nil {
 			stateBucket = t.State.Bucket
@@ -1345,7 +1365,22 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 			}
 		}
 
-		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, t.Content, taskLabel, logDir, skipIndices, mergedEnv, t.RunnerChain, t.RunnerOnTimeout, func(pid int, lp string, sid string) {
+		// Render task content through Go templates if dependency results are available
+		taskContent := t.Content
+		if collectedDepResults != nil && strings.Contains(taskContent, "{{") {
+			tmplData := map[string]interface{}{
+				"DependencyResults": collectedDepResults,
+			}
+			tmpl, tmplErr := template.New("task").Option("missingkey=zero").Parse(taskContent)
+			if tmplErr == nil {
+				var rendered strings.Builder
+				if execErr := tmpl.Execute(&rendered, tmplData); execErr == nil {
+					taskContent = rendered.String()
+				}
+			}
+		}
+
+		usedSessionID, logPath, usedRunnerIdx, stderrOutput, err = d.runner.Run(ctx, proj.Path, sessionToResume, resume, t.SkipPermissions, t.AllowedTools, taskContent, taskLabel, logDir, skipIndices, mergedEnv, t.RunnerChain, t.RunnerOnTimeout, func(pid int, lp string, sid string) {
 			childPID = pid
 			d.tasksMu.Lock()
 			if task, ok := d.tasks[instanceKey]; ok {
@@ -1391,6 +1426,17 @@ func (d *Daemon) runTask(workerID int, proj *project.Project, t project.Todo, sl
 					dlog.Info("adaptive timeout extended for %s/%s (extension %d, +%v)", filepath.Base(proj.Path), t.Name, rt.TimeoutExtensions, ext.Round(time.Second))
 				}
 				d.tasksMu.Unlock()
+			}
+		}, func(data string) {
+			if t.CaptureOutput {
+				const maxResultSize = 1 << 20 // 1MB
+				if len(data) > maxResultSize {
+					data = data[:maxResultSize]
+					dlog.Warn("result data truncated to 1MB for %s", taskLabel)
+				}
+				resultMu.Lock()
+				lastResultData = data
+				resultMu.Unlock()
 			}
 		})
 
@@ -1482,6 +1528,10 @@ skipExecution:
 	cpData := lastCheckpointData
 	checkpointMu.Unlock()
 
+	resultMu.Lock()
+	resData := lastResultData
+	resultMu.Unlock()
+
 	runRecord := project.RunRecord{
 		RunID:            runID,
 		TaskID:           t.ID,
@@ -1494,6 +1544,7 @@ skipExecution:
 		OutputTokens:     tokenUsage.OutputTokens,
 		EstimatedCostUSD: estimatedCost,
 		CheckpointData:   cpData,
+		ResultData:       resData,
 		Attempt:          finalAttempt + 1, // convert 0-based to 1-based
 		MaxRetries:       t.Retry,
 		RetryDelay:       retryDelay.String(),

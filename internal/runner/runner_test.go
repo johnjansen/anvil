@@ -101,7 +101,7 @@ func TestStatusWriter_DetectsStatusOnStdout(t *testing.T) {
 		mu.Lock()
 		captured = status
 		mu.Unlock()
-	}, nil)
+	}, nil, nil)
 
 	sw.Write([]byte("normal output\n##anvil:status working on tests\nmore output\n"))
 	sw.Flush()
@@ -135,7 +135,7 @@ func TestStatusWriter_MultipleStatusUpdates(t *testing.T) {
 		mu.Lock()
 		statuses = append(statuses, status)
 		mu.Unlock()
-	}, nil)
+	}, nil, nil)
 
 	sw.Write([]byte("##anvil:status step 1\n"))
 	sw.Write([]byte("##anvil:status step 2\n"))
@@ -160,7 +160,7 @@ func TestStatusWriter_PartialLineBuffering(t *testing.T) {
 		mu.Lock()
 		captured = status
 		mu.Unlock()
-	}, nil)
+	}, nil, nil)
 
 	// Write status prefix split across two Write calls
 	sw.Write([]byte("##anvil:sta"))
@@ -182,7 +182,7 @@ func TestStatusWriter_FlushPartialLine(t *testing.T) {
 		mu.Lock()
 		captured = status
 		mu.Unlock()
-	}, nil)
+	}, nil, nil)
 
 	// Write without trailing newline, then flush
 	sw.Write([]byte("##anvil:status final status"))
@@ -201,11 +201,160 @@ func TestStatusWriter_EmptyStatusIgnored(t *testing.T) {
 
 	sw := newStatusWriter(&downstream, func(status string) {
 		callCount++
-	}, nil)
+	}, nil, nil)
 
 	sw.Write([]byte("##anvil:status \n"))
 
 	if callCount != 0 {
 		t.Errorf("expected 0 callbacks for empty status, got %d", callCount)
+	}
+}
+
+func TestStatusWriter_CapturesResultLine(t *testing.T) {
+	var downstream bytes.Buffer
+	var mu sync.Mutex
+	var captured string
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		mu.Lock()
+		captured = data
+		mu.Unlock()
+	})
+
+	sw.Write([]byte("normal output\n##anvil:result {\"count\": 42}\nmore output\n"))
+	sw.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if captured != `{"count": 42}` {
+		t.Errorf("expected result '{\"count\": 42}', got %q", captured)
+	}
+
+	// Result lines should be stripped from downstream
+	if bytes.Contains(downstream.Bytes(), []byte("##anvil:result")) {
+		t.Error("result line should be stripped from downstream output")
+	}
+
+	// Non-result lines should pass through
+	if !bytes.Contains(downstream.Bytes(), []byte("normal output")) {
+		t.Error("normal output should pass through")
+	}
+}
+
+func TestStatusWriter_LastResultWins(t *testing.T) {
+	var downstream bytes.Buffer
+	var mu sync.Mutex
+	var captured string
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		mu.Lock()
+		captured = data
+		mu.Unlock()
+	})
+
+	sw.Write([]byte("##anvil:result first\n##anvil:result second\n##anvil:result third\n"))
+	sw.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if captured != "third" {
+		t.Errorf("expected last result 'third', got %q", captured)
+	}
+}
+
+func TestStatusWriter_ResultFlushPartialLine(t *testing.T) {
+	var downstream bytes.Buffer
+	var mu sync.Mutex
+	var captured string
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		mu.Lock()
+		captured = data
+		mu.Unlock()
+	})
+
+	sw.Write([]byte("##anvil:result partial"))
+	sw.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if captured != "partial" {
+		t.Errorf("expected result 'partial', got %q", captured)
+	}
+}
+
+func TestStatusWriter_ResultCapture(t *testing.T) {
+	var downstream bytes.Buffer
+	var captured string
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		captured = data
+	})
+
+	sw.Write([]byte("normal output\n##anvil:result {\"count\": 42}\nmore output\n"))
+	sw.Flush()
+
+	if captured != `{"count": 42}` {
+		t.Errorf("expected result '{\"count\": 42}', got %q", captured)
+	}
+
+	// Result lines should be stripped from downstream
+	if bytes.Contains(downstream.Bytes(), []byte("##anvil:result")) {
+		t.Error("result line should be stripped from downstream output")
+	}
+
+	// Non-result lines should pass through
+	if !bytes.Contains(downstream.Bytes(), []byte("normal output")) {
+		t.Error("normal output should pass through")
+	}
+}
+
+func TestStatusWriter_ResultLastOneWins(t *testing.T) {
+	var downstream bytes.Buffer
+	var captured string
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		captured = data
+	})
+
+	sw.Write([]byte("##anvil:result first\n##anvil:result second\n##anvil:result third\n"))
+	sw.Flush()
+
+	if captured != "third" {
+		t.Errorf("expected last result 'third', got %q", captured)
+	}
+}
+
+func TestStatusWriter_ResultFlush(t *testing.T) {
+	var downstream bytes.Buffer
+	var captured string
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		captured = data
+	})
+
+	// Write result without trailing newline, then flush
+	sw.Write([]byte("##anvil:result flushed"))
+	sw.Flush()
+
+	if captured != "flushed" {
+		t.Errorf("expected result 'flushed', got %q", captured)
+	}
+}
+
+func TestStatusWriter_EmptyResultCaptured(t *testing.T) {
+	var downstream bytes.Buffer
+	callCount := 0
+
+	sw := newStatusWriter(&downstream, nil, nil, func(data string) {
+		callCount++
+	})
+
+	// Empty result data (just the prefix) — should still call onResult with empty string
+	sw.Write([]byte("##anvil:result \n"))
+
+	// Empty data after trimming — onResult is called with empty string
+	if callCount != 1 {
+		t.Errorf("expected 1 callback for empty result, got %d", callCount)
 	}
 }
