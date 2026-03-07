@@ -56,8 +56,6 @@ func EvaluateTriggerConditions(ctx context.Context, trigger TaskTrigger, task To
 	// Apply logic (AND or OR)
 	if logic == "OR" {
 		// For OR logic, at least one condition must be met
-		eval.ConditionsMet = !allMet // This is wrong, let me fix it
-		// Actually, we need to check if any condition was met
 		eval.ConditionsMet = false
 		for _, result := range eval.ConditionResults {
 			if result.Met {

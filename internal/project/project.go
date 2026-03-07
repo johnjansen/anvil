@@ -289,6 +289,8 @@ type Todo struct {
 	Assert               *AssertConfig   // output assertion configuration (nil = no assertions)
 	// Backfill configuration for missed cron windows
 	Backfill             *BackfillConfig // backfill configuration (nil = no backfill)
+	// Trigger conditions for multi-criteria triggering
+	Trigger              *TaskTrigger // trigger configuration (nil = schedule-only)
 }
 
 // BackfillConfig defines backfill configuration for missed cron windows.
@@ -426,6 +428,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			onSLAViolation := ""
 			onRollback := ""
 			var precondition *PreconditionConfig
+			var trigger *TaskTrigger
 			body := contentStr
 
 			// Track which frontmatter keys were explicitly set so project defaults
@@ -563,6 +566,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 						onSLAViolation = fmData.OnSLAViolation
 						healthCheck = fmData.HealthCheck
 						onRollback = fmData.OnRollback
+						trigger = fmData.Trigger
 					}
 				}
 			}
@@ -615,6 +619,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnSLAViolation:       onSLAViolation,
 				NodeAffinity:         nodeAffinity,
 				OnRollback:           onRollback,
+				Trigger:              trigger,
 			})
 		}
 	}

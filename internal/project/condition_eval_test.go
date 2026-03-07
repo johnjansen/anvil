@@ -108,3 +108,115 @@ func TestEvaluateCondition(t *testing.T) {
 		t.Error("evaluateCondition should return error for unsupported condition type")
 	}
 }
+
+func TestEvaluateTriggerConditionsAND(t *testing.T) {
+	trigger := TaskTrigger{
+		ConditionLogic: "AND",
+		Conditions: []Condition{
+			{Type: "fileExists", Value: "condition_eval_test.go"},
+			{Type: "fileExists", Value: "trigger_test.go"},
+		},
+	}
+	task := Todo{ID: "test-and"}
+
+	eval, err := EvaluateTriggerConditions(context.Background(), trigger, task)
+	if err != nil {
+		t.Fatalf("EvaluateTriggerConditions returned error: %v", err)
+	}
+	if !eval.ConditionsMet {
+		t.Error("AND: all conditions met but ConditionsMet is false")
+	}
+
+	// One condition fails
+	trigger.Conditions[1] = Condition{Type: "fileExists", Value: "nonexistent.txt"}
+	eval, err = EvaluateTriggerConditions(context.Background(), trigger, task)
+	if err != nil {
+		t.Fatalf("EvaluateTriggerConditions returned error: %v", err)
+	}
+	if eval.ConditionsMet {
+		t.Error("AND: one condition not met but ConditionsMet is true")
+	}
+}
+
+func TestEvaluateTriggerConditionsOR(t *testing.T) {
+	trigger := TaskTrigger{
+		ConditionLogic: "OR",
+		Conditions: []Condition{
+			{Type: "fileExists", Value: "nonexistent.txt"},
+			{Type: "fileExists", Value: "condition_eval_test.go"},
+		},
+	}
+	task := Todo{ID: "test-or"}
+
+	eval, err := EvaluateTriggerConditions(context.Background(), trigger, task)
+	if err != nil {
+		t.Fatalf("EvaluateTriggerConditions returned error: %v", err)
+	}
+	if !eval.ConditionsMet {
+		t.Error("OR: at least one condition met but ConditionsMet is false")
+	}
+
+	// All conditions fail
+	trigger.Conditions[1] = Condition{Type: "fileExists", Value: "also-nonexistent.txt"}
+	eval, err = EvaluateTriggerConditions(context.Background(), trigger, task)
+	if err != nil {
+		t.Fatalf("EvaluateTriggerConditions returned error: %v", err)
+	}
+	if eval.ConditionsMet {
+		t.Error("OR: no conditions met but ConditionsMet is true")
+	}
+}
+
+func TestEvaluateTriggerConditionsEmpty(t *testing.T) {
+	trigger := TaskTrigger{
+		Conditions: []Condition{},
+	}
+	task := Todo{ID: "test-empty"}
+
+	eval, err := EvaluateTriggerConditions(context.Background(), trigger, task)
+	if err != nil {
+		t.Fatalf("EvaluateTriggerConditions returned error: %v", err)
+	}
+	if !eval.ConditionsMet {
+		t.Error("empty conditions should default to met")
+	}
+}
+
+func TestShouldTriggerTask(t *testing.T) {
+	task := Todo{ID: "test-should"}
+
+	// Manual trigger only
+	trigger := TaskTrigger{ManualTriggerOnly: true}
+	should, err := ShouldTriggerTask(context.Background(), task, trigger)
+	if err != nil {
+		t.Fatalf("ShouldTriggerTask returned error: %v", err)
+	}
+	if should {
+		t.Error("manual trigger only should return false")
+	}
+
+	// Polling enabled — deferred to polling manager
+	trigger = TaskTrigger{
+		PollingConfig: &PollingConfig{Enabled: true, Interval: time.Second},
+		Conditions:    []Condition{{Type: "fileExists", Value: "condition_eval_test.go"}},
+	}
+	should, err = ShouldTriggerTask(context.Background(), task, trigger)
+	if err != nil {
+		t.Fatalf("ShouldTriggerTask returned error: %v", err)
+	}
+	if should {
+		t.Error("polling-enabled tasks should return false (handled by polling manager)")
+	}
+
+	// Normal conditions met
+	trigger = TaskTrigger{
+		Conditions: []Condition{{Type: "fileExists", Value: "condition_eval_test.go"}},
+	}
+	should, err = ShouldTriggerTask(context.Background(), task, trigger)
+	if err != nil {
+		t.Fatalf("ShouldTriggerTask returned error: %v", err)
+	}
+	if !should {
+		t.Error("conditions met should return true")
+	}
+}

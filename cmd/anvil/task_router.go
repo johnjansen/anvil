@@ -102,6 +102,8 @@ func taskCmd(args []string) {
 	case "subscription":
 		taskSubscriptionCmd(args[1:])
 		taskActivityCmd(args[1:])
+	case "trigger-check":
+		taskTriggerCheckCmd(args[1:])
 	case "group":
 		groupCmd(args[1:])
 	default:

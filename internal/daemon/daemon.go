@@ -194,6 +194,9 @@ type Daemon struct {
 	// Map key is the failed dependency task name, value is list of affected tasks
 	cascadeFailures   map[string][]string // dependencyTask -> []affectedTasks
 	cascadeFailuresMu sync.Mutex
+
+	// pollingManager handles polling-based trigger conditions
+	pollingManager *PollingManager
 }
 
 // RateLimitCounter tracks execution counts for rate limiting per task
@@ -304,6 +307,9 @@ func New(cfg *config.Config) *Daemon {
 
 	// Initialize webhook server
 	d.webhookServer = NewWebhookServer(":8080", d)
+
+	// Initialize polling manager
+	d.pollingManager = NewPollingManager(d)
 
 	return d
 }
@@ -688,6 +694,10 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	// Stop all filesystem watchers
 	if d.fsWatcher != nil {
 		d.fsWatcher.StopAll()
+	}
+	// Stop all polling managers
+	if d.pollingManager != nil {
+		d.pollingManager.Stop()
 	}
 
 	close(d.workQueue)
@@ -3359,6 +3369,44 @@ func (d *Daemon) tick(now time.Time) {
 			}
 		}
 
+		// Register polling tasks instead of dispatching them directly
+		if pt.todo.Trigger != nil && pt.todo.Trigger.PollingConfig != nil && pt.todo.Trigger.PollingConfig.Enabled {
+			if d.pollingManager.Register(pt.proj, pt.todo) {
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
+		}
+
+		// Skip dispatch if trigger conditions are not met
+		if pt.todo.Trigger != nil && len(pt.todo.Trigger.Conditions) > 0 && !pt.todo.ForceWindow {
+			shouldTrigger, triggerErr := project.ShouldTriggerTask(context.Background(), pt.todo, *pt.todo.Trigger)
+			if triggerErr != nil {
+				dlog.Warn("trigger evaluation failed for %s/%s: %v", projName, pt.todo.Name, triggerErr)
+			}
+			if !shouldTrigger {
+				reason := "trigger conditions not met"
+				if triggerErr != nil {
+					reason = fmt.Sprintf("trigger evaluation error: %v", triggerErr)
+				}
+				dlog.Info("skip %s/%s — %s", projName, pt.todo.Name, reason)
+				d.pendingTasksMu.Lock()
+				d.pendingTasks[taskKey] = reason
+				d.pendingTasksMu.Unlock()
+				d.inFlightMu.Lock()
+				d.inFlight[taskKey]--
+				if d.inFlight[taskKey] <= 0 {
+					delete(d.inFlight, taskKey)
+				}
+				d.inFlightMu.Unlock()
+				continue
+			}
+		}
+
 		// Skip dispatch if task is outside its allowed time window or in quiet hours
 		if !isTaskInWindow(pt.todo, time.Now()) {
 			dlog.Info("skip %s/%s — outside allowed time window", projName, pt.todo.Name)
@@ -3826,6 +3874,28 @@ func (d *Daemon) tick(now time.Time) {
 	}
 
 	dlog.TickSummary(now, len(projects), totalTodos, totalMatched, dispatched)
+}
+
+// dispatchPolledTask dispatches a task that had its polling conditions met.
+func (d *Daemon) dispatchPolledTask(proj *project.Project, todo project.Todo) {
+	taskKey := fmt.Sprintf("%s/%s", proj.Path, todo.Name)
+
+	d.inFlightMu.Lock()
+	d.inFlight[taskKey]++
+	d.inFlightMu.Unlock()
+
+	select {
+	case d.workQueue <- workItem{project: proj, todo: todo}:
+		dlog.Info("dispatched polled task %s", taskKey)
+	default:
+		dlog.Warn("work queue full, dropping polled task %s", taskKey)
+		d.inFlightMu.Lock()
+		d.inFlight[taskKey]--
+		if d.inFlight[taskKey] <= 0 {
+			delete(d.inFlight, taskKey)
+		}
+		d.inFlightMu.Unlock()
+	}
 }
 
 // osc8Link wraps text in an OSC 8 terminal hyperlink pointing to url.
