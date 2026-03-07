@@ -962,7 +962,7 @@ func (p *Project) AddTodo(priority int, schedule string, content string, preChec
 		sb.WriteString(fmt.Sprintf("pre_check: %q\n", preCheck))
 	}
 	if allowedTools != "" {
-		sb.WriteString(fmt.Sprintf("allowed_tools: %q\n", allowedTools))
+		sb.WriteString(fmt.Sprintf("allowed_tools: [%s]\n", allowedTools))
 	}
 	if maxConcurrent != 0 {
 		sb.WriteString(fmt.Sprintf("max_concurrent: %d\n", maxConcurrent))
@@ -1047,7 +1047,7 @@ func (p *Project) AddTodoWithID(priority int, schedule string, content string, p
 		sb.WriteString(fmt.Sprintf("pre_check: %q\n", preCheck))
 	}
 	if allowedTools != "" {
-		sb.WriteString(fmt.Sprintf("allowed_tools: %q\n", allowedTools))
+		sb.WriteString(fmt.Sprintf("allowed_tools: [%s]\n", allowedTools))
 	}
 	if maxConcurrent != 0 {
 		sb.WriteString(fmt.Sprintf("max_concurrent: %d\n", maxConcurrent))
