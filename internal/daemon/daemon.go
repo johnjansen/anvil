@@ -188,6 +188,9 @@ type Daemon struct {
 	// FSWatcher handles filesystem path subscriptions
 	fsWatcher *FSWatcher
 
+	// GitWatcher handles git ref polling subscriptions
+	gitWatcher *GitWatcher
+
 	// WebhookServer handles HTTP webhook subscriptions
 	webhookServer *WebhookServer
 
@@ -318,6 +321,9 @@ func New(cfg *config.Config) *Daemon {
 
 	// Initialize filesystem watcher
 	d.fsWatcher = NewFSWatcher(d)
+
+	// Initialize git watcher
+	d.gitWatcher = NewGitWatcher(d)
 
 	// Initialize webhook server
 	d.webhookServer = NewWebhookServer(":8080", d)
@@ -553,6 +559,9 @@ func (d *Daemon) Run() {
 			if d.fsWatcher != nil {
 				d.fsWatcher.StopAll()
 			}
+			if d.gitWatcher != nil {
+				d.gitWatcher.StopAll()
+			}
 			if d.httpServer != nil {
 				d.httpServer.Shutdown(context.Background())
 			}
@@ -586,6 +595,9 @@ func (d *Daemon) Stop() {
 		// Stop all filesystem watchers
 		if d.fsWatcher != nil {
 			d.fsWatcher.StopAll()
+		}
+		if d.gitWatcher != nil {
+			d.gitWatcher.StopAll()
 		}
 		close(d.stop)
 	})
@@ -626,6 +638,11 @@ func (d *Daemon) startSubscriptions(projects []*project.Project) {
 					dlog.Info("Starting webhook subscription for task: %s", todo.Name)
 					if err := d.webhookServer.StartSubscription(proj, todo); err != nil {
 						dlog.Warn("Failed to start webhook subscription for task %s: %v", todo.Name, err)
+					}
+				case "git":
+					dlog.Info("Starting git subscription for task: %s", todo.Name)
+					if err := d.gitWatcher.StartSubscription(proj, todo); err != nil {
+						dlog.Warn("Failed to start git subscription for task %s: %v", todo.Name, err)
 					}
 				}
 			}
@@ -716,6 +733,9 @@ func (d *Daemon) gracefulShutdown(workerWg *sync.WaitGroup) {
 	// Stop all filesystem watchers
 	if d.fsWatcher != nil {
 		d.fsWatcher.StopAll()
+	}
+	if d.gitWatcher != nil {
+		d.gitWatcher.StopAll()
 	}
 	// Stop all polling managers
 	if d.pollingManager != nil {

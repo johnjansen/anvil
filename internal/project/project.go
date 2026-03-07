@@ -162,7 +162,7 @@ type TaskStateConfig struct {
 
 // SubscriptionConfig defines per-task message subscription configuration.
 type SubscriptionConfig struct {
-	Type     string `yaml:"type"`     // subscription type: "amqp", "file", "fs", "webhook"
+	Type     string `yaml:"type"`     // subscription type: "amqp", "file", "fs", "webhook", "git"
 	URL      string `yaml:"url"`      // connection URL (e.g. AMQP broker URL)
 	Queue    string `yaml:"queue"`    // queue name (for amqp type)
 	Path     string `yaml:"path"`     // file path (for file type)
@@ -178,6 +178,11 @@ type SubscriptionConfig struct {
 	WebhookSecret string `yaml:"webhook_secret"` // secret for webhook authentication (can be env var reference)
 	// Simplified webhook configuration (alternative to type: webhook)
 	Webhook string `yaml:"webhook"` // simplified webhook URL for direct webhook triggering
+	// Git subscription fields
+	GitEvents       []string `yaml:"git_events"`        // event types to watch: push (for git type)
+	GitBranch       string   `yaml:"git_branch"`        // branch name to filter (empty = all branches)
+	GitPath         string   `yaml:"git_path"`          // glob pattern to filter by changed file paths (for git type)
+	GitPollInterval string   `yaml:"git_poll_interval"` // polling interval duration (e.g. "30s", "1m") for git type
 }
 
 // AssertConfig defines per-task output assertion configuration.
