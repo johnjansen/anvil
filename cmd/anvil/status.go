@@ -298,7 +298,10 @@ func cleanupCmd(args []string) {
 	}
 
 	// If no retention config and no --older-than, show current config
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
 	if maxAge == 0 && cfg.Retention.MaxAge == 0 && cfg.Retention.MaxRuns == 0 {
 		fmt.Println("No retention policy configured. Set in ~/.anvil/config.yaml:")
 		fmt.Println("  retention:")
