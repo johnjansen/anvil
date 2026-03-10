@@ -2058,6 +2058,7 @@ func (d *Daemon) startSocketServer() {
 	mux.HandleFunc("/drain", d.handleDrain)
 	mux.HandleFunc("/drain/task", d.handleDrainTask)
 	mux.HandleFunc("/run", d.handleRun)
+	mux.HandleFunc("/trigger", d.handleTrigger)
 	mux.HandleFunc("/status", d.handleStatus)
 	mux.HandleFunc("/health", d.handleHealth)
 	mux.HandleFunc("/metrics", d.handleMetrics)
@@ -2952,6 +2953,14 @@ type RunRequest struct {
 	Force       bool   `json:"force,omitempty"`
 }
 
+// TriggerRequest is the JSON payload for /trigger.
+type TriggerRequest struct {
+	ProjectPath string `json:"project_path"`
+	TaskID      string `json:"task_id"`
+	TaskName    string `json:"task_name"`
+	Payload     string `json:"payload,omitempty"`
+}
+
 // DrainTaskRequest is the JSON payload for /drain/task.
 type DrainTaskRequest struct {
 	ID string `json:"id"`
@@ -3070,6 +3079,122 @@ func (d *Daemon) handleRun(w http.ResponseWriter, r *http.Request) {
 	project.WriteActivity(proj.Path, project.ActivityEntry{
 		Timestamp: time.Now(),
 		Action:    "force-run",
+		TaskID:    todo.ID,
+		TaskName:  todo.Name,
+	})
+
+	select {
+	case d.workQueue <- workItem{project: proj, todo: todo}:
+		// dispatched
+	default:
+		d.inFlightMu.Lock()
+		d.inFlight[taskKey]--
+		if d.inFlight[taskKey] <= 0 {
+			delete(d.inFlight, taskKey)
+		}
+		d.inFlightMu.Unlock()
+		http.Error(w, "work queue full — try again later", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched", "name": todo.Name})
+}
+
+// handleTrigger handles manual task triggering with optional payload.
+func (d *Daemon) handleTrigger(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req TriggerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.ProjectPath == "" || req.TaskID == "" {
+		http.Error(w, "project_path and task_id are required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the task is already running
+	d.tasksMu.Lock()
+	var runningTask *RunningTask
+	for _, task := range d.tasks {
+		if task.TaskID == req.TaskID {
+			runningTask = task
+			break
+		}
+	}
+	d.tasksMu.Unlock()
+
+	// Load the project and find the todo
+	proj, err := project.Load(req.ProjectPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to load project: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	allTodos, err := proj.LoadTodos()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to load todos: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	var found *project.Todo
+	for i := range allTodos {
+		if allTodos[i].ID == req.TaskID {
+			found = &allTodos[i]
+			break
+		}
+	}
+	if found == nil {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+
+	// If the task is already running, kill it first (for persistent tasks, restart; for others, reject)
+	if runningTask != nil {
+		if !found.IsPersistent() {
+			http.Error(w, fmt.Sprintf("task %s is already running", req.TaskName), http.StatusConflict)
+			return
+		}
+		// Persistent task: kill current instance, then re-dispatch
+		runningTask.Cancel()
+		dlog.Info("trigger: killed running persistent task %s for restart", req.TaskName)
+	}
+
+	// Clear stopped state so the task can be dispatched
+	d.stoppedMu.Lock()
+	delete(d.stoppedTasks, found.ID)
+	d.stoppedMu.Unlock()
+
+	// Enqueue for immediate dispatch (bypass cron, skip pre_check by clearing it)
+	todo := *found
+	todo.PreCheck = "" // Skip pre_check for forced runs
+
+	// Add payload to the task environment if provided
+	if req.Payload != "" {
+		if todo.Env == nil {
+			todo.Env = make(map[string]string)
+		}
+		todo.Env["ANVIL_TRIGGER_PAYLOAD"] = req.Payload
+	}
+
+	taskKey := fmt.Sprintf("%s/%s", proj.Path, todo.Name)
+
+	d.inFlightMu.Lock()
+	d.inFlight[taskKey]++
+	d.inFlightMu.Unlock()
+
+	projName := filepath.Base(proj.Path)
+	dlog.Info("trigger requested for %s/%s — dispatching immediately", projName, todo.Name)
+
+	// Log trigger activity
+	project.WriteActivity(proj.Path, project.ActivityEntry{
+		Timestamp: time.Now(),
+		Action:    "trigger",
 		TaskID:    todo.ID,
 		TaskName:  todo.Name,
 	})
@@ -4499,6 +4624,27 @@ func SendRunRequest(projectPath, taskID, taskName string, force bool) error {
 	}
 
 	resp, err := socketClient().Post("http://daemon/run", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	}
+
+	return nil
+}
+
+// SendTriggerRequest asks the daemon to trigger a task with optional payload.
+func SendTriggerRequest(projectPath, taskID, taskName, payload string) error {
+	data, err := json.Marshal(TriggerRequest{ProjectPath: projectPath, TaskID: taskID, TaskName: taskName, Payload: payload})
+	if err != nil {
+		return err
+	}
+
+	resp, err := socketClient().Post("http://daemon/trigger", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return err
 	}

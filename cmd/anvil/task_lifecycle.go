@@ -72,6 +72,75 @@ func taskRunCmd(args []string) {
 	fmt.Printf(msg, todo.Name)
 }
 
+// taskTriggerCmd handles the 'anvil task trigger' command.
+// It allows manual triggering of tasks with optional payload data.
+func taskTriggerCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task trigger <name> [--payload <json-string>]\n")
+		os.Exit(1)
+	}
+
+	// Parse --payload flag
+	payload := ""
+	var filtered []string
+	i := 0
+	for i < len(args) {
+		if args[i] == "--payload" {
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "error: --payload requires a value\n")
+				os.Exit(1)
+			}
+			payload = args[i+1]
+			i += 2 // skip --payload and its value
+		} else {
+			filtered = append(filtered, args[i])
+			i++
+		}
+	}
+
+	if len(filtered) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: anvil task trigger <name> [--payload <json-string>]\n")
+		os.Exit(1)
+	}
+
+	abs, err := filepath.Abs(".")
+	if err != nil {
+		log.Fatalf("bad path: %v", err)
+	}
+
+	proj, err := project.Load(abs)
+	if err != nil {
+		log.Fatalf("failed to load project: %v", err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		log.Fatalf("failed to load todos: %v", err)
+	}
+
+	todo := findTodo(todos, filtered[0])
+	if todo == nil {
+		fmt.Fprintf(os.Stderr, "task not found: %s\n", filtered[0])
+		os.Exit(1)
+	}
+
+	if !daemon.IsDaemonRunning() {
+		fmt.Fprintln(os.Stderr, "daemon not running — start it with: anvil watch")
+		os.Exit(1)
+	}
+
+	if err := daemon.SendTriggerRequest(abs, todo.ID, todo.Name, payload); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to trigger task: %v\n", err)
+		os.Exit(1)
+	}
+
+	if payload != "" {
+		fmt.Printf("▶ Triggered %s with payload\n", todo.Name)
+	} else {
+		fmt.Printf("▶ Triggered %s\n", todo.Name)
+	}
+}
+
 func taskKillCmd(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: anvil task kill <name> [--checkpoint|-c]\n")
