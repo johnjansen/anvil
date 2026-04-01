@@ -28,6 +28,8 @@ Or with Go:
 go install github.com/johnjansen/anvil/cmd/anvil@latest
 ```
 
+See [BUILD.md](BUILD.md) for detailed build instructions and troubleshooting tips.
+
 ## Get Started
 
 ```bash
