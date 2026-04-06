@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -21,7 +19,7 @@ type ImpactReport struct {
 	Schedule        string            `json:"schedule"`
 	Priority        string            `json:"priority"`
 	Dependencies    []string          `json:"dependencies"`
-	Conflicts       []Conflict        `json:"conflicts"`
+	Conflicts       []ImpactConflict  `json:"conflicts"`
 	Suggestions     []Suggestion      `json:"suggestions"`
 	PromptChars     int               `json:"promptChars"`
 	InputTokens     int               `json:"inputTokens"`
@@ -32,11 +30,19 @@ type ImpactReport struct {
 	ResourceUsage   ResourceUsage     `json:"resourceUsage"`
 	ExecutionWindow ExecutionWindow   `json:"executionWindow"`
 	Concurrency     ConcurrencyImpact `json:"concurrency"`
+	// Fields for dry-run analysis
+	NoSchedule      bool              `json:"noSchedule,omitempty"`
+	ParseError      string            `json:"parseError,omitempty"`
+	IsValid         bool              `json:"isValid,omitempty"`
+	NextRun         time.Time         `json:"nextRun,omitempty"`
+	PeakConcurrency int               `json:"peakConcurrency,omitempty"`
+	PeakTime        time.Time         `json:"peakTime,omitempty"`
 }
 
-// Conflict represents a scheduling conflict with another task
-type Conflict struct {
+// ImpactConflict represents a scheduling conflict with another task
+type ImpactConflict struct {
 	TaskName string    `json:"taskName"`
+	Schedule string    `json:"schedule"`
 	Time     time.Time `json:"time"`
 	Type     string    `json:"type"` // "overlap", "resource", etc.
 }
@@ -69,10 +75,30 @@ type ConcurrencyImpact struct {
 
 // analyzeImpact performs impact analysis for a task
 func analyzeImpact(taskName, projectPath string) (*ImpactReport, error) {
-	// Load the task
-	task, err := project.LoadTask(projectPath, taskName)
+	// Load the project and find the task
+	proj, err := project.Load(projectPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load task %s: %w", taskName, err)
+		return nil, fmt.Errorf("failed to load project at %s: %w", projectPath, err)
+	}
+
+	todos, err := proj.LoadTodos()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load todos from project: %w", err)
+	}
+
+	// Find the specific task
+	var task project.Todo
+	found := false
+	for _, t := range todos {
+		if t.Name == taskName {
+			task = t
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return nil, fmt.Errorf("task %s not found in project", taskName)
 	}
 
 	// Parse schedule if present
@@ -84,7 +110,7 @@ func analyzeImpact(taskName, projectPath string) (*ImpactReport, error) {
 	}
 
 	// Estimate tokens and cost
-	content := strings.TrimSpace(task.Prompt)
+	content := strings.TrimSpace(task.Content)
 	charCount := len(content)
 	inputTokens := charCount / 4
 	outputTokens := inputTokens / 4
@@ -114,12 +140,15 @@ func analyzeImpact(taskName, projectPath string) (*ImpactReport, error) {
 	}
 	monthlyCost := totalCost * float64(monthlyRuns)
 
+	// Convert priority to string
+	priorityStr := fmt.Sprintf("%d", task.Priority)
+
 	// Mock data for other fields (would be calculated in real implementation)
 	report := &ImpactReport{
 		TaskName:      taskName,
 		Schedule:      schedule,
-		Priority:      task.Priority,
-		Dependencies:  task.Dependencies,
+		Priority:      priorityStr,
+		Dependencies:  []string{}, // task.Dependencies doesn't exist in Todo struct
 		PromptChars:   charCount,
 		InputTokens:   inputTokens,
 		OutputTokens:  outputTokens,
@@ -144,9 +173,9 @@ func analyzeImpact(taskName, projectPath string) (*ImpactReport, error) {
 
 	// Add mock conflicts and suggestions if this is a high-frequency task
 	if monthlyRuns > 100 {
-		report.Conflicts = []Conflict{
-			{TaskName: "backup-database", Time: time.Now().Add(2 * time.Hour), Type: "resource"},
-			{TaskName: "send-notifications", Time: time.Now().Add(3 * time.Hour), Type: "overlap"},
+		report.Conflicts = []ImpactConflict{
+			{TaskName: "backup-database", Schedule: "0 2 * * *", Time: time.Now().Add(2 * time.Hour), Type: "resource"},
+			{TaskName: "send-notifications", Schedule: "0 3 * * *", Time: time.Now().Add(3 * time.Hour), Type: "overlap"},
 		}
 		report.Suggestions = []Suggestion{
 			{Schedule: "0 2 * * *", ConflictCount: 1},
@@ -155,6 +184,171 @@ func analyzeImpact(taskName, projectPath string) (*ImpactReport, error) {
 	}
 
 	return report, nil
+}
+
+// computePeakConcurrency enumerates next-24h firing times for all active tasks plus the
+// proposed schedule, and finds the time slot with maximum concurrent tasks.
+func computePeakConcurrency(schedule string, todos []project.Todo) (int, time.Time) {
+	now := time.Now().Truncate(time.Minute)
+	end := now.Add(24 * time.Hour)
+
+	// Collect firing times per minute slot
+	slotCounts := make(map[time.Time]int)
+
+	// Add proposed schedule's firing times
+	if p, err := cron.Parse(schedule); err == nil {
+		cur := now
+		for {
+			next, err := p.Next(cur)
+			if err != nil || next.After(end) {
+				break
+			}
+			slotCounts[next.Truncate(time.Minute)]++
+			cur = next
+		}
+	}
+
+	// Add existing tasks' firing times
+	for _, t := range todos {
+		if t.Schedule == "" || t.Schedule == "persistent" || t.Disabled {
+			continue
+		}
+		p, err := cron.Parse(t.Schedule)
+		if err != nil {
+			continue
+		}
+		cur := now
+		for {
+			next, err := p.Next(cur)
+			if err != nil || next.After(end) {
+				break
+			}
+			slotCounts[next.Truncate(time.Minute)]++
+			cur = next
+		}
+	}
+
+	// Find peak
+	peak := 0
+	var peakTime time.Time
+	for t, count := range slotCounts {
+		if count > peak {
+			peak = count
+			peakTime = t
+		}
+	}
+	return peak, peakTime
+}
+
+// computeConflicts checks a proposed schedule against all active tasks and returns conflicts.
+// This reuses the overlap detection algorithm from the original taskCreateCmd.
+func computeConflicts(schedule string, todos []project.Todo) []ImpactConflict {
+	newParser, err := cron.Parse(schedule)
+	if err != nil {
+		return nil
+	}
+	now := time.Now().Truncate(time.Minute)
+	var conflicts []ImpactConflict
+	for _, t := range todos {
+		if t.Schedule == "" || t.Schedule == "persistent" || t.Disabled {
+			continue
+		}
+		existParser, err := cron.Parse(t.Schedule)
+		if err != nil {
+			continue
+		}
+		cur := now
+		for k := 0; k < 30; k++ {
+			newNext, e1 := newParser.Next(cur)
+			existNext, e2 := existParser.Next(cur)
+			if e1 != nil || e2 != nil {
+				break
+			}
+			diff := newNext.Sub(existNext)
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff <= time.Minute {
+				conflicts = append(conflicts, ImpactConflict{
+					TaskName: t.Name,
+					Schedule: t.Schedule,
+					Time:     newNext,
+					Type:     "overlap",
+				})
+				break
+			}
+			if newNext.Before(existNext) {
+				cur = newNext
+			} else {
+				cur = existNext
+			}
+		}
+	}
+	return conflicts
+}
+
+// analyzeImpactForDryRun performs impact analysis for the dry-run functionality in task creation
+func analyzeImpactForDryRun(schedule string, todos []project.Todo, taskText string) ImpactReport {
+	report := ImpactReport{
+		Schedule:  schedule,
+		Conflicts: []ImpactConflict{}, // ensure non-nil for JSON
+	}
+
+	if schedule == "" {
+		report.NoSchedule = true
+		return report
+	}
+
+	p, err := cron.Parse(schedule)
+	if err != nil {
+		report.ParseError = err.Error()
+		return report
+	}
+	report.IsValid = true
+
+	if next, err := p.Next(time.Now()); err == nil {
+		report.NextRun = next
+	}
+
+	// Estimate tokens and cost
+	content := strings.TrimSpace(taskText)
+	charCount := len(content)
+	inputTokens := charCount / 4
+	outputTokens := inputTokens / 4
+
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+
+	inputRate := cfg.InputTokenRate
+	if inputRate <= 0 {
+		inputRate = 3.0 // default Sonnet rate
+	}
+	outputRate := cfg.OutputTokenRate
+	if outputRate <= 0 {
+		outputRate = 15.0 // default Sonnet rate
+	}
+
+	inputCost := float64(inputTokens) / 1_000_000 * inputRate
+	outputCost := float64(outputTokens) / 1_000_000 * outputRate
+	totalCost := inputCost + outputCost
+
+	report.PromptChars = charCount
+	report.InputTokens = inputTokens
+	report.OutputTokens = outputTokens
+	report.EstimatedCost = totalCost
+
+	// Check for conflicts
+	conflicts := computeConflicts(schedule, todos)
+	report.Conflicts = conflicts
+
+	// Compute peak concurrency
+	peakCount, peakTime := computePeakConcurrency(schedule, todos)
+	report.PeakConcurrency = peakCount
+	report.PeakTime = peakTime
+
+	return report
 }
 
 // printImpactReport outputs the impact report in a human-readable format

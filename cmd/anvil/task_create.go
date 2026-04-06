@@ -187,11 +187,11 @@ func taskCreateCmd(args []string) {
 		}
 
 		// Regular dry-run behavior
-		report := analyzeImpact(schedule, todos, taskText)
+		report := analyzeImpactForDryRun(schedule, todos, taskText)
 		if dryRunJSON {
 			printImpactJSON(report)
 		} else {
-			printImpactReport(report)
+			printImpactReport(&report, false)
 		}
 
 		// Add forecast impact analysis
