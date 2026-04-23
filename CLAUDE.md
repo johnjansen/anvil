@@ -16,6 +16,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching) (365-git-event-trigger)
 - JSON files in `.anvil/runs/<task-id>/` (RunRecord system); git ref state persisted in `.anvil/git-state/` as JSON (365-git-event-trigger)
 - Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod) (366-webhook-trigger)
+- Go 1.24.6 + `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod), `crypto/sha256` (stdlib, content hashing for drift detection), existing `internal/project` (Todo loading), `internal/daemon` (reload trigger), `cmd/anvil` (CLI) (405-task-source-sync)
+- JSON sidecar file per task at `.anvil/todos/p<N>/<slug>.meta.json`; existing `.anvil/todos/p<N>/<slug>.md` retained as the executable copy (405-task-source-sync)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -35,6 +37,7 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 405-task-source-sync: Added Go 1.24.6 + `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod), `crypto/sha256` (stdlib, content hashing for drift detection), existing `internal/project` (Todo loading), `internal/daemon` (reload trigger), `cmd/anvil` (CLI)
 - 366-webhook-trigger: Added Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod)
 - 365-git-event-trigger: Added Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching)
 
