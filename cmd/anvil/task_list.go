@@ -165,15 +165,18 @@ func taskLsCmd(args []string) {
 
 	if jsonOutput {
 		type taskJSON struct {
-			Project  string   `json:"project"`
-			Name     string   `json:"name"`
-			Priority int      `json:"priority"`
-			Schedule string   `json:"schedule"`
-			Status   string   `json:"status"`
-			Disabled bool     `json:"disabled"`
-			Content  string   `json:"content"`
-			ID       string   `json:"id,omitempty"`
-			Labels   []string `json:"labels,omitempty"`
+			Project      string   `json:"project"`
+			Name         string   `json:"name"`
+			Priority     int      `json:"priority"`
+			Schedule     string   `json:"schedule"`
+			Status       string   `json:"status"`
+			Disabled     bool     `json:"disabled"`
+			Content      string   `json:"content"`
+			ID           string   `json:"id,omitempty"`
+			Labels       []string `json:"labels,omitempty"`
+			SyncStatus   string   `json:"sync_status,omitempty"`
+			SourcePath   string   `json:"source_path,omitempty"`
+			LastLoadedAt string   `json:"last_loaded_at,omitempty"`
 		}
 		var items []taskJSON
 		for _, p := range projects {
@@ -191,7 +194,7 @@ func taskLsCmd(args []string) {
 						status = "running"
 					}
 				}
-				items = append(items, taskJSON{
+				item := taskJSON{
 					Project:  p.path,
 					Name:     t.Name,
 					Priority: t.Priority,
@@ -201,7 +204,15 @@ func taskLsCmd(args []string) {
 					Content:  strings.TrimSpace(t.Content),
 					ID:       t.ID,
 					Labels:   t.Labels,
-				})
+				}
+				if t.SourceMeta != nil {
+					item.SyncStatus = string(project.ComputeSyncStatus(t.SourceMeta))
+					item.SourcePath = t.SourceMeta.SourcePath
+					if !t.SourceMeta.LastLoadedAt.IsZero() {
+						item.LastLoadedAt = t.SourceMeta.LastLoadedAt.UTC().Format(time.RFC3339)
+					}
+				}
+				items = append(items, item)
 			}
 		}
 		data, err := json.MarshalIndent(items, "", "  ")
@@ -282,7 +293,14 @@ func taskLsCmd(args []string) {
 				}
 			}
 
-			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s%s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr, budgetStr, circuitStr)
+			syncStr := ""
+			if t.SourceMeta != nil {
+				if sync := project.ComputeSyncStatus(t.SourceMeta); sync != project.SyncStatusNoSource {
+					syncStr = fmt.Sprintf("  [%s]", sync)
+				}
+			}
+
+			fmt.Printf("p%d  %-14s  %-10s  %-35s  %s%s%s%s%s\n", t.Priority, t.Schedule, status, t.Name, preview, labelStr, budgetStr, circuitStr, syncStr)
 		}
 	}
 }
@@ -382,6 +400,10 @@ func taskGetCmd(args []string) {
 			SLAStrict         bool            `json:"sla_strict,omitempty"`
 			SLALastDelay      string          `json:"sla_last_delay,omitempty"`
 			SLALastViolation  bool            `json:"sla_last_violation,omitempty"`
+			SourcePath        string          `json:"source_path,omitempty"`
+			LastLoadedAt      string          `json:"last_loaded_at,omitempty"`
+			SyncStatus        string          `json:"sync_status,omitempty"`
+			SyncError         string          `json:"sync_error,omitempty"`
 		}
 		detail := taskDetailJSON{
 			File:            todo.Path,
@@ -475,6 +497,15 @@ func taskGetCmd(args []string) {
 				detail.SLALastViolation = rec.SLAViolation
 			}
 		}
+		// Add source sync info
+		if todo.SourceMeta != nil {
+			detail.SourcePath = todo.SourceMeta.SourcePath
+			if !todo.SourceMeta.LastLoadedAt.IsZero() {
+				detail.LastLoadedAt = todo.SourceMeta.LastLoadedAt.UTC().Format(time.RFC3339)
+			}
+			detail.SyncStatus = string(project.ComputeSyncStatus(todo.SourceMeta))
+			detail.SyncError = todo.SourceMeta.LastLoadError
+		}
 		data, err := json.MarshalIndent(detail, "", "  ")
 		if err != nil {
 			log.Fatalf("failed to marshal JSON: %v", err)
@@ -491,6 +522,22 @@ func taskGetCmd(args []string) {
 		fmt.Printf("Disabled: true\n")
 	}
 	fmt.Printf("Disabled: %t\n", todo.Disabled)
+	if todo.SourceMeta != nil && todo.SourceMeta.SourcePath != "" {
+		fmt.Printf("Source:   %s\n", todo.SourceMeta.SourcePath)
+		if !todo.SourceMeta.LastLoadedAt.IsZero() {
+			fmt.Printf("Last loaded: %s\n", todo.SourceMeta.LastLoadedAt.UTC().Format(time.RFC3339))
+		}
+		sync := project.ComputeSyncStatus(todo.SourceMeta)
+		if sync != project.SyncStatusNoSource {
+			fmt.Printf("Sync:     %s", sync)
+			if todo.SourceMeta.LastLoadError != "" {
+				fmt.Printf(" (%s)", todo.SourceMeta.LastLoadError)
+			}
+			fmt.Printf("\n")
+		}
+	} else {
+		fmt.Printf("Source:   (none)\n")
+	}
 	if todo.ID != "" {
 		sessionPath := project.SessionPath(abs, todo.ID)
 		if _, err := os.Stat(sessionPath); err == nil {

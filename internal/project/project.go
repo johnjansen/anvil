@@ -307,6 +307,7 @@ type Todo struct {
 	OnTimeoutWarning     string                 // shell command to run when timeout warning is triggered
 	OnTimeout            string                 // shell command to run when task times out
 	AdaptiveTimeout      *AdaptiveTimeoutConfig // adaptive timeout configuration (nil = no adaptive timeout)
+	SourceMeta           *SourceMeta            // sidecar metadata linking this task to its source file (nil = no source)
 }
 
 // AdaptiveTimeoutConfig defines adaptive timeout behavior that extends deadlines based on task progress.
@@ -539,13 +540,16 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 							ExtensionDuration string `yaml:"extension_duration"`
 						} `yaml:"adaptive_timeout"`
 					}
-					if err := yaml.Unmarshal([]byte(fm), &fmData); err != nil {
+					// Accept hyphenated aliases (allowed-tools, max-concurrent) by
+					// rewriting them to the canonical snake_case form before unmarshal.
+					fmNormalized := normalizeFrontmatterAliases([]byte(fm))
+					if err := yaml.Unmarshal(fmNormalized, &fmData); err != nil {
 						// Log the error but continue - the task will load with defaults
 						// This is safer than silently skipping, which causes tasks to "disappear"
 						log.Printf("WARN: failed to parse frontmatter for %s: %v (using defaults)", e.Name(), err)
 					} else {
 						// Parse raw keys to detect which fields were explicitly set.
-						_ = yaml.Unmarshal([]byte(fm), &fmKeys)
+						_ = yaml.Unmarshal(fmNormalized, &fmKeys)
 
 						schedule = fmData.Schedule
 						id = fmData.ID
@@ -672,6 +676,12 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 			// Resolve env: prefixed values from the current environment
 			resolvedEnv := resolveEnvVars(envVars)
 
+			// Load optional source-file sidecar; absent sidecar leaves SourceMeta nil.
+			sourceMeta, metaErr := ReadSourceMeta(fp)
+			if metaErr != nil {
+				log.Printf("WARN: failed to read source sidecar for %s: %v", e.Name(), metaErr)
+			}
+
 			todos = append(todos, Todo{
 				Path:                 fp,
 				Name:                 e.Name(),
@@ -723,6 +733,7 @@ func (p *Project) LoadTodos() ([]Todo, error) {
 				OnTimeoutWarning:     onTimeoutWarning,
 				OnTimeout:            onTimeout,
 				AdaptiveTimeout:      adaptiveTimeout,
+				SourceMeta:           sourceMeta,
 			})
 		}
 	}
@@ -825,9 +836,14 @@ func (t Todo) IsPersistent() bool {
 	return t.Schedule == "persistent"
 }
 
-// RemoveTodo deletes a todo file from disk
+// RemoveTodo deletes a todo file from disk along with its source sidecar if
+// present. A missing sidecar is not an error.
 func RemoveTodo(todo Todo) error {
-	return os.Remove(todo.Path)
+	if err := os.Remove(todo.Path); err != nil {
+		return err
+	}
+	_ = RemoveSourceMeta(todo.Path)
+	return nil
 }
 
 // RemoveLock removes the lock file for a todo, if it exists

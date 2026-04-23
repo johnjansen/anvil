@@ -32,10 +32,16 @@ Options:
   --strict               Fail if schedule conflicts with existing tasks
   --no-overlap-check     Skip schedule overlap detection
   --depends-on dep       Task dependency (repeatable; use project:task for cross-project)
-  -f, --file path        Read task content from a file
+  -f, --file path        Read task content from a file (source-of-truth for 'anvil reload')
   -                      Read task content from stdin
 
 Frontmatter in file/stdin input is merged with CLI flags (CLI flags take precedence).
+
+When --file is used, anvil records the absolute source path and a content hash
+alongside the registered task. 'anvil reload' re-reads the source file and
+atomically refreshes the registered copy when it drifts, preserving the task's
+UUID and run history. 'anvil task ls' and 'anvil task get' surface drift,
+missing-source, and invalid-frontmatter states for tasks registered this way.
 
 Examples:
   anvil add "Review pull requests"

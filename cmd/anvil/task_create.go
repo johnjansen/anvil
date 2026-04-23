@@ -332,6 +332,23 @@ func taskCreateCmd(args []string) {
 		log.Fatalf("failed to add todo: %v", err)
 	}
 
+	// When the task originated from a source file, record a sidecar linking the
+	// canonical .md back to the source path so `anvil reload` can re-import.
+	if filePath != "" {
+		sourceBytes, srcErr := os.ReadFile(filePath)
+		if srcErr == nil {
+			meta, metaErr := project.NewSourceMeta(filePath, sourceBytes)
+			if metaErr == nil {
+				mdPath := filepath.Join(abs, ".anvil", "todos", relPath)
+				if err := project.WriteSourceMeta(mdPath, meta); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to write source sidecar: %v\n", err)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: failed to resolve source path: %v\n", metaErr)
+			}
+		}
+	}
+
 	fmt.Printf("added %s\n", relPath)
 
 	// Show next run time for scheduled tasks.
