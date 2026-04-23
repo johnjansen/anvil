@@ -2463,14 +2463,41 @@ func (d *Daemon) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger reload via the channel
+	// Trigger an async config reload via the channel. The async path handles
+	// worker/config churn; source-file re-import is done synchronously here so
+	// the response body can report per-project counts.
 	select {
 	case d.reload <- struct{}{}:
-		fmt.Fprintf(w, "config reload triggered")
 	default:
-		// Channel already has a pending signal
-		fmt.Fprintf(w, "config reload already in progress")
 	}
+
+	// Aggregate reload summary across all watched projects.
+	type projectSummary struct {
+		Path    string                `json:"path"`
+		Summary project.ReloadSummary `json:"summary"`
+		Error   string                `json:"error,omitempty"`
+	}
+	resp := struct {
+		Projects []projectSummary      `json:"projects"`
+		Totals   project.ReloadSummary `json:"totals"`
+	}{Projects: []projectSummary{}}
+
+	for _, path := range loadWatchedPaths() {
+		summary, err := project.ReloadAllFromSources(path)
+		ps := projectSummary{Path: path, Summary: summary}
+		if err != nil {
+			ps.Error = err.Error()
+		}
+		resp.Projects = append(resp.Projects, ps)
+		resp.Totals.Checked += summary.Checked
+		resp.Totals.Reloaded += summary.Reloaded
+		resp.Totals.Drift += summary.Drift
+		resp.Totals.Missing += summary.Missing
+		resp.Totals.Invalid += summary.Invalid
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (d *Daemon) handleKill(w http.ResponseWriter, r *http.Request) {
@@ -4719,20 +4746,43 @@ func SendKillRequest(id string, checkpoint bool) error {
 	return nil
 }
 
-// SendReloadRequest sends a reload request to the daemon to reload its config.
-func SendReloadRequest() error {
+// ReloadProjectSummary is the per-project slice of the reload response body.
+type ReloadProjectSummary struct {
+	Path    string                `json:"path"`
+	Summary project.ReloadSummary `json:"summary"`
+	Error   string                `json:"error,omitempty"`
+}
+
+// ReloadResponse is returned by SendReloadRequest with the per-project and
+// aggregate counts of source-file reloads.
+type ReloadResponse struct {
+	Projects []ReloadProjectSummary `json:"projects"`
+	Totals   project.ReloadSummary  `json:"totals"`
+}
+
+// SendReloadRequest sends a reload request to the daemon and returns the
+// source-sync summary. Older daemons that do not emit a JSON summary return a
+// zero-valued response with no error so that callers degrade gracefully.
+func SendReloadRequest() (*ReloadResponse, error) {
 	resp, err := socketClient().Post("http://daemon/reload", "application/json", bytes.NewBufferString("{}"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("daemon reload failed: %s", string(body))
+		return nil, fmt.Errorf("daemon reload failed: %s", string(body))
 	}
 
-	return nil
+	var parsed ReloadResponse
+	if len(body) > 0 && body[0] == '{' {
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			// Unparseable summary from an older daemon; not fatal.
+			return &ReloadResponse{}, nil
+		}
+	}
+	return &parsed, nil
 }
 
 // SendBudgetRequest retrieves budget usage for all persistent tasks.

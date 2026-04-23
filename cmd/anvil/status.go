@@ -125,7 +125,35 @@ func statusCmd(args []string) {
 			continue
 		}
 		todos, _ := proj.LoadTodos()
-		fmt.Printf("  %s  todos=%d\n", w.Path, len(todos))
+		drift, missing, invalid := 0, 0, 0
+		for _, t := range todos {
+			if t.SourceMeta == nil {
+				continue
+			}
+			switch project.ComputeSyncStatus(t.SourceMeta) {
+			case project.SyncStatusDrift:
+				drift++
+			case project.SyncStatusMissing:
+				missing++
+			case project.SyncStatusInvalid:
+				invalid++
+			}
+		}
+		suffix := ""
+		if drift+missing+invalid > 0 {
+			var parts []string
+			if drift > 0 {
+				parts = append(parts, fmt.Sprintf("%d drift", drift))
+			}
+			if missing > 0 {
+				parts = append(parts, fmt.Sprintf("%d missing", missing))
+			}
+			if invalid > 0 {
+				parts = append(parts, fmt.Sprintf("%d invalid", invalid))
+			}
+			suffix = "  (" + strings.Join(parts, ", ") + ")"
+		}
+		fmt.Printf("  %s  todos=%d%s\n", w.Path, len(todos), suffix)
 	}
 }
 
@@ -138,10 +166,17 @@ func reloadCmd(args []string) {
 		case "-h", "--help":
 			fmt.Fprintf(os.Stderr, `usage: anvil reload [--graceful] [--timeout duration]
 
-Reload the daemon configuration without restarting.
+Reload the daemon configuration and re-import task source files.
 
-Sends SIGHUP to the daemon to reload ~/.anvil/config.yaml.
-New tasks will use the updated config; running tasks are unaffected.
+Sends a reload to the daemon to refresh ~/.anvil/config.yaml. For tasks that
+were added with 'anvil add -f <source>', the source file is re-read: if its
+contents have changed, the registered copy under .anvil/todos/ is atomically
+rewritten while preserving the task's UUID and run history.
+
+After reload, a summary is printed showing counts of tasks checked, reloaded,
+drifted (source changed but not yet applied — shouldn't happen in normal flow),
+missing (source file deleted or inaccessible), and invalid (source frontmatter
+failed to parse). Exits 2 when any task reports invalid frontmatter.
 
 Options:
   --graceful           Wait for running tasks to complete before reloading
@@ -174,11 +209,16 @@ Options:
 
 	if !graceful {
 		// Immediate reload (original behavior)
-		if err := daemon.SendReloadRequest(); err != nil {
+		resp, err := daemon.SendReloadRequest()
+		if err != nil {
 			fmt.Printf("failed to reload config: %v\n", err)
 			return
 		}
-		fmt.Println("config reload triggered")
+		fmt.Println("reloaded config")
+		printReloadSummary(resp)
+		if resp != nil && resp.Totals.Invalid > 0 {
+			os.Exit(2)
+		}
 		return
 	}
 
@@ -200,11 +240,16 @@ Options:
 
 	if len(tasks) == 0 {
 		// No running tasks, reload immediately
-		if err := daemon.SendReloadRequest(); err != nil {
+		resp, err := daemon.SendReloadRequest()
+		if err != nil {
 			fmt.Printf("failed to reload config: %v\n", err)
 			return
 		}
-		fmt.Println("no running tasks — config reload triggered")
+		fmt.Println("no running tasks — reloaded config")
+		printReloadSummary(resp)
+		if resp != nil && resp.Totals.Invalid > 0 {
+			os.Exit(2)
+		}
 		return
 	}
 
@@ -222,11 +267,16 @@ Options:
 		select {
 		case <-deadline:
 			fmt.Fprintf(os.Stderr, "\nTimeout reached (%s). Force-reloading daemon...\n", timeoutDur)
-			if err := daemon.SendReloadRequest(); err != nil {
+			resp, err := daemon.SendReloadRequest()
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to reload config: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Println("config reload triggered (forced after timeout)")
+			printReloadSummary(resp)
+			if resp != nil && resp.Totals.Invalid > 0 {
+				os.Exit(2)
+			}
 			return
 		case <-ticker.C:
 			tasks, err := daemon.SendPsRequest()
@@ -236,12 +286,17 @@ Options:
 			}
 			if len(tasks) == 0 {
 				// All tasks finished
-				if err := daemon.SendReloadRequest(); err != nil {
+				resp, err := daemon.SendReloadRequest()
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "failed to reload config: %v\n", err)
 					os.Exit(1)
 				}
 				elapsed := time.Since(startTime).Round(time.Second)
 				fmt.Printf("\nAll tasks completed (%s). Config reload triggered.\n", elapsed)
+				printReloadSummary(resp)
+				if resp != nil && resp.Totals.Invalid > 0 {
+					os.Exit(2)
+				}
 				return
 			}
 			elapsed := time.Since(startTime).Round(time.Second)
@@ -560,6 +615,21 @@ func psWatch() {
 	if err := tui.StartDashboard(); err != nil {
 		fmt.Printf("Error starting dashboard: %v\n", err)
 	}
+}
+
+// printReloadSummary renders the per-project source-sync counts that the
+// daemon returns from /reload. Silent when the daemon did not report a
+// summary (older daemons) or when no tasks were checked.
+func printReloadSummary(resp *daemon.ReloadResponse) {
+	if resp == nil {
+		return
+	}
+	t := resp.Totals
+	if t.Checked == 0 {
+		return
+	}
+	fmt.Printf("tasks: %d checked, %d reloaded, %d drift, %d missing, %d invalid\n",
+		t.Checked, t.Reloaded, t.Drift, t.Missing, t.Invalid)
 }
 
 // rawLineWriter translates \n to \r\n for raw terminal mode where OPOST is disabled.
