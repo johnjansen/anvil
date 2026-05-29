@@ -45,6 +45,11 @@ logs/
 
 # Anvil runtime state (todos, runs, kill signals)
 .anvil/
+# Track committed task definitions; runtime state stays ignored.
+!.anvil/
+!.anvil/todos/
+!.anvil/todos/p2/
+!.anvil/todos/p2/my-pr-monitor-discover.md
 
 # Example project
 /example_proj
