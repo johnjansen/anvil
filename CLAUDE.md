@@ -18,6 +18,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-25
 - Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod) (366-webhook-trigger)
 - Go 1.24.6 + `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod), `crypto/sha256` (stdlib, content hashing for drift detection), existing `internal/project` (Todo loading), `internal/daemon` (reload trigger), `cmd/anvil` (CLI) (405-task-source-sync)
 - JSON sidecar file per task at `.anvil/todos/p<N>/<slug>.meta.json`; existing `.anvil/todos/p<N>/<slug>.md` retained as the executable copy (405-task-source-sync)
+- N/A — the artifact is a Markdown task definition (frontmatter + natural-language prompt) executed by an LLM agent, not compiled code. Repo language is Go 1.24.6 but is untouched here. + `gh` CLI (GitHub issue/label/comment operations); the anvil task runner that executes the prompt with the declared `allowed_tools`. (408-pipeline-audit-dup-idempotency)
+- GitHub issue state (labels + comments) is the source of truth for prior-flag detection. No local persistence/sidecar needed. (408-pipeline-audit-dup-idempotency)
 
 - Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms) + None (standalone markdown document) (002-cli-ecosystem-blog-post)
 
@@ -37,9 +39,9 @@ tests/
 Markdown (GitHub-Flavored Markdown compatible with dev.to, Medium, and static blog platforms): Follow standard conventions
 
 ## Recent Changes
+- 408-pipeline-audit-dup-idempotency: Added N/A — the artifact is a Markdown task definition (frontmatter + natural-language prompt) executed by an LLM agent, not compiled code. Repo language is Go 1.24.6 but is untouched here. + `gh` CLI (GitHub issue/label/comment operations); the anvil task runner that executes the prompt with the declared `allowed_tools`.
 - 405-task-source-sync: Added Go 1.24.6 + `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod), `crypto/sha256` (stdlib, content hashing for drift detection), existing `internal/project` (Todo loading), `internal/daemon` (reload trigger), `cmd/anvil` (CLI)
 - 366-webhook-trigger: Added Go 1.24.6 + `net/http` (standard library), `crypto/hmac` + `crypto/sha256` (standard library), `gopkg.in/yaml.v3` (frontmatter parsing, already in go.mod)
-- 365-git-event-trigger: Added Go 1.24.6 + `os/exec` (git CLI invocation), `gopkg.in/yaml.v3` (frontmatter parsing), `path/filepath` (glob matching)
 
 
 <!-- MANUAL ADDITIONS START -->
